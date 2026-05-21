@@ -1,0 +1,40 @@
+# Credentials
+.env
+.env.*
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# Data
+journal/
+
+# Tools
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual env
+.venv/
+
+# IDE / OS
+.DS_Store
+.claude/
+
+# Logs & temp
+webull_trade_sdk.log*
+*.db
+*.db-shm
+*.db-wal
+did.bin
+
+# Generated reports
+*.docx
+*.png
+reports/
+
+# Docker
+.dockerignore

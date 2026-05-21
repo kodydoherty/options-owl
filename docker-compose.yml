@@ -1,0 +1,203 @@
+# docker-compose.yml — run multiple OptionsOwl bots with shared config.
+#
+# Usage:
+#   1. Edit .env with shared strategy/API config
+#   2. Set PORTFOLIO_SIZE per bot below (only difference between owlets)
+#   3. docker compose up -d
+#
+# Each bot gets:
+#   - Shared .env config (mounted read-only)
+#   - PORTFOLIO_SIZE override via environment
+#   - Its own journal/ directory (SQLite DB, logs, heartbeat)
+
+x-bot-common: &bot-common
+  build: .
+  restart: always
+  stop_grace_period: 10s
+  env_file: .env
+  environment:
+    - PYTHONUNBUFFERED=1
+  healthcheck:
+    test: ["CMD", "python", "-c", "import time; from pathlib import Path; hb=Path('journal/heartbeat'); assert hb.exists(), 'no heartbeat'; age=time.time()-int(hb.read_text()); assert age<120, f'stale heartbeat: {age:.0f}s'"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 45s
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+  deploy:
+    resources:
+      limits:
+        memory: 1G
+
+services:
+  owlet-kody:
+    <<: *bot-common
+    container_name: owlet-kody
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PORTFOLIO_SIZE=23000
+      - PAPER_TRADE=false
+      - WEBULL_KILL_SWITCH=false
+      - EXIT_ENGINE=v5
+      - MAX_CONCURRENT=4
+      - MAX_POSITION_PCT=10
+      - MAX_DCA_POSITION_PCT=5
+      - MAX_TRADE_LOSS_EXIT_PCT=8
+      - MAX_PORTFOLIO_RISK_PCT=75
+      - ENABLE_WEBULL_PAPER=true
+      - WEBULL_APP_KEY=${KODY_WEBULL_APP_KEY}
+      - WEBULL_APP_SECRET=${KODY_WEBULL_APP_SECRET}
+      - WEBULL_ACCOUNT_ID=${KODY_WEBULL_ACCOUNT_ID}
+      - WEBULL_EMAIL=${KODY_WEBULL_EMAIL}
+      - WEBULL_PASSWORD=${KODY_WEBULL_PASSWORD}
+      - WEBULL_TRADE_PIN=${KODY_WEBULL_TRADE_PIN}
+      - WEBULL_DID=${KODY_WEBULL_DID}
+      # Margin account (enable when balance > $25K and funds transferred)
+      # - MARGIN_ACCOUNT=true
+      # V6 enhancements
+      - ENABLE_V6_PER_TICKER_CONFIG=true
+      - ENABLE_V6_BREAKEVEN_RATCHET=true
+      - ENABLE_V6_2PM_TIGHTEN=true
+      - ENABLE_V6_PREMIUM_CAP=true
+      - ENABLE_V6_SPREAD_GATE=true
+      - ENABLE_V6_SCALEOUT=true
+      - ENABLE_V6_DCA=true
+      - ENABLE_V6_EARLY_POP_GATE=true
+      - ENABLE_DIP_CONFIRM=true
+      - ENABLE_SUPABASE_BRAIN=true
+      - AGENT_ID=owlet_kody
+      - SHARED_CANDLE_DB=/app/shared_harvester/options_data.db
+    volumes:
+      - ./journal/owlet-kody:/app/journal
+      - ./journal/owlet-harvester:/app/shared_harvester:ro
+
+  owlet-adam:
+    <<: *bot-common
+    container_name: owlet-adam
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PORTFOLIO_SIZE=4685
+      - POLYGON_API_KEY=${ADAM_POLYGON_API_KEY}
+      - ENABLE_POLYGON_WS=true
+      - WEBULL_APP_KEY=${ADAM_WEBULL_APP_KEY}
+      - WEBULL_APP_SECRET=${ADAM_WEBULL_APP_SECRET}
+      - PAPER_TRADE=false
+      - WEBULL_KILL_SWITCH=false
+      - EXIT_ENGINE=v5
+      - MAX_CONCURRENT=4
+      - MAX_POSITION_PCT=10
+      - MAX_DCA_POSITION_PCT=5
+      - MAX_TRADE_LOSS_EXIT_PCT=8
+      - MAX_PORTFOLIO_RISK_PCT=75
+      - ENABLE_WEBULL_PAPER=true
+      # V6 enhancements
+      - ENABLE_V6_PER_TICKER_CONFIG=true
+      - ENABLE_V6_BREAKEVEN_RATCHET=true
+      - ENABLE_V6_2PM_TIGHTEN=true
+      - ENABLE_V6_PREMIUM_CAP=true
+      - ENABLE_V6_SPREAD_GATE=true
+      - ENABLE_V6_SCALEOUT=true
+      - ENABLE_V6_DCA=true
+      - ENABLE_V6_EARLY_POP_GATE=true
+      - ENABLE_DIP_CONFIRM=true
+      - ENABLE_SUPABASE_BRAIN=true
+      - AGENT_ID=owlet_adam
+      - SHARED_CANDLE_DB=/app/shared_harvester/options_data.db
+    volumes:
+      - ./journal/owlet-adam:/app/journal
+      - ./journal/owlet-harvester:/app/shared_harvester:ro
+
+  owlet-vinny:
+    <<: *bot-common
+    container_name: owlet-vinny
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PORTFOLIO_SIZE=3123
+      - POLYGON_API_KEY=${VINNY_POLYGON_API_KEY}
+      - ENABLE_POLYGON_WS=true
+      - WEBULL_APP_KEY=${VINNY_WEBULL_APP_KEY}
+      - WEBULL_APP_SECRET=${VINNY_WEBULL_APP_SECRET}
+      - PAPER_TRADE=false
+      - WEBULL_KILL_SWITCH=false
+      - EXIT_ENGINE=v5
+      - MAX_CONCURRENT=4
+      - MAX_POSITION_PCT=10
+      - MAX_DCA_POSITION_PCT=5
+      - MAX_TRADE_LOSS_EXIT_PCT=8
+      - MAX_PORTFOLIO_RISK_PCT=75
+      - ENABLE_WEBULL_PAPER=true
+      # V6 enhancements
+      - ENABLE_V6_PER_TICKER_CONFIG=true
+      - ENABLE_V6_BREAKEVEN_RATCHET=true
+      - ENABLE_V6_2PM_TIGHTEN=true
+      - ENABLE_V6_PREMIUM_CAP=true
+      - ENABLE_V6_SPREAD_GATE=true
+      - ENABLE_V6_SCALEOUT=true
+      - ENABLE_V6_DCA=true
+      - ENABLE_V6_SIDEWAYS_SCALP=true
+      - ENABLE_V6_EARLY_POP_GATE=true
+      - ENABLE_DIP_CONFIRM=true
+      - ENABLE_SUPABASE_BRAIN=true
+      - AGENT_ID=owlet_vinny
+      - SHARED_CANDLE_DB=/app/shared_harvester/options_data.db
+    volumes:
+      - ./journal/owlet-vinny:/app/journal
+      - ./journal/owlet-harvester:/app/shared_harvester:ro
+
+  owlet-yank:
+    <<: *bot-common
+    container_name: owlet-yank
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PORTFOLIO_SIZE=3600
+      - POLYGON_API_KEY=${YANK_POLYGON_API_KEY}
+      - ENABLE_POLYGON_WS=true
+      - WEBULL_APP_KEY=${YANK_WEBULL_APP_KEY}
+      - WEBULL_APP_SECRET=${YANK_WEBULL_APP_SECRET}
+      - PAPER_TRADE=false
+      - WEBULL_KILL_SWITCH=false
+      - EXIT_ENGINE=v5
+      - MAX_CONCURRENT=4
+      - MAX_POSITION_PCT=10
+      - MAX_DCA_POSITION_PCT=5
+      - MAX_TRADE_LOSS_EXIT_PCT=8
+      - MAX_PORTFOLIO_RISK_PCT=75
+      - ENABLE_WEBULL_PAPER=true
+      # V6 enhancements
+      - ENABLE_V6_PER_TICKER_CONFIG=true
+      - ENABLE_V6_BREAKEVEN_RATCHET=true
+      - ENABLE_V6_2PM_TIGHTEN=true
+      - ENABLE_V6_PREMIUM_CAP=true
+      - ENABLE_V6_SPREAD_GATE=true
+      - ENABLE_V6_SCALEOUT=true
+      - ENABLE_V6_DCA=true
+      - ENABLE_V6_EARLY_POP_GATE=true
+      - ENABLE_DIP_CONFIRM=true
+      - ENABLE_SUPABASE_BRAIN=true
+      - AGENT_ID=owlet_yank
+      - SHARED_CANDLE_DB=/app/shared_harvester/options_data.db
+    volumes:
+      - ./journal/owlet-yank:/app/journal
+      - ./journal/owlet-harvester:/app/shared_harvester:ro
+
+  # Standalone data harvester — captures Polygon options chain snapshots
+  # (bid/ask/mid/OI/day OHLC) and computes IV + greeks locally via Black-Scholes.
+  # Writes to its own DB (options_data.db) for ML training + backtesting.
+  # Does not trade, does not read Discord — pure data collection.
+  owlet-harvester:
+    <<: *bot-common
+    container_name: owlet-harvester
+    command: ["python", "-m", "options_owl.harvester"]
+    environment:
+      - PYTHONUNBUFFERED=1
+      - HARVEST_UNIVERSE=SPY,QQQ,IWM,AAPL,TSLA,NVDA,META,AMD,AMZN,GOOGL,MSFT,MU,MSTR,NFLX,SMCI,PLTR,COIN,BA,JPM,XLK,XLF,DIA,GLD,SLV,TLT,VIX
+      - HARVEST_POLL_INTERVAL=60
+      - HARVEST_MAX_DTE=7
+      - HARVEST_STRIKE_WINDOW=5
+      - HARVEST_MARKET_HOURS_ONLY=true
+    volumes:
+      - ./journal/owlet-harvester:/app/journal
