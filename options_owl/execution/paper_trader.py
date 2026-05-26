@@ -20,7 +20,6 @@ from options_owl.risk.pipeline import run_entry_pipeline
 if TYPE_CHECKING:
     from options_owl.execution.webull_executor import WebullExecutor
 
-from options_owl.collectors.supabase_brain import SupabaseBrain
 from options_owl.collectors.support_levels import is_at_support
 from options_owl.journal.db import connect as _connect_db
 
@@ -40,7 +39,7 @@ def _handle_task_exception(task: asyncio.Task) -> None:
         return
     exc = task.exception()
     if exc:
-        logger.warning(f"[SupabaseBrain] Background task failed: {type(exc).__name__}: {exc}")
+        logger.warning(f"Background task failed: {type(exc).__name__}: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -242,8 +241,8 @@ async def log_trade_event(
                 (trade_id, ticker, event_type, detail, datetime.now().isoformat()),
             )
             await conn.commit()
-    except Exception:
-        pass  # never let audit logging break the trade flow
+    except Exception as exc:
+        logger.debug(f"trade_event write failed (trade={trade_id}, event={event_type}): {exc}")
 
 
 def _today_et() -> datetime:
@@ -814,7 +813,6 @@ class PaperTrader:
         self.db_path = settings.DB_PATH
         self.webull_executor = webull_executor
         self.market_stream = None  # set by discord_collector after market stream starts
-        self.supabase: SupabaseBrain | None = None  # set by discord_collector
         self._signal_engine = None
         self._cached_live_balance: float | None = None
         self._balance_cache_ts: float = 0.0
@@ -1088,7 +1086,6 @@ class PaperTrader:
         signal: TradeSignal,
         signal_id: int,
         strategy: str,
-        supabase_alert_id: str | None = None,
         nbbo_at_order: dict | None = None,
     ) -> dict | None:
         """Open a single paper trade for a given strategy. Returns trade info or None."""
@@ -1258,7 +1255,9 @@ class PaperTrader:
                 return None
 
             signal_premium = signal.atm_premium
-            assert signal_premium is not None
+            if signal_premium is None:
+                logger.warning(f"SIZING: {signal.ticker} — atm_premium is None, skipping")
+                return None
 
             premium = signal_premium * (1 + self.settings.SIMULATED_ENTRY_SLIPPAGE_BPS / 10000)
             entry_slippage = premium - signal_premium
@@ -1273,13 +1272,24 @@ class PaperTrader:
 
             if use_vinny and use_score_sizing:
                 from options_owl.risk.vinny_strategy import score_to_contracts
+                # Auto-adaptive sizing based on LIVE balance (not static PORTFOLIO_SIZE)
+                # Small accounts (<$8K): 2 concurrent, 20% position (concentrate capital)
+                # Large accounts (>=$8K): 4 concurrent, 15% position (diversify)
+                _live_bal = effective_balance
+                _max_pos = self.settings.MAX_POSITION_PCT
+                _max_conc = self.settings.MAX_CONCURRENT
+                if _max_pos <= 0:  # auto-adapt
+                    _max_pos = 20.0 if _live_bal < 8000 else 15.0
+                if _max_conc <= 0:  # auto-adapt
+                    _max_conc = 2 if _live_bal < 8000 else 4
                 total_contracts = score_to_contracts(
                     signal.score,
                     cost_per_contract=cost_per_contract,
                     balance=effective_balance,
-                    max_position_pct=self.settings.MAX_POSITION_PCT,
-                    max_concurrent=self.settings.MAX_CONCURRENT,
+                    max_position_pct=_max_pos,
+                    max_concurrent=_max_conc,
                     max_portfolio_risk_pct=self.settings.MAX_PORTFOLIO_RISK_PCT,
+                    ml_confidence=getattr(self, "_current_ml_confidence", None),
                 )
                 if total_contracts <= 0:
                     logger.info(f"Score {signal.score} too low for Vinny sizing — 0 contracts")
@@ -1293,6 +1303,8 @@ class PaperTrader:
                 total_contracts = max(1, int(max_position / cost_per_contract))
             else:
                 position_pct = self.settings.MAX_POSITION_PCT
+                if position_pct <= 0:
+                    position_pct = 20.0 if effective_balance < 8000 else 15.0
                 max_position = effective_balance * (position_pct / 100)
                 total_contracts = max(1, int(max_position / cost_per_contract))
 
@@ -1412,7 +1424,7 @@ class PaperTrader:
                     signal.exit_by,
                     expiry_date,
                     strategy,
-                    supabase_alert_id,
+                    None,  # supabase_alert_id (deprecated)
                     now,
                 ),
             )
@@ -1457,6 +1469,10 @@ class PaperTrader:
                 "total_cost": total_cost,
                 "balance": new_balance,
             }
+
+            # Dual-write to PostgreSQL (fire-and-forget, never blocks trading)
+            if getattr(self.settings, "ENABLE_POSTGRES", False):
+                _fire_and_forget(self._pg_write_trade_open(trade_id, signal, trade_info))
 
             # Update in-memory GFV tracker (before Webull call so it's counted immediately)
             actual_cost = trade_info["contracts"] * trade_info["premium"] * 100
@@ -1711,31 +1727,6 @@ class PaperTrader:
                 await self._commit_with_retry(
                     conn, f"webull order ID for trade #{trade_id}"
                 )
-                # Supabase: record fill (fire-and-forget)
-                if self.supabase:
-                    # Read alert_id from the trade we just inserted
-                    try:
-                        cursor2 = await conn.execute(
-                            "SELECT supabase_alert_id FROM paper_trades WHERE id = ?",
-                            (trade_id,),
-                        )
-                        row = await cursor2.fetchone()
-                        s_alert_id = row[0] if row else None
-                    except Exception:
-                        s_alert_id = None
-                    if s_alert_id:
-                        actual_fill = fill_price or trade_info["premium"]
-                        signal_prem = trade_info.get("signal_premium") or trade_info["premium"]
-                        slippage = ((actual_fill - signal_prem) / signal_prem * 100) if signal_prem > 0 else None
-                        _fire_and_forget(self.supabase.record_fill(
-                            alert_id=s_alert_id,
-                            broker_order_id=str(result.order_id or result.client_order_id or trade_id),
-                            fill_price=actual_fill,
-                            fill_quantity=trade_info["contracts"],
-                            strike=trade_info["strike"],
-                            slippage_pct=slippage,
-                            nbbo_at_order=nbbo_at_order,
-                        ))
             else:
                 logger.error(
                     f"WEBULL ENTRY FAILED: {trade_info['ticker']} — {result.error} "
@@ -2265,36 +2256,11 @@ class PaperTrader:
         )
         return signal
 
-    async def evaluate_and_trade(self, signal: TradeSignal, signal_id: int) -> dict | None:
+    async def evaluate_and_trade(
+        self, signal: TradeSignal, signal_id: int, ml_confidence: float | None = None,
+    ) -> dict | None:
         """Evaluate a signal through the entry pipeline and open a paper trade if approved."""
-
-        # Supabase: look up alert_id for this signal (non-blocking)
-        # Single attempt + one retry after 2s if not found (scanner may lag behind Discord)
-        supabase_alert_id = None
-        supabase_conviction = None
-        if self.supabase and self.supabase.enabled:
-            direction = "bearish" if signal.direction == Direction.PUT else "bullish"
-            try:
-                alert = await self.supabase.lookup_alert(signal.ticker, direction)
-                if not alert:
-                    # Scanner may fire slightly after Discord — brief retry
-                    await asyncio.sleep(2)
-                    alert = await self.supabase.lookup_alert(signal.ticker, direction)
-                if alert:
-                    supabase_alert_id = alert.get("alert_id")
-                    supabase_conviction = alert.get("conviction_0_100")
-                    logger.info(
-                        f"[SupabaseBrain] {signal.ticker}: "
-                        f"alert_id={str(supabase_alert_id)[:8] if supabase_alert_id else '?'}... "
-                        f"conviction={supabase_conviction}"
-                    )
-            except Exception as exc:
-                logger.debug(f"[SupabaseBrain] Alert lookup failed (proceeding): {exc}")
-            if not supabase_alert_id:
-                logger.info(
-                    f"[SupabaseBrain] {signal.ticker}: no alert_id found "
-                    f"(decision logging will be skipped for this signal)"
-                )
+        self._current_ml_confidence = ml_confidence
 
         # Daily circuit breaker: stop trading if today's realized + unrealized losses exceed threshold.
         # Includes open-trade unrealized P&L so a string of underwater positions triggers the breaker.
@@ -2438,6 +2404,22 @@ class PaperTrader:
             except Exception as exc:
                 logger.warning(f"Failed to init candle cache for momentum gate: {exc}")
 
+        # Compute SPY change from open for PUT market direction gate
+        spy_change_from_open = None
+        if candle_cache:
+            try:
+                spy_data = await asyncio.wait_for(
+                    candle_cache.get_candle_data("SPY"), timeout=10,
+                )
+                spy_bars = spy_data.get("5m", []) if spy_data else []
+                if spy_bars and len(spy_bars) >= 2:
+                    spy_open = spy_bars[0].get("open", 0)
+                    spy_last = spy_bars[-1].get("close", 0)
+                    if spy_open > 0:
+                        spy_change_from_open = (spy_last / spy_open - 1) * 100
+            except (asyncio.TimeoutError, Exception):
+                pass  # fail-open: allow PUTs if we can't get SPY data
+
         ctx = {
             "signal": signal,
             "settings": self.settings,
@@ -2449,6 +2431,7 @@ class PaperTrader:
             "current_price": current_underlying,
             "webull_executor": self.webull_executor,
             "candle_cache": candle_cache,
+            "spy_change_from_open": spy_change_from_open,
         }
         result = await run_entry_pipeline(ctx)
 
@@ -2461,15 +2444,6 @@ class PaperTrader:
                 self.db_path, signal.ticker, "pipeline_rejected",
                 "; ".join(result.failure_reasons),
             )
-            # Supabase: record skip decision (fire-and-forget)
-            if self.supabase and supabase_alert_id:
-                _fire_and_forget(self.supabase.record_skip(
-                    alert_id=supabase_alert_id,
-                    failure_reasons=result.failure_reasons,
-                    signal_score=signal.score,
-                    conviction=supabase_conviction,
-                    intended_strike=signal.strike,
-                ))
             return None
 
         # Handle signal flip: close opposite-direction position before opening new
@@ -2519,19 +2493,8 @@ class PaperTrader:
 
         trade_info = await self._open_single_trade(
             signal, signal_id, strategy="B",
-            supabase_alert_id=supabase_alert_id,
             nbbo_at_order=nbbo_at_order,
         )
-
-        # Supabase: record execution decision (fire-and-forget)
-        if self.supabase and supabase_alert_id and trade_info:
-            _fire_and_forget(self.supabase.record_executed(
-                alert_id=supabase_alert_id,
-                contracts=trade_info.get("contracts", 0),
-                intended_contracts=trade_info.get("contracts", 0),
-                strike=trade_info.get("strike"),
-                conviction=supabase_conviction,
-            ))
 
         return trade_info
 
@@ -2883,18 +2846,14 @@ class PaperTrader:
                 f"| PnL: ${pnl:+.2f} ({pnl_pct:+.1f}%) | Bal: ${new_balance:.2f}"
             )
 
-            # Supabase: record close (fire-and-forget)
-            s_alert_id = trade.get("supabase_alert_id")
-            if self.supabase and s_alert_id and trade.get("webull_order_id"):
-                peak_prem = trade.get("mfe_premium")
-                _fire_and_forget(self.supabase.record_close(
-                    alert_id=s_alert_id,
-                    close_price=actual_exit,
-                    exit_reason=reason,
-                    pnl_pct=pnl_pct,
-                    pnl_usd=pnl,
-                    hold_minutes=duration_minutes,
-                    peak_premium=peak_prem,
+            # Dual-write close to PostgreSQL (fire-and-forget)
+            if getattr(self.settings, "ENABLE_POSTGRES", False):
+                _fire_and_forget(self._pg_write_trade_close(
+                    trade_id, actual_exit, reason, pnl, pnl_pct,
+                    duration_minutes or 0,
+                    trade.get("exit_source", "ai"),
+                    trade.get("mfe_premium"),
+                    trade.get("peak_gain_pct"),
                 ))
 
             return {
@@ -2905,6 +2864,52 @@ class PaperTrader:
                 "reason": reason,
                 "balance": new_balance,
             }
+
+    # ------------------------------------------------------------------
+    # PostgreSQL dual-write helpers (Phase 1 — fire-and-forget)
+    # ------------------------------------------------------------------
+
+    async def _pg_write_trade_open(self, sqlite_id: int, signal, trade_info: dict) -> None:
+        from options_owl.db import postgres as pg
+        agent_id = getattr(self.settings, "AGENT_ID", "") or "unknown"
+        await pg.write_trade_open(agent_id, sqlite_id, {
+            "signal_id": getattr(signal, "id", None),
+            "ticker": signal.ticker,
+            "direction": signal.direction.value,
+            "sentiment": signal.sentiment.value if hasattr(signal.sentiment, "value") else str(signal.sentiment),
+            "score": signal.score,
+            "strength": signal.strength.value if hasattr(signal.strength, "value") else str(signal.strength),
+            "bot_source": signal.bot_source.value if hasattr(signal.bot_source, "value") else str(signal.bot_source),
+            "entry_price": signal.entry_price,
+            "strike": signal.strike,
+            "option_type": trade_info.get("option_type", "call"),
+            "contracts": trade_info["contracts"],
+            "premium_per_contract": trade_info["premium"],
+            "total_cost": trade_info["total_cost"],
+            "target_1": signal.target_1,
+            "target_2": signal.target_2,
+            "target_3": getattr(signal, "target_3", None),
+            "target_4": getattr(signal, "target_4", None),
+            "target_5": getattr(signal, "target_5", None),
+            "stop_price": signal.stop_price,
+            "exit_by": signal.exit_by,
+            "expiry_date": trade_info.get("expiry_date"),
+            "signal_premium": trade_info.get("signal_premium"),
+            "opened_at": datetime.now(),
+        })
+
+    async def _pg_write_trade_close(
+        self, sqlite_id: int, exit_premium: float, reason: str,
+        pnl: float, pnl_pct: float, hold_minutes: float,
+        exit_source: str, peak_premium: float | None, peak_gain_pct: float | None,
+    ) -> None:
+        from options_owl.db import postgres as pg
+        agent_id = getattr(self.settings, "AGENT_ID", "") or "unknown"
+        await pg.write_trade_close(
+            agent_id, sqlite_id, exit_premium, reason,
+            pnl, pnl_pct, hold_minutes, exit_source,
+            peak_premium, peak_gain_pct,
+        )
 
     async def dca_add_contracts(
         self,

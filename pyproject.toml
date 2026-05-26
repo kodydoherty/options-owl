@@ -20,6 +20,9 @@ dependencies = [
     "websockets>=13.0",
     "lightgbm>=4.0",
     "scikit-learn>=1.4",
+    "asyncpg>=0.29",
+    "numpy>=1.26",
+    "redis>=5.0",
 ]
 
 [project.optional-dependencies]

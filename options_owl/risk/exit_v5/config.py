@@ -78,19 +78,26 @@ class V5Config:
     # Gate 3: Profit target — index 0DTE only (take gains at 30%)
     profit_target_index_0dte_pct: float = 30.0
 
+    # Gate 3 alt: General profit target — fires for ALL trades (0 = disabled)
+    # Used by PUT scalp strategy: take gains at 50%
+    profit_target_general_pct: float = 0.0
+
     # Gate 4: Scalp trail — peaked +20%, faded to <60% of peak
     scalp_peak_threshold_pct: float = 20.0
     scalp_fade_ratio: float = 0.6
     scalp_confirm_threshold: float = 0.2
 
     # Gate 5: Checkpoint cut — 0DTE only (uses underlying_against_threshold from gate 6)
-    checkpoint_drop_pct: float = 30.0
+    # Backtested 2026-05-22: 15% checkpoint optimal with scalp+runner combo
+    checkpoint_drop_pct: float = 15.0
 
     # Gate 6: Graduated stop — underlying-based, DTE-aware
-    tight_stop_0dte_pct: float = 35.0
-    backstop_0dte_pct: float = 65.0
-    tight_stop_multiday_pct: float = 52.0
-    backstop_multiday_pct: float = 75.0
+    # Backtested 2026-05-22: 15/30 tight/backstop optimal (was 35/65)
+    # Rationale: ML entries target precise timing, cut wrong trades fast
+    tight_stop_0dte_pct: float = 15.0
+    backstop_0dte_pct: float = 30.0
+    tight_stop_multiday_pct: float = 30.0
+    backstop_multiday_pct: float = 50.0
     underlying_against_threshold: float = 0.5
 
     # Gate 7: Soft trail — 15-50% peak band, keep 60% of gains
@@ -150,8 +157,8 @@ class V5Config:
     early_pop_fade_pct: float = 10.0            # premium must fade this % from peak
     early_pop_check_after_min: float = 12.0     # evaluate the pattern at this elapsed time
     early_pop_min_peak_gain_pct: float = 3.0    # peak must be at least +N% above entry
-    early_pop_backstop_0dte_pct: float = 35.0   # tighter backstop when pattern detected (0DTE)
-    early_pop_backstop_multiday_pct: float = 50.0  # tighter backstop (multi-day)
+    early_pop_backstop_0dte_pct: float = 25.0   # tighter backstop when pattern detected (0DTE)
+    early_pop_backstop_multiday_pct: float = 40.0  # tighter backstop (multi-day)
 
     def get_adaptive_tiers(self, category: TickerCategory) -> tuple[AdaptiveTier, ...]:
         """Get adaptive trail tiers for a ticker category."""
@@ -178,64 +185,55 @@ _default = V5Config
 TICKER_CONFIGS: dict[str, V5Config] = {
     # NVDA: EARLY_PROFIT — take gains at 20%, keep 70% of peak in soft trail
     "NVDA": V5Config(
-        profit_target_index_0dte_pct=20.0,
+        profit_target_general_pct=20.0,
         soft_trail_keep_pct=0.70,
     ),
-    # GOOGL: WIDE_STOP — 45%/75% stops, 40% checkpoint to avoid premature stop-outs
+    # GOOGL: WIDE_STOP — wider than default to avoid premature stop-outs
     "GOOGL": V5Config(
-        tight_stop_0dte_pct=45.0,
-        backstop_0dte_pct=75.0,
-        checkpoint_drop_pct=40.0,
+        tight_stop_0dte_pct=20.0,
+        backstop_0dte_pct=40.0,
+        checkpoint_drop_pct=20.0,
     ),
     # TSLA: LONG_GRACE — 8 min grace to let momentum develop
     "TSLA": V5Config(grace_period_min=8.0),
-    # IWM: WIDE_STOP — same as GOOGL, wider room for ETF swings
+    # IWM: WIDE_STOP — wider room for ETF swings
     "IWM": V5Config(
-        tight_stop_0dte_pct=45.0,
-        backstop_0dte_pct=75.0,
-        checkpoint_drop_pct=40.0,
+        tight_stop_0dte_pct=20.0,
+        backstop_0dte_pct=40.0,
+        checkpoint_drop_pct=20.0,
     ),
     # QQQ: LONG_GRACE — 8 min grace
     "QQQ": V5Config(grace_period_min=8.0),
-    # META: DEFENSIVE — tight 25%/50% stops, faster theta bleed
+    # META: DEFENSIVE — tighter adaptive trails, faster theta bleed
     "META": V5Config(
-        tight_stop_0dte_pct=25.0,
-        backstop_0dte_pct=50.0,
-        checkpoint_drop_pct=20.0,
         adaptive_highvol_tiers=(
             AdaptiveTier(400, 25), AdaptiveTier(150, 40), AdaptiveTier(40, 35),
         ),
         theta_bleed_min=90.0,
         theta_bleed_drop_pct=20.0,
     ),
-    # AAPL: DEFENSIVE — same tight stops as META
+    # AAPL: DEFENSIVE — tighter adaptive trails, faster theta bleed
     "AAPL": V5Config(
-        tight_stop_0dte_pct=25.0,
-        backstop_0dte_pct=50.0,
-        checkpoint_drop_pct=20.0,
-        adaptive_highvol_tiers=(
+        adaptive_standard_tiers=(
             AdaptiveTier(400, 25), AdaptiveTier(150, 40), AdaptiveTier(40, 35),
         ),
         theta_bleed_min=90.0,
         theta_bleed_drop_pct=20.0,
     ),
-    # AMZN: TIGHT_TRAIL — tighter adaptive trail tiers
+    # AMZN: TIGHT_TRAIL — tighter adaptive trail tiers (AMZN is STANDARD category)
     "AMZN": V5Config(
-        adaptive_highvol_tiers=(
-            AdaptiveTier(400, 25), AdaptiveTier(150, 40), AdaptiveTier(40, 35),
-        ),
         adaptive_standard_tiers=(
             AdaptiveTier(300, 20), AdaptiveTier(100, 30), AdaptiveTier(30, 25),
         ),
     ),
     # AVGO: EARLY_PROFIT — same as NVDA
     "AVGO": V5Config(
-        profit_target_index_0dte_pct=20.0,
+        profit_target_general_pct=20.0,
         soft_trail_keep_pct=0.70,
     ),
     # MSFT: EARLY_PROFIT — same as NVDA
     "MSFT": V5Config(
-        profit_target_index_0dte_pct=20.0,
+        profit_target_general_pct=20.0,
         soft_trail_keep_pct=0.70,
     ),
     # MSTR: TIGHT+QUICK — tight trail + quick scalp + higher keep
@@ -250,15 +248,58 @@ TICKER_CONFIGS: dict[str, V5Config] = {
 }
 
 
-def get_ticker_config(ticker: str, use_per_ticker: bool = False) -> V5Config:
+def get_ticker_config(
+    ticker: str,
+    use_per_ticker: bool = False,
+    option_type: str = "call",
+) -> V5Config:
     """Return per-ticker V5Config if enabled, else default.
 
     When use_per_ticker is True, looks up the ticker in TICKER_CONFIGS.
     Unknown tickers fall through to default V5Config.
+
+    PUT trades use PUT_SCALP_CONFIG — simple fixed target/stop/time exits
+    optimized for cheap 0DTE PUT scalps (backtested over 3+ years).
     """
+    if option_type.lower() == "put":
+        return PUT_SCALP_CONFIG
     if use_per_ticker and ticker in TICKER_CONFIGS:
         return TICKER_CONFIGS[ticker]
     return V5Config()
+
+
+# ── PUT Scalp Config ─────────────────────────────────────────────────────────
+# Backtested (3+ years): +50% target, -60% stop, 60min max hold.
+# Cheap premiums ($0.05-$0.50) in afternoon (1:00-2:30 PM) slots.
+# Simple exits — no adaptive trails or soft trails needed.
+
+PUT_SCALP_CONFIG = V5Config(
+    # Grace period — shorter for PUTs (premium moves fast)
+    grace_period_min=3.0,
+
+    # Gate 3: General profit target at 50% (fires for all PUTs)
+    profit_target_general_pct=50.0,
+    profit_target_index_0dte_pct=50.0,
+
+    # Gate 6: Hard stop at 60% (both tight and backstop same = simple stop)
+    tight_stop_0dte_pct=60.0,
+    backstop_0dte_pct=60.0,
+    tight_stop_multiday_pct=60.0,
+    backstop_multiday_pct=60.0,
+
+    # Gate 9: Max hold time = 60 minutes, exit regardless of P&L
+    theta_bleed_min=60.0,
+    theta_bleed_drop_pct=-100.0,  # always true (any P&L triggers at 60min)
+    theta_timer_minutes=60.0,
+    theta_timer_loss_pct=-100.0,
+
+    # Disable complex trails — PUTs use simple target/stop
+    scalp_peak_threshold_pct=999.0,    # effectively disabled
+    soft_trail_band_low_pct=999.0,     # effectively disabled
+    adaptive_highvol_tiers=(AdaptiveTier(9999, 99),),
+    adaptive_index_tiers=(AdaptiveTier(9999, 99),),
+    adaptive_standard_tiers=(AdaptiveTier(9999, 99),),
+)
 
 
 # Backward compat alias

@@ -238,10 +238,13 @@ async def polygon_option_chain(
         params["strike_price"] = strike
 
     contracts: list[dict] = []
+    max_pages = 20  # safety limit to prevent infinite pagination
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            while url:
+            page = 0
+            while url and page < max_pages:
+                page += 1
                 resp = await client.get(url, params=params)
                 if resp.status_code != 200:
                     logger.debug(f"Polygon chain {resp.status_code} for {ticker}")

@@ -533,7 +533,12 @@ class MarketDataStream:
     @staticmethod
     def _seconds_until_market_open() -> float:
         """Seconds until next market open (9:25 AM ET). Returns 0 if market is open."""
-        et_now = datetime.now(timezone(timedelta(hours=-4)))
+        try:
+            from zoneinfo import ZoneInfo
+            _et = ZoneInfo("America/New_York")
+        except ImportError:
+            _et = timezone(timedelta(hours=-5))
+        et_now = datetime.now(_et)
         open_time = et_now.replace(hour=9, minute=25, second=0, microsecond=0)
 
         # If weekend, advance to Monday

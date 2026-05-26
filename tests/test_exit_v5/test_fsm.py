@@ -71,8 +71,8 @@ class TestFSMStateTransitions:
         """Grace still holds on moderate losses below backstop."""
         fsm = ExitFSM(V5Config())
         state = _make_state(entry_premium=2.00)
-        # 2min into grace, premium at $1.00 = -50% < 65% backstop
-        result = fsm.evaluate(state, 1.00, 0.95, 1.05, _now_et(10, 2))
+        # 2min into grace, premium at $1.60 = -20% < 30% backstop
+        result = fsm.evaluate(state, 1.60, 1.55, 1.65, _now_et(10, 2))
         assert not result.should_exit
 
     def test_grace_to_developing(self):
@@ -207,20 +207,20 @@ class TestGraduatedStops:
         assert result.should_exit
         assert result.reason == ExitReason.HARD_STOP
 
-    def test_0dte_holds_at_50pct_not_against(self):
-        """0DTE: 50% drop but underlying not against → hold."""
+    def test_0dte_holds_at_moderate_drop_not_against(self):
+        """0DTE: 20% drop but underlying not against → hold."""
         fsm = ExitFSM(V5Config())
         state = _make_state(entry_underlying_price=100.0)
-        result = fsm.evaluate(state, 0.50, 0.50, 0.55, _now_et(10, 10),
+        result = fsm.evaluate(state, 0.80, 0.80, 0.85, _now_et(10, 10),
                               current_underlying=100.1)
         assert not result.should_exit
 
     def test_multiday_wider_stops(self):
-        """Multi-day uses wider stops (52% tight, 75% backstop)."""
+        """Multi-day uses wider stops (30% tight, 50% backstop)."""
         fsm = ExitFSM(V5Config())
         state = _make_state(entry_underlying_price=100.0, dte=1, expiry_date="2026-04-29")
-        # down 40%, underlying against → 40 < 52% tight → hold
-        result = fsm.evaluate(state, 0.60, 0.60, 0.65, _now_et(10, 10),
+        # down 25%, underlying against → 25 < 30% tight → hold
+        result = fsm.evaluate(state, 0.75, 0.75, 0.80, _now_et(10, 10),
                               current_underlying=99.4)
         assert not result.should_exit
 
@@ -229,10 +229,11 @@ class TestGraduatedStops:
 
 class TestCheckpointCut:
 
-    def test_fires_when_down_30_and_against(self):
+    def test_fires_when_down_15_and_against(self):
         fsm = ExitFSM(V5Config())
         state = _make_state(entry_underlying_price=100.0)
-        result = fsm.evaluate(state, 0.68, 0.68, 0.75, _now_et(10, 20),
+        # down 18% with underlying against → fires checkpoint (>15%)
+        result = fsm.evaluate(state, 0.82, 0.82, 0.85, _now_et(10, 20),
                               current_underlying=99.4)
         assert result.should_exit
         assert result.reason == ExitReason.CHECKPOINT_CUT
@@ -240,14 +241,16 @@ class TestCheckpointCut:
     def test_holds_when_not_against(self):
         fsm = ExitFSM(V5Config())
         state = _make_state(entry_underlying_price=100.0)
-        result = fsm.evaluate(state, 0.68, 0.68, 0.75, _now_et(10, 20),
+        # down 18% but underlying not against → hold
+        result = fsm.evaluate(state, 0.82, 0.82, 0.85, _now_et(10, 20),
                               current_underlying=100.1)
         assert not result.should_exit
 
     def test_disabled_for_multiday(self):
         fsm = ExitFSM(V5Config())
         state = _make_state(entry_underlying_price=100.0, dte=1, expiry_date="2026-04-29")
-        result = fsm.evaluate(state, 0.50, 0.50, 0.55, _now_et(10, 20),
+        # down 20%, underlying against → checkpoint disabled for multiday, but below backstop (50%)
+        result = fsm.evaluate(state, 0.80, 0.80, 0.85, _now_et(10, 20),
                               current_underlying=99.0)
         assert not result.should_exit
 
@@ -302,8 +305,15 @@ class TestAdaptiveTrail:
 class TestThetaExit:
 
     def test_0dte_bleed_fires(self):
-        """0DTE: theta bleed fires at 120min+ and down 30%."""
-        fsm = ExitFSM(V5Config())
+        """0DTE: theta bleed fires at 120min+ and down but below backstop.
+
+        Note: with tight stops (30% backstop), theta_bleed can only fire
+        when the loss is gradual enough to not trigger backstop earlier.
+        Using a custom config with wider backstop to isolate the test.
+        """
+        from dataclasses import replace as dc_replace
+        wide_cfg = dc_replace(V5Config(), backstop_0dte_pct=65.0)
+        fsm = ExitFSM(wide_cfg)
         state = _make_state(entry_underlying_price=100.0)
         result = fsm.evaluate(state, 0.68, 0.68, 0.75, _now_et(12, 5),
                               current_underlying=100.1)

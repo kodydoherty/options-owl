@@ -316,6 +316,7 @@ async def _persist_rows(db_path: Path, ticker: str, rows: list[dict]) -> int:
     try:
         async with aiosqlite.connect(db_path) as conn:
             await conn.execute("PRAGMA journal_mode=WAL")
+            await conn.execute("PRAGMA busy_timeout=5000")
             # Upsert contract metadata (one row per contract, first-seen only)
             await conn.executemany(
                 """
@@ -375,6 +376,46 @@ async def _persist_rows(db_path: Path, ticker: str, rows: list[dict]) -> int:
                 ],
             )
             await conn.commit()
+
+        # Fire-and-forget: also write to PostgreSQL for future backtesting
+        try:
+            from options_owl.db import postgres as pg
+            if pg.is_connected():
+                # Write option ticks
+                option_ticks = [
+                    {
+                        "ticker": ticker,
+                        "option_type": r["option_type"],
+                        "strike": r["strike"],
+                        "expiry_date": r["expiry_date"],
+                        "bid": r["bid"],
+                        "ask": r["ask"],
+                        "mid": r["midpoint"],
+                        "last": r["last_trade_price"],
+                        "volume": r["day_volume"],
+                        "open_interest": r["open_interest"],
+                        "iv": r["implied_volatility"],
+                        "delta": r["delta"],
+                        "gamma": r["gamma"],
+                        "theta": r["theta"],
+                        "vega": r["vega"],
+                        "underlying_price": r["underlying_price"],
+                    }
+                    for r in rows
+                ]
+                await pg.write_option_ticks_batch(option_ticks)
+
+                # Write stock tick (one per ticker per cycle, from first row)
+                if rows:
+                    await pg.write_stock_tick(
+                        ticker=ticker,
+                        price=rows[0]["underlying_price"],
+                        bid=0, ask=0,
+                        volume=0, vwap=rows[0].get("day_vwap", 0),
+                    )
+        except Exception as exc:
+            logger.debug(f"PG tick write failed for {ticker}: {exc}")
+
         return len(rows)
     except Exception as exc:
         logger.error(f"DB persist failed for {ticker} ({len(rows)} rows): {exc}")
@@ -395,7 +436,7 @@ async def _harvest_ticker(
 ) -> int:
     """Fetch + parse + persist one ticker. Returns snapshot count."""
     async with semaphore:
-        underlying_price = _get_underlying_price(ticker)
+        underlying_price = await asyncio.to_thread(_get_underlying_price, ticker)
         if underlying_price is None:
             logger.warning(f"{ticker}: no underlying price, skipping")
             return 0
@@ -440,6 +481,15 @@ async def run_harvester() -> None:
         sys.exit(2)
 
     await init_db(DB_PATH)
+
+    # Initialize PostgreSQL for tick data capture (fire-and-forget writes)
+    if os.environ.get("ENABLE_POSTGRES", "").lower() == "true":
+        try:
+            from options_owl.db import postgres as pg
+            await pg.init_pool(os.environ.get("DATABASE_URL"))
+            logger.info("PostgreSQL connected — tick data capture enabled")
+        except Exception as exc:
+            logger.warning(f"PostgreSQL init failed (harvester will continue without PG): {exc}")
 
     # Initialize candle collector (shares the same DB)
     # Connects to wss://socket.polygon.io/stocks for real-time minute bars.

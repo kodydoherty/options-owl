@@ -631,16 +631,13 @@ class TestHarvesterSafety:
         source = inspect.getsource(mod)
         assert "PRAGMA journal_mode=WAL" in source
 
-    def test_docker_compose_harvester_db_readonly(self):
-        """Agent containers mount harvester DB as read-only."""
+    def test_docker_compose_harvester_db_rw_for_wal(self):
+        """Agent containers mount harvester DB as :rw for WAL sidecar files."""
         from pathlib import Path
 
         compose = Path("/Users/kody/dev/options-owl/docker-compose.yml").read_text()
-        # Each agent should have :ro mount of harvester journal
-        assert "shared_harvester:ro" in compose
-        # Harvester itself should NOT have :ro on its own journal
-        harvester_section = compose[compose.find("owlet-harvester:"):]
-        assert ":ro" not in harvester_section.split("volumes:")[1].split("\n")[1]
+        # Each agent should have :rw mount of harvester journal (WAL needs write for -shm/-wal)
+        assert "shared_harvester:rw" in compose
 
 
 # ---------------------------------------------------------------------------

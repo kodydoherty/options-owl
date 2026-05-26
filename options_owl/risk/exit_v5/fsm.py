@@ -43,6 +43,7 @@ from options_owl.risk.exit_v5.gates import (
     check_eod_cutoff,
     check_graduated_stop,
     check_profit_target,
+    check_scalp_target,
     check_scalp_trail,
     check_scaleout,
     check_sideways_scalp,
@@ -321,6 +322,23 @@ class ExitFSM:
             )
             if action:
                 state.scaled_out = True
+                return action
+
+        # Gate 3.8: Scalp target — take +25% profit unless confirmed runner
+        # Uses candle data to avoid nuking genuine runners
+        if self._settings and getattr(self._settings, "ENABLE_SCALP_TARGET", False):
+            action = check_scalp_target(
+                gain=gain,
+                peak_gain=peak_gain,
+                elapsed_min=elapsed_min,
+                underlying_confirms=underlying_confirms,
+                candle_data=candle_data,
+                option_type=state.option_type,
+                scalp_target_pct=getattr(self._settings, "SCALP_TARGET_PCT", 25.0),
+                runner_confirm_pct=getattr(self._settings, "SCALP_RUNNER_CONFIRM_PCT", 40.0),
+                debug=debug,
+            )
+            if action:
                 return action
 
         # Gate 4: Scalp trail (underlying-aware)

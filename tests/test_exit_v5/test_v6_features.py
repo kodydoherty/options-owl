@@ -85,7 +85,7 @@ class TestPerTickerConfig:
 
     def test_known_ticker_returns_custom_config(self):
         cfg = get_ticker_config("NVDA", use_per_ticker=True)
-        assert cfg.profit_target_index_0dte_pct == 20.0
+        assert cfg.profit_target_general_pct == 20.0  # NVDA is HIGH_VOL, uses general target
         assert cfg.soft_trail_keep_pct == 0.70
 
     def test_unknown_ticker_returns_default(self):
@@ -104,8 +104,9 @@ class TestPerTickerConfig:
 
     def test_meta_has_defensive_config(self):
         cfg = get_ticker_config("META", use_per_ticker=True)
-        assert cfg.tight_stop_0dte_pct == 25.0
-        assert cfg.backstop_0dte_pct == 50.0
+        # META uses default tight/backstop (15/30) + faster theta bleed
+        assert cfg.tight_stop_0dte_pct == 15.0
+        assert cfg.backstop_0dte_pct == 30.0
         assert cfg.theta_bleed_min == 90.0
 
     def test_tsla_has_long_grace(self):
@@ -114,8 +115,8 @@ class TestPerTickerConfig:
 
     def test_googl_has_wide_stop(self):
         cfg = get_ticker_config("GOOGL", use_per_ticker=True)
-        assert cfg.tight_stop_0dte_pct == 45.0
-        assert cfg.backstop_0dte_pct == 75.0
+        assert cfg.tight_stop_0dte_pct == 20.0
+        assert cfg.backstop_0dte_pct == 40.0
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -514,7 +515,7 @@ class TestMonitorBridgeV6:
 
         # NVDA should get EARLY_PROFIT config
         fsm = bridge._get_fsm("NVDA")
-        assert fsm.cfg.profit_target_index_0dte_pct == 20.0
+        assert fsm.cfg.profit_target_general_pct == 20.0  # NVDA is HIGH_VOL, uses general target
         assert fsm.cfg.soft_trail_keep_pct == 0.70
 
         # Unknown ticker should get default
@@ -557,6 +558,120 @@ class TestMonitorBridgeV6:
         from options_owl.risk.exit_v5.monitor_bridge import _REASON_MAP
         assert ExitReason.BREAKEVEN_RATCHET in _REASON_MAP
         assert ExitReason.SCALEOUT in _REASON_MAP
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 7b. PUT Scalp Config
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class TestPutScalpConfig:
+    """Tests for PUT scalp configuration — simple target/stop/time exits."""
+
+    def test_get_ticker_config_returns_put_scalp_for_puts(self):
+        from options_owl.risk.exit_v5.config import PUT_SCALP_CONFIG
+        cfg = get_ticker_config("SPY", use_per_ticker=True, option_type="put")
+        assert cfg is PUT_SCALP_CONFIG
+
+    def test_get_ticker_config_returns_call_config_for_calls(self):
+        cfg = get_ticker_config("NVDA", use_per_ticker=True, option_type="call")
+        assert cfg is TICKER_CONFIGS["NVDA"]
+
+    def test_put_scalp_profit_target_at_50pct(self):
+        from options_owl.risk.exit_v5.config import PUT_SCALP_CONFIG
+        assert PUT_SCALP_CONFIG.profit_target_general_pct == 50.0
+
+    def test_put_scalp_stop_at_60pct(self):
+        from options_owl.risk.exit_v5.config import PUT_SCALP_CONFIG
+        assert PUT_SCALP_CONFIG.backstop_0dte_pct == 60.0
+        assert PUT_SCALP_CONFIG.tight_stop_0dte_pct == 60.0
+
+    def test_put_scalp_max_hold_60min(self):
+        from options_owl.risk.exit_v5.config import PUT_SCALP_CONFIG
+        assert PUT_SCALP_CONFIG.theta_bleed_min == 60.0
+
+    def test_put_scalp_fsm_exits_at_profit_target(self):
+        """PUT at +50% gain should trigger profit target."""
+        from options_owl.risk.exit_v5.config import PUT_SCALP_CONFIG
+        fsm = ExitFSM(PUT_SCALP_CONFIG)
+        state = TradeState(
+            trade_id=1, ticker="SPY", option_type="put",
+            entry_premium=0.20, entry_time=datetime(2026, 1, 5, 10, 0),
+            contracts=5, entry_underlying_price=500.0, dte=0,
+        )
+        now = datetime(2026, 1, 5, 14, 10)  # 10min into trade (past grace)
+        action = fsm.evaluate(
+            state=state, current_premium=0.31,  # +55%
+            bid=0.29, ask=0.31, now_et=now,
+            current_underlying=499.0, minutes_to_close=50.0,
+        )
+        assert action.should_exit
+        assert action.reason == ExitReason.PROFIT_TARGET
+
+    def test_put_scalp_fsm_exits_at_stop(self):
+        """PUT at -60% loss should trigger graduated stop."""
+        from options_owl.risk.exit_v5.config import PUT_SCALP_CONFIG
+        fsm = ExitFSM(PUT_SCALP_CONFIG)
+        state = TradeState(
+            trade_id=2, ticker="SPY", option_type="put",
+            entry_premium=0.20, entry_time=datetime(2026, 1, 5, 10, 0),
+            contracts=5, entry_underlying_price=500.0, dte=0,
+        )
+        now = datetime(2026, 1, 5, 14, 10)  # past grace
+        action = fsm.evaluate(
+            state=state, current_premium=0.08,  # -60%
+            bid=0.07, ask=0.09, now_et=now,
+            current_underlying=501.0, minutes_to_close=50.0,
+        )
+        assert action.should_exit
+        assert action.reason == ExitReason.HARD_STOP
+
+    def test_put_scalp_fsm_exits_at_max_hold(self):
+        """PUT held 60+ minutes should trigger theta bleed exit."""
+        from options_owl.risk.exit_v5.config import PUT_SCALP_CONFIG
+        fsm = ExitFSM(PUT_SCALP_CONFIG)
+        state = TradeState(
+            trade_id=3, ticker="SPY", option_type="put",
+            entry_premium=0.20, entry_time=datetime(2026, 1, 5, 13, 0),
+            contracts=5, entry_underlying_price=500.0, dte=0,
+        )
+        now = datetime(2026, 1, 5, 14, 5)  # 65 min into trade
+        action = fsm.evaluate(
+            state=state, current_premium=0.18,  # slightly down, not at stop
+            bid=0.17, ask=0.19, now_et=now,
+            current_underlying=500.5, minutes_to_close=55.0,
+        )
+        assert action.should_exit
+        assert action.reason == ExitReason.THETA_BLEED
+
+    def test_monitor_bridge_uses_put_config(self):
+        """Bridge should use PUT_SCALP_CONFIG for PUT trades."""
+        from options_owl.risk.exit_v5.config import PUT_SCALP_CONFIG
+        from options_owl.risk.exit_v5.monitor_bridge import V5MonitorBridge
+        settings = SimpleNamespace(
+            EXIT_ENGINE="v5",
+            ENABLE_V6_PER_TICKER_CONFIG=True,
+            ENABLE_V6_BREAKEVEN_RATCHET=False,
+            V6_BREAKEVEN_TRIGGER_PCT=20.0,
+            ENABLE_V6_SCALEOUT=False,
+            V6_SCALEOUT_GAIN_PCT=20.0,
+            V6_SCALEOUT_FRACTION=0.333,
+            V6_SCALEOUT_MIN_CONTRACTS=3,
+            ENABLE_V6_2PM_TIGHTEN=False,
+            V6_2PM_TRAIL_TIGHTEN_FACTOR=0.7,
+            V6_2PM_SOFT_TRAIL_BOOST=0.15,
+            ENABLE_V6_EARLY_POP_GATE=False,
+            ENABLE_V6_SIDEWAYS_SCALP=False,
+            ENABLE_SCALP_TARGET=False,
+            SCALP_TARGET_PCT=25.0,
+            SCALP_RUNNER_CONFIRM_PCT=40.0,
+        )
+        bridge = V5MonitorBridge(settings)
+        fsm = bridge._get_fsm("SPY", option_type="put")
+        assert fsm.cfg is PUT_SCALP_CONFIG
+        # CALL should NOT use PUT config
+        call_fsm = bridge._get_fsm("SPY", option_type="call")
+        assert call_fsm.cfg is not PUT_SCALP_CONFIG
 
 
 # ══════════════════════════════════════════════════════════════════════════

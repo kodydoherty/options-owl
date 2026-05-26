@@ -78,6 +78,13 @@ class SignalContext:
     tier5_calibration: TierResult | None = None
     score_total: int = 0
 
+    # Stage 3a: ML signal model
+    ml_confidence: float | None = None
+    ml_threshold: float | None = None
+    ml_is_signal: bool | None = None
+    ml_runner_score: float | None = None
+    ml_model_source: str = ""
+
     # Stage 3b: Alpha sources
     insider_activity: object | None = None  # InsiderActivity
     congress_activity: object | None = None  # CongressActivity
@@ -96,6 +103,9 @@ class SignalContext:
     # Stage 6: Output
     output_channel: str = ""
     output_timestamp: str = ""
+
+    # Recent outcomes (for regime detection)
+    recent_signal_outcomes: list[dict] | None = None
 
     # Rejection tracking
     rejection_reason: str = ""

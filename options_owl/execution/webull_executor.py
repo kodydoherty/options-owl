@@ -1153,8 +1153,8 @@ class WebullExecutor:
             return None
 
         # Depth quotes typically have askList/bidList arrays
-        bid_list = data.get("askList", data.get("ask_list", data.get("bids", [])))
-        ask_list = data.get("bidList", data.get("bid_list", data.get("asks", [])))
+        bid_list = data.get("bidList", data.get("bid_list", data.get("bids", [])))
+        ask_list = data.get("askList", data.get("ask_list", data.get("asks", [])))
 
         bid = 0.0
         ask = 0.0

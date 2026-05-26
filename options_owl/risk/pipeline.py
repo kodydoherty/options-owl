@@ -209,6 +209,235 @@ class BlockedTickerGate(EntryGate):
                            f"{ticker} not blocked")
 
 
+class PutTickerExclusionGate(EntryGate):
+    """Gate 0a: Block PUTs on historically unprofitable PUT tickers.
+
+    Backtested (3+ years): PLTR -$48K, AMD -$9K on PUTs.
+    These tickers are fine for CALLs but lose money on PUT scalps.
+    In bear mode (SPY down 0.5%+), all tickers are allowed for PUTs.
+    """
+
+    name = "put_ticker_exclusion"
+
+    async def evaluate(self, ctx: dict[str, Any]) -> GateOutcome:
+        signal = ctx["signal"]
+        settings = ctx["settings"]
+        from options_owl.models.signals import Direction
+
+        direction = getattr(signal, "direction", None)
+        if direction != Direction.PUT:
+            return GateOutcome(self.name, GateResult.PASS, "Not a PUT trade")
+
+        excluded_str = getattr(settings, "PUT_EXCLUDED_TICKERS", "")
+        excluded = {t.strip().upper() for t in excluded_str.split(",") if t.strip()}
+        ticker = getattr(signal, "ticker", "").upper()
+
+        if ticker not in excluded:
+            return GateOutcome(self.name, GateResult.PASS,
+                               f"{ticker} allowed for PUTs")
+
+        # Check bear mode — if SPY is down enough, allow all tickers
+        bear_threshold = getattr(settings, "PUT_BEAR_MODE_THRESHOLD", -0.5)
+        spy_change = ctx.get("spy_change_from_open")
+        if spy_change is not None and spy_change <= bear_threshold:
+            return GateOutcome(self.name, GateResult.PASS,
+                               f"Bear mode (SPY {spy_change:+.2f}%) — {ticker} PUT allowed")
+
+        return GateOutcome(self.name, GateResult.FAIL,
+                           f"{ticker} excluded from PUTs (backtest loser)")
+
+
+class PutMarketDirectionGate(EntryGate):
+    """Gate 0c: Only enter PUTs when market (SPY) is green.
+
+    Rationale: cheap PUTs on green days catch intraday reversals.
+    On red days, PUT premiums are already inflated (expensive entry).
+    When SPY dips into bear mode, the PutTickerExclusionGate expands
+    the ticker list — this gate is about entry timing, not bear mode.
+    """
+
+    name = "put_market_direction"
+
+    async def evaluate(self, ctx: dict[str, Any]) -> GateOutcome:
+        signal = ctx["signal"]
+        settings = ctx["settings"]
+        from options_owl.models.signals import Direction
+
+        direction = getattr(signal, "direction", None)
+        if direction != Direction.PUT:
+            return GateOutcome(self.name, GateResult.PASS, "Not a PUT trade")
+
+        if not getattr(settings, "ENABLE_PUT_MARKET_DIRECTION_GATE", True):
+            return GateOutcome(self.name, GateResult.SKIP, "PUT market gate disabled")
+
+        spy_change = ctx.get("spy_change_from_open")
+        if spy_change is None:
+            # No SPY data — allow (fail-open)
+            return GateOutcome(self.name, GateResult.PASS,
+                               "No SPY data available — allowing PUT")
+
+        min_pct = getattr(settings, "PUT_MARKET_UP_MIN_PCT", 0.0)
+        if spy_change >= min_pct:
+            return GateOutcome(self.name, GateResult.PASS,
+                               f"SPY {spy_change:+.2f}% (green) — PUT allowed")
+
+        # Bear mode override — if SPY is deeply red, PUTs should still fire
+        bear_threshold = getattr(settings, "PUT_BEAR_MODE_THRESHOLD", -0.5)
+        if spy_change <= bear_threshold:
+            return GateOutcome(self.name, GateResult.PASS,
+                               f"Bear mode (SPY {spy_change:+.2f}%) — PUT allowed")
+
+        return GateOutcome(self.name, GateResult.FAIL,
+                           f"SPY {spy_change:+.2f}% (red but not bear mode) — PUTs blocked")
+
+
+class DirectionalRegimeGate(EntryGate):
+    """Gate 0b: Confirm signal direction matches market regime using candle data.
+
+    Replaces the old blunt CallsOnlyGate with a dynamic check:
+    - PUTs require bearish candle confirmation (underlying dropping, RSI < 45)
+    - CALLs require bullish confirmation (underlying rising, RSI > 55)
+    - On regime mismatch, blocks the trade with a clear reason
+
+    This allows PUTs to trade during actual selloffs while blocking PUTs in bull markets,
+    and vice versa for CALLs.
+    """
+
+    name = "directional_regime"
+
+    async def evaluate(self, ctx: dict[str, Any]) -> GateOutcome:
+        settings = ctx["settings"]
+        if not getattr(settings, "ENABLE_DIRECTIONAL_REGIME", True):
+            return GateOutcome(self.name, GateResult.SKIP, "Directional regime disabled")
+
+        signal = ctx["signal"]
+        direction = getattr(signal, "direction", None)
+        if direction is None:
+            return GateOutcome(self.name, GateResult.SKIP, "No direction on signal")
+
+        from options_owl.models.signals import Direction
+        is_put = direction == Direction.PUT
+
+        # Try candle data for direction confirmation
+        candle_cache = ctx.get("candle_cache")
+        if candle_cache is None:
+            # No candle data — fall back to old CallsOnlyGate behavior
+            return self._fallback_calls_only(signal, settings, is_put)
+
+        try:
+            data = await asyncio.wait_for(
+                candle_cache.get_candle_data(signal.ticker), timeout=15,
+            )
+        except (asyncio.TimeoutError, Exception):
+            return self._fallback_calls_only(signal, settings, is_put)
+
+        indicators = data.get("indicators", {})
+        tf_5m = indicators.get("5m", {})
+        tf_15m = indicators.get("15m", {})
+        bars_5m = data.get("5m", [])
+
+        rsi_5m = tf_5m.get("rsi")
+        rsi_15m = tf_15m.get("rsi")
+
+        # Count bearish vs bullish 5m candles (last 6 = 30 min of trading)
+        bearish_bars = 0
+        bullish_bars = 0
+        if len(bars_5m) >= 3:
+            lookback = min(6, len(bars_5m))
+            for i in range(-lookback, 0):
+                bar = bars_5m[i]
+                if bar.close < bar.open:
+                    bearish_bars += 1
+                elif bar.close > bar.open:
+                    bullish_bars += 1
+
+        # Calculate underlying momentum from bars (% change over lookback)
+        underlying_change_pct = 0.0
+        if len(bars_5m) >= 3:
+            lookback = min(6, len(bars_5m))
+            first_open = bars_5m[-lookback].open
+            last_close = bars_5m[-1].close
+            if first_open > 0:
+                underlying_change_pct = (last_close - first_open) / first_open * 100
+
+        # EMA trend from indicators
+        ema9 = tf_5m.get("ema9")
+        ema21 = tf_5m.get("ema21")
+        ema_bearish = ema9 is not None and ema21 is not None and ema9 < ema21
+        ema_bullish = ema9 is not None and ema21 is not None and ema9 > ema21
+
+        # Score the directional evidence (positive = bullish, negative = bearish)
+        regime_score = 0.0
+
+        # RSI contribution (-2 to +2)
+        if rsi_5m is not None:
+            if rsi_5m < 40:
+                regime_score -= 1.5
+            elif rsi_5m < 50:
+                regime_score -= 0.5
+            elif rsi_5m > 60:
+                regime_score += 1.5
+            elif rsi_5m > 50:
+                regime_score += 0.5
+
+        if rsi_15m is not None:
+            if rsi_15m < 40:
+                regime_score -= 1.0
+            elif rsi_15m > 60:
+                regime_score += 1.0
+
+        # Candle count contribution (-1.5 to +1.5)
+        total_bars = bearish_bars + bullish_bars
+        if total_bars > 0:
+            regime_score += (bullish_bars - bearish_bars) / total_bars * 1.5
+
+        # Underlying momentum contribution (-2 to +2)
+        regime_score += max(-2.0, min(2.0, underlying_change_pct * 4))
+
+        # EMA trend contribution (-1 to +1)
+        if ema_bearish:
+            regime_score -= 1.0
+        elif ema_bullish:
+            regime_score += 1.0
+
+        # Decision: regime_score ranges roughly -7.5 to +7.5
+        # PUTs need bearish regime (score < -1), CALLs need bullish (score > +1)
+        detail = (
+            f"regime={regime_score:+.1f} RSI5m={rsi_5m or 0:.0f} RSI15m={rsi_15m or 0:.0f} "
+            f"bars={bullish_bars}B/{bearish_bars}b chg={underlying_change_pct:+.2f}% "
+            f"EMA={'bear' if ema_bearish else 'bull' if ema_bullish else 'flat'}"
+        )
+
+        if is_put:
+            if regime_score > 1.0:
+                return GateOutcome(
+                    self.name, GateResult.FAIL,
+                    f"PUT blocked — bullish regime ({detail})"
+                )
+            return GateOutcome(self.name, GateResult.PASS, f"PUT confirmed bearish ({detail})")
+        else:
+            if regime_score < -1.0:
+                return GateOutcome(
+                    self.name, GateResult.FAIL,
+                    f"CALL blocked — bearish regime ({detail})"
+                )
+            return GateOutcome(self.name, GateResult.PASS, f"CALL confirmed bullish ({detail})")
+
+    def _fallback_calls_only(self, signal, settings, is_put: bool) -> GateOutcome:
+        """Fallback to static calls-only list when no candle data is available."""
+        if not is_put:
+            return GateOutcome(self.name, GateResult.PASS, "CALL — no regime check needed")
+        calls_only_str = getattr(settings, "CALLS_ONLY_TICKERS", "")
+        calls_only = {t.strip().upper() for t in calls_only_str.split(",") if t.strip()}
+        ticker = getattr(signal, "ticker", "").upper()
+        if ticker in calls_only:
+            return GateOutcome(
+                self.name, GateResult.FAIL,
+                f"{ticker} PUT blocked (no candle data, fallback to blocklist)"
+            )
+        return GateOutcome(self.name, GateResult.PASS, "PUT allowed (no candle data, not on blocklist)")
+
+
 class ScoreGate(EntryGate):
     """Gate 1: Minimum signal score."""
 
@@ -403,10 +632,10 @@ class DailyLossGate(EntryGate):
                 # fall through to paper fallback
 
         # Fallback: paper portfolio daily_pnl
-        if portfolio["last_trade_date"] != today:
+        if portfolio.get("last_trade_date") != today:
             return GateOutcome(self.name, GateResult.PASS, "New trading day")
 
-        daily_pnl = portfolio["daily_pnl"]
+        daily_pnl = portfolio.get("daily_pnl", 0)
         if daily_pnl <= -limit:
             return GateOutcome(self.name, GateResult.FAIL,
                                f"Daily loss ${daily_pnl:.2f} exceeds -${limit:.2f} (paper)")
@@ -423,6 +652,10 @@ class ConcurrentPositionsGate(EntryGate):
         settings = ctx["settings"]
         open_count = ctx.get("open_count", 0)
         max_concurrent = settings.MAX_CONCURRENT
+        if max_concurrent <= 0:
+            # Auto-adapt: use portfolio size to determine tier
+            portfolio = getattr(settings, "PORTFOLIO_SIZE", 10000)
+            max_concurrent = 2 if portfolio < 8000 else 4
         if open_count >= max_concurrent:
             return GateOutcome(self.name, GateResult.FAIL,
                                f"{open_count} open >= max {max_concurrent}")
@@ -668,9 +901,10 @@ class IVFilterGate(EntryGate):
             return GateOutcome(self.name, GateResult.SKIP, "IV filter disabled")
 
         try:
+            import asyncio
             from options_owl.signals.iv_filter import check_iv_filter
             signal = ctx["signal"]
-            passes, reason = check_iv_filter(signal.ticker, settings)
+            passes, reason = await asyncio.to_thread(check_iv_filter, signal.ticker, settings)
             if not passes:
                 return GateOutcome(self.name, GateResult.FAIL, reason)
             return GateOutcome(self.name, GateResult.PASS, reason)
@@ -927,6 +1161,20 @@ class TimeOfDayGate(EntryGate):
                 f"No new entries after {hard_cutoff_h}:{hard_cutoff_m:02d} ET "
                 f"(theta crush makes late entries unprofitable)",
             )
+
+        # Morning cutoff: block ALL entries after 11:00 AM ET
+        # Backtest: 9:30-10:30 AM ET = +$62K, after 1:30 PM = -$231K
+        if getattr(settings, "ENABLE_MORNING_CUTOFF", False):
+            morning_h = getattr(settings, "ENTRY_MORNING_CUTOFF_HOUR", 11)
+            morning_m = getattr(settings, "ENTRY_MORNING_CUTOFF_MINUTE", 0)
+            morning_cutoff = now.replace(hour=morning_h, minute=morning_m,
+                                         second=0, microsecond=0)
+            if now >= morning_cutoff:
+                return GateOutcome(
+                    self.name, GateResult.FAIL,
+                    f"Morning cutoff: no new entries after {morning_h}:{morning_m:02d} ET "
+                    f"(backtest shows only pre-{morning_h}:{morning_m:02d} ET entries are profitable)",
+                )
 
         # Early morning: before TOD_EARLY_CUTOFF, need higher score
         early_cutoff = now.replace(
@@ -3228,6 +3476,9 @@ V5_EXIT_GATES: list[type[ExitGate]] = [
 # gates still run to collect full diagnostics.
 DEFAULT_ENTRY_GATES: list[type[EntryGate]] = [
     BlockedTickerGate,   # 0. Blocked tickers (historically unprofitable)
+    PutTickerExclusionGate,  # 0a. Block PUTs on losing tickers (PLTR, AMD, MSTR, AVGO)
+    PutMarketDirectionGate,  # 0c. PUTs only when SPY is green (or bear mode)
+    DirectionalRegimeGate,  # 0b. Confirm direction matches market regime (candle-based)
     ScoreGate,           # 1. Minimum score
     PremiumGate,         # 2. Valid premium
     PremiumCapGate,      # 2b. V6: reject non-index > $5 premium (skip when disabled)

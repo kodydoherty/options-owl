@@ -327,6 +327,28 @@ class CandleCollector:
                 f"Candle flush: {written} bars for "
                 f"{', '.join(sorted(tickers_written))}"
             )
+
+            # Fire-and-forget: also write candles to PostgreSQL
+            try:
+                from options_owl.db import postgres as pg
+                if pg.is_connected():
+                    from datetime import datetime as _dt, timezone as _tz
+                    for c in all_candles:
+                        bar_time = _dt.fromtimestamp(c["bar_start_ts"], tz=_tz.utc)
+                        await pg.write_stock_candle(
+                            ticker=c["ticker"],
+                            timeframe=c["timeframe"],
+                            open_=c["open"],
+                            high=c["high"],
+                            low=c["low"],
+                            close=c["close"],
+                            volume=c["volume"],
+                            vwap=c.get("vwap", 0),
+                            bar_time=bar_time,
+                        )
+            except Exception as exc:
+                logger.debug(f"PG candle write failed: {exc}")
+
         return written
 
     # ------------------------------------------------------------------

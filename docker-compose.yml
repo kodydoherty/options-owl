@@ -34,18 +34,76 @@ x-bot-common: &bot-common
         memory: 1G
 
 services:
+  # ── Shared Redis (cross-agent coordination) ──
+  redis:
+    image: redis:7-alpine
+    container_name: options-owl-redis
+    restart: always
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
+    volumes:
+      - ./journal/redis-data:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Shared PostgreSQL (sourcing + future bot migration) ──
+  postgres:
+    image: postgres:16-alpine
+    container_name: options-owl-db
+    restart: always
+    environment:
+      POSTGRES_DB: options_owl
+      POSTGRES_USER: owl
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-owl_dev_2026}
+    volumes:
+      - ./journal/postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U owl"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   owlet-kody:
     <<: *bot-common
     container_name: owlet-kody
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=23000
-      - PAPER_TRADE=false
-      - WEBULL_KILL_SWITCH=false
+      - PAPER_TRADE=true
+      - WEBULL_KILL_SWITCH=true
       - EXIT_ENGINE=v5
-      - MAX_CONCURRENT=4
-      - MAX_POSITION_PCT=10
-      - MAX_DCA_POSITION_PCT=5
+      - MAX_CONCURRENT=5
+      - MAX_POSITION_PCT=15
+      - MAX_DCA_POSITION_PCT=10
       - MAX_TRADE_LOSS_EXIT_PCT=8
       - MAX_PORTFOLIO_RISK_PCT=75
       - ENABLE_WEBULL_PAPER=true
@@ -56,8 +114,8 @@ services:
       - WEBULL_PASSWORD=${KODY_WEBULL_PASSWORD}
       - WEBULL_TRADE_PIN=${KODY_WEBULL_TRADE_PIN}
       - WEBULL_DID=${KODY_WEBULL_DID}
-      # Margin account (enable when balance > $25K and funds transferred)
-      # - MARGIN_ACCOUNT=true
+      # Signal source: sourcing pipeline only (no Discord signals)
+      - ENABLE_DISCORD_SIGNALS=false
       # V6 enhancements
       - ENABLE_V6_PER_TICKER_CONFIG=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true
@@ -68,16 +126,25 @@ services:
       - ENABLE_V6_DCA=true
       - ENABLE_V6_EARLY_POP_GATE=true
       - ENABLE_DIP_CONFIRM=true
-      - ENABLE_SUPABASE_BRAIN=true
+
       - AGENT_ID=owlet_kody
+      - ENABLE_POSTGRES=true
+      - DATABASE_URL=postgresql://owl:${POSTGRES_PASSWORD:-owl_dev_2026}@postgres:5432/options_owl
+      - ENABLE_REDIS=true
+      - REDIS_URL=redis://redis:6379/0
       - SHARED_CANDLE_DB=/app/shared_harvester/options_data.db
     volumes:
       - ./journal/owlet-kody:/app/journal
-      - ./journal/owlet-harvester:/app/shared_harvester:ro
+      - ./journal/owlet-harvester:/app/shared_harvester:rw
 
   owlet-adam:
     <<: *bot-common
     container_name: owlet-adam
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=4685
@@ -85,15 +152,17 @@ services:
       - ENABLE_POLYGON_WS=true
       - WEBULL_APP_KEY=${ADAM_WEBULL_APP_KEY}
       - WEBULL_APP_SECRET=${ADAM_WEBULL_APP_SECRET}
-      - PAPER_TRADE=false
-      - WEBULL_KILL_SWITCH=false
+      - PAPER_TRADE=true
+      - WEBULL_KILL_SWITCH=true
       - EXIT_ENGINE=v5
-      - MAX_CONCURRENT=4
-      - MAX_POSITION_PCT=10
-      - MAX_DCA_POSITION_PCT=5
+      - MAX_CONCURRENT=5
+      - MAX_POSITION_PCT=15
+      - MAX_DCA_POSITION_PCT=10
       - MAX_TRADE_LOSS_EXIT_PCT=8
       - MAX_PORTFOLIO_RISK_PCT=75
       - ENABLE_WEBULL_PAPER=true
+      # Signal source: sourcing pipeline only (no Discord signals)
+      - ENABLE_DISCORD_SIGNALS=false
       # V6 enhancements
       - ENABLE_V6_PER_TICKER_CONFIG=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true
@@ -104,16 +173,25 @@ services:
       - ENABLE_V6_DCA=true
       - ENABLE_V6_EARLY_POP_GATE=true
       - ENABLE_DIP_CONFIRM=true
-      - ENABLE_SUPABASE_BRAIN=true
+
       - AGENT_ID=owlet_adam
+      - ENABLE_POSTGRES=true
+      - DATABASE_URL=postgresql://owl:${POSTGRES_PASSWORD:-owl_dev_2026}@postgres:5432/options_owl
+      - ENABLE_REDIS=true
+      - REDIS_URL=redis://redis:6379/0
       - SHARED_CANDLE_DB=/app/shared_harvester/options_data.db
     volumes:
       - ./journal/owlet-adam:/app/journal
-      - ./journal/owlet-harvester:/app/shared_harvester:ro
+      - ./journal/owlet-harvester:/app/shared_harvester:rw
 
   owlet-vinny:
     <<: *bot-common
     container_name: owlet-vinny
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=3123
@@ -121,15 +199,17 @@ services:
       - ENABLE_POLYGON_WS=true
       - WEBULL_APP_KEY=${VINNY_WEBULL_APP_KEY}
       - WEBULL_APP_SECRET=${VINNY_WEBULL_APP_SECRET}
-      - PAPER_TRADE=false
-      - WEBULL_KILL_SWITCH=false
+      - PAPER_TRADE=true
+      - WEBULL_KILL_SWITCH=true
       - EXIT_ENGINE=v5
-      - MAX_CONCURRENT=4
-      - MAX_POSITION_PCT=10
-      - MAX_DCA_POSITION_PCT=5
+      - MAX_CONCURRENT=5
+      - MAX_POSITION_PCT=15
+      - MAX_DCA_POSITION_PCT=10
       - MAX_TRADE_LOSS_EXIT_PCT=8
       - MAX_PORTFOLIO_RISK_PCT=75
       - ENABLE_WEBULL_PAPER=true
+      # Signal source: sourcing pipeline only (no Discord signals)
+      - ENABLE_DISCORD_SIGNALS=false
       # V6 enhancements
       - ENABLE_V6_PER_TICKER_CONFIG=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true
@@ -141,16 +221,25 @@ services:
       - ENABLE_V6_SIDEWAYS_SCALP=true
       - ENABLE_V6_EARLY_POP_GATE=true
       - ENABLE_DIP_CONFIRM=true
-      - ENABLE_SUPABASE_BRAIN=true
+
       - AGENT_ID=owlet_vinny
+      - ENABLE_POSTGRES=true
+      - DATABASE_URL=postgresql://owl:${POSTGRES_PASSWORD:-owl_dev_2026}@postgres:5432/options_owl
+      - ENABLE_REDIS=true
+      - REDIS_URL=redis://redis:6379/0
       - SHARED_CANDLE_DB=/app/shared_harvester/options_data.db
     volumes:
       - ./journal/owlet-vinny:/app/journal
-      - ./journal/owlet-harvester:/app/shared_harvester:ro
+      - ./journal/owlet-harvester:/app/shared_harvester:rw
 
   owlet-yank:
     <<: *bot-common
     container_name: owlet-yank
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=3600
@@ -158,15 +247,17 @@ services:
       - ENABLE_POLYGON_WS=true
       - WEBULL_APP_KEY=${YANK_WEBULL_APP_KEY}
       - WEBULL_APP_SECRET=${YANK_WEBULL_APP_SECRET}
-      - PAPER_TRADE=false
-      - WEBULL_KILL_SWITCH=false
+      - PAPER_TRADE=true
+      - WEBULL_KILL_SWITCH=true
       - EXIT_ENGINE=v5
-      - MAX_CONCURRENT=4
-      - MAX_POSITION_PCT=10
-      - MAX_DCA_POSITION_PCT=5
+      - MAX_CONCURRENT=5
+      - MAX_POSITION_PCT=15
+      - MAX_DCA_POSITION_PCT=10
       - MAX_TRADE_LOSS_EXIT_PCT=8
       - MAX_PORTFOLIO_RISK_PCT=75
       - ENABLE_WEBULL_PAPER=true
+      # Signal source: sourcing pipeline only (no Discord signals)
+      - ENABLE_DISCORD_SIGNALS=false
       # V6 enhancements
       - ENABLE_V6_PER_TICKER_CONFIG=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true
@@ -177,12 +268,62 @@ services:
       - ENABLE_V6_DCA=true
       - ENABLE_V6_EARLY_POP_GATE=true
       - ENABLE_DIP_CONFIRM=true
-      - ENABLE_SUPABASE_BRAIN=true
+
       - AGENT_ID=owlet_yank
+      - ENABLE_POSTGRES=true
+      - DATABASE_URL=postgresql://owl:${POSTGRES_PASSWORD:-owl_dev_2026}@postgres:5432/options_owl
+      - ENABLE_REDIS=true
+      - REDIS_URL=redis://redis:6379/0
       - SHARED_CANDLE_DB=/app/shared_harvester/options_data.db
     volumes:
       - ./journal/owlet-yank:/app/journal
-      - ./journal/owlet-harvester:/app/shared_harvester:ro
+      - ./journal/owlet-harvester:/app/shared_harvester:rw
+
+  # ── Signal generation engine (replaces N8N) ──
+  owlet-sourcing:
+    <<: *bot-common
+    container_name: owlet-sourcing
+    command: ["python", "-m", "options_owl.sourcing.scanner"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      - PYTHONUNBUFFERED=1
+      - SOURCING_MODE=true
+      - SCAN_INTERVAL_SECONDS=180
+      - SCORE_THRESHOLD=60
+      - DATABASE_URL=postgresql://owl:${POSTGRES_PASSWORD:-owl_dev_2026}@postgres:5432/options_owl
+      # Data sources
+      - ENABLE_SOURCE_HARVESTER_CANDLES=true
+      - ENABLE_SOURCE_TWELVE_DATA=false
+      - ENABLE_SOURCE_POLYGON_OPTIONS=true
+      - ENABLE_SOURCE_POLYGON_NEWS=false
+      - ENABLE_SOURCE_UNUSUAL_WHALES=false
+      - ENABLE_SOURCE_GROK_AI=false
+      # Alpha sources
+      - ENABLE_SEC_INSIDER=true
+      - ENABLE_UW_CONGRESS=true
+      - ENABLE_STOCKTWITS_SENTIMENT=true
+      # ML gates (all off until trained)
+      - ENABLE_ML_FLOW_CLASSIFIER=false
+      - ENABLE_ML_ENTRY_OPTIMIZER=false
+      - ENABLE_ML_QUALITY_PREDICTOR=false
+      # Ticker watchlist
+      - SOURCING_TICKERS=SPY,QQQ,NVDA,TSLA,META,AAPL,AMZN,GOOGL,MSFT,AMD,MSTR,PLTR,AVGO
+      # State
+      - AGENT_ID=owlet_sourcing
+      - ENABLE_REDIS=true
+      - REDIS_URL=redis://redis:6379/0
+      - SHARED_CANDLE_DB=/app/shared_harvester/options_data.db
+    volumes:
+      - ./journal/owlet-sourcing:/app/journal:rw
+      - ./journal/owlet-harvester:/app/shared_harvester:rw
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   # Standalone data harvester — captures Polygon options chain snapshots
   # (bid/ask/mid/OI/day OHLC) and computes IV + greeks locally via Black-Scholes.
@@ -192,6 +333,9 @@ services:
     <<: *bot-common
     container_name: owlet-harvester
     command: ["python", "-m", "options_owl.harvester"]
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       - PYTHONUNBUFFERED=1
       - HARVEST_UNIVERSE=SPY,QQQ,IWM,AAPL,TSLA,NVDA,META,AMD,AMZN,GOOGL,MSFT,MU,MSTR,NFLX,SMCI,PLTR,COIN,BA,JPM,XLK,XLF,DIA,GLD,SLV,TLT,VIX
@@ -199,5 +343,8 @@ services:
       - HARVEST_MAX_DTE=7
       - HARVEST_STRIKE_WINDOW=5
       - HARVEST_MARKET_HOURS_ONLY=true
+      # PostgreSQL for tick data capture (stock prices, option snapshots)
+      - ENABLE_POSTGRES=true
+      - DATABASE_URL=postgresql://owl:${POSTGRES_PASSWORD:-owl_dev_2026}@postgres:5432/options_owl
     volumes:
       - ./journal/owlet-harvester:/app/journal

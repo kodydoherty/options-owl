@@ -125,13 +125,13 @@ class TestScalpWith0DTE:
 class TestMultidayWiderStops:
     """Multi-day trade gets wider stops and no checkpoint/theta bleed."""
 
-    def test_multiday_survives_40pct_drop(self):
-        """Multi-day: 40% drop with underlying against → holds (tight=52%)."""
+    def test_multiday_survives_25pct_drop(self):
+        """Multi-day: 25% drop with underlying against → holds (tight=30%)."""
         fsm = ExitFSM(V5Config())
         state = _make_state(entry_underlying_price=100.0, dte=1, expiry_date="2026-04-29")
 
         grace = [(1.00, 0.95, 1.05)] * 60
-        drop = [(0.60, 0.55, 0.65)] * 5  # -40% < 52% tight
+        drop = [(0.75, 0.70, 0.80)] * 5  # -25% < 30% tight
 
         action, _ = _simulate(fsm, state, grace + drop, current_underlying=99.4)
         assert not action.should_exit
@@ -198,7 +198,9 @@ class TestThetaBleed0DTE:
     """0DTE trade held 120min+ while down → theta bleed."""
 
     def test_theta_bleed(self):
-        fsm = ExitFSM(V5Config())
+        # Use wider backstop so graduated stop doesn't fire first at -32%
+        cfg = V5Config(backstop_0dte_pct=65.0)
+        fsm = ExitFSM(cfg)
         state = _make_state(entry_underlying_price=100.0)
 
         # Hold for 120min (1440 ticks), slowly declining

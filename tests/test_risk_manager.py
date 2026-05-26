@@ -82,7 +82,9 @@ async def _insert_closed_trade(
 ) -> None:
     """Insert a fake closed trade for testing weekly loss limits."""
     if closed_at is None:
-        closed_at = datetime.now().isoformat()
+        # Use UTC to match risk manager's UTC-based date filtering
+        from zoneinfo import ZoneInfo
+        closed_at = datetime.now(tz=ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M:%S")
     async with aiosqlite.connect(db_path) as conn:
         await conn.execute(
             "INSERT INTO paper_trades "
@@ -213,7 +215,9 @@ class TestWeeklyLossLimit:
         await init_paper_db(tmp_db_path)
 
         # Insert closed trades with losses totaling -$600 this week
-        now_iso = datetime.now().isoformat()
+        # Use ET time to match risk manager's ET-based week boundary calculation
+        from zoneinfo import ZoneInfo
+        now_iso = datetime.now(tz=ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S")
         await _insert_closed_trade(tmp_db_path, -300.0, closed_at=now_iso)
         await _insert_closed_trade(tmp_db_path, -300.0, closed_at=now_iso)
 

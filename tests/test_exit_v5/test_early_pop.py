@@ -382,8 +382,8 @@ class TestEarlyPopConfigDefaults:
         assert cfg.early_pop_fade_pct == 10.0
         assert cfg.early_pop_check_after_min == 12.0
         assert cfg.early_pop_min_peak_gain_pct == 3.0
-        assert cfg.early_pop_backstop_0dte_pct == 35.0
-        assert cfg.early_pop_backstop_multiday_pct == 50.0
+        assert cfg.early_pop_backstop_0dte_pct == 25.0
+        assert cfg.early_pop_backstop_multiday_pct == 40.0
 
     def test_per_ticker_configs_inherit_defaults(self):
         """Per-ticker configs should inherit early-pop defaults."""
@@ -391,7 +391,7 @@ class TestEarlyPopConfigDefaults:
         for ticker, cfg in TICKER_CONFIGS.items():
             assert cfg.early_pop_peak_window_min == 12.0, \
                 f"{ticker} should inherit early_pop_peak_window_min"
-            assert cfg.early_pop_backstop_0dte_pct == 35.0, \
+            assert cfg.early_pop_backstop_0dte_pct == 25.0, \
                 f"{ticker} should inherit early_pop_backstop_0dte_pct"
 
 

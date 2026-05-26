@@ -32,17 +32,17 @@ class TestV5ConfigDefaults:
 
     def test_checkpoint_defaults(self):
         cfg = V5Config()
-        assert cfg.checkpoint_drop_pct == 30.0
+        assert cfg.checkpoint_drop_pct == 15.0
 
     def test_graduated_stop_0dte(self):
         cfg = V5Config()
-        assert cfg.tight_stop_0dte_pct == 35.0
-        assert cfg.backstop_0dte_pct == 65.0
+        assert cfg.tight_stop_0dte_pct == 15.0
+        assert cfg.backstop_0dte_pct == 30.0
 
     def test_graduated_stop_multiday(self):
         cfg = V5Config()
-        assert cfg.tight_stop_multiday_pct == 52.0
-        assert cfg.backstop_multiday_pct == 75.0
+        assert cfg.tight_stop_multiday_pct == 30.0
+        assert cfg.backstop_multiday_pct == 50.0
 
     def test_underlying_against_threshold(self):
         cfg = V5Config()

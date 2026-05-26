@@ -21,7 +21,9 @@ cd /root/options-owl
 
 docker compose ps                     # check all agents
 docker compose logs owlet-kody --tail 50 -f   # follow logs (EPHEMERAL — wiped on rebuild)
-docker compose restart owlet-kody     # restart one agent (uses existing image)
+docker compose up -d owlet-kody       # recreate one agent (applies config changes)
+# WARNING: `docker compose restart` does NOT apply docker-compose.yml changes!
+# ALWAYS use `up -d` to ensure env vars and config are current.
 docker compose up -d                  # start all (uses existing images)
 
 # Trade P&L analysis (CORRECT math for DCA + scaleout)
@@ -620,6 +622,16 @@ Step 5:  docker compose ps           ← verify all containers healthy
 - **V6 DCA (Dollar Cost Average)**: When premium dips 15-35% from entry, auto-doubles position at lower price. Blends entry price down. One-shot per trade.
 
 ## Known Issues & Historical Bugs
+
+### docker compose restart vs up -d (discovered 2026-05-26)
+**Bug:** `docker compose restart` does NOT apply environment changes from docker-compose.yml. Bots were running with `PAPER_TRADE=false` despite docker-compose.yml saying `true`.
+**Impact:** Bots were live trading when they should have been paper-only. Caught during holiday weekend (no market hours = no trades executed).
+**Fix:** Changed `restart-staggered.sh` to use `docker compose up -d` instead of `restart`. ALWAYS use `up -d` when config changes need to take effect.
+**Rule:** NEVER use `docker compose restart` after config changes. It only restarts the existing container with old config.
+
+### Per-Ticker Config Category Mismatch (fixed 2026-05-26)
+**Bug:** NVDA/AVGO/MSFT configs used `profit_target_index_0dte_pct` (only fires for INDEX tickers) but these are HIGH_VOL. AAPL/AMZN used `adaptive_highvol_tiers` but are STANDARD category. These configs were silently doing nothing.
+**Fix:** NVDA/AVGO/MSFT switched to `profit_target_general_pct`. AAPL/AMZN switched to `adaptive_standard_tiers`.
 
 ### 0DTE Expiry Mismatch (discovered 2026-04-23, improved 2026-04-26)
 **Bug:** Bot assumed all tickers have daily 0DTE options.

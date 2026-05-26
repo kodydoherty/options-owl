@@ -51,6 +51,7 @@ def _make_settings(tmp_db_path: str, **overrides) -> Settings:
         "ENTRY_HARD_CUTOFF_MINUTE": 59,
         "TOD_LATE_CUTOFF_HOUR": 23,
         "TOD_LATE_CUTOFF_MINUTE": 59,
+        "ENABLE_MORNING_CUTOFF": False,
     }
     defaults.update(overrides)
     return Settings(**defaults)

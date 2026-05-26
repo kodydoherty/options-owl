@@ -5,6 +5,7 @@ Gate priority (first match wins):
     2. Bid disappearance  — no buyers for 30s
     3. [5min grace]       — skip all exits in first 5 minutes
     4. Profit target      — index 0DTE: take gains at 30%
+    4b. Scalp target      — take +25% profit unless candle-confirmed runner past +40%
     5. Scalp trail        — peaked +20%, faded <60%, underlying doesn't confirm
     6. Checkpoint cut     — 0DTE: down 30%+ AND underlying against 0.5%+
     7. Graduated stop     — underlying-based: 35% if against, 65% backstop (0DTE)
@@ -63,12 +64,21 @@ def check_profit_target(
     cfg: V5Config,
     debug: dict,
 ) -> ExitAction | None:
-    """Gate 3: Take profit at fixed % — index 0DTE only.
+    """Gate 3: Take profit at fixed %.
 
-    Indexes (SPY, QQQ, IWM) are more predictable. Locking in 30% gains
-    on 0DTE produces 100% win rate on this gate (10 trades, $1,401 total
-    in backtest).
+    Two modes:
+      1. General profit target (profit_target_general_pct > 0): fires for ALL trades.
+         Used by PUT scalp strategy (+50% target).
+      2. Index 0DTE profit target: fires only for index 0DTE trades.
     """
+    # General profit target (PUT scalps, or any config that sets it)
+    if cfg.profit_target_general_pct > 0 and gain >= cfg.profit_target_general_pct:
+        return _exit(
+            ExitReason.PROFIT_TARGET,
+            f"Profit target: +{gain:.1f}% >= {cfg.profit_target_general_pct}%",
+            debug=debug,
+        )
+    # Index 0DTE profit target (original behavior)
     if not is_0dte or not is_index:
         return None
     if cfg.profit_target_index_0dte_pct <= 0:
@@ -423,6 +433,64 @@ def check_sideways_scalp(
         ExitReason.SIDEWAYS_SCALP,
         f"Sideways scalp: +{gain:.1f}% gain, {signals_hit}/4 indicators "
         f"(range={prem_range:.0f}%, no_high={min_since_peak:.0f}min, crosses={crosses})",
+        debug=debug,
+    )
+
+
+def check_scalp_target(
+    gain: float,
+    peak_gain: float,
+    elapsed_min: float,
+    underlying_confirms: bool,
+    candle_data: dict | None,
+    option_type: str,
+    scalp_target_pct: float,
+    runner_confirm_pct: float,
+    debug: dict,
+) -> ExitAction | None:
+    """Gate: Scalp target — take profit at +25% unless confirmed runner.
+
+    The backtest shows a simple +25% take-profit turns -$544K into +$1.4M.
+    But we don't want to nuke runners (trades that go +100%+).
+
+    Runner confirmation logic (skip scalp when ANY is true):
+      1. Trade already peaked past runner_confirm_pct (+40%) — 87% chance of 50%+ runner
+      2. Candle data shows strong momentum continuation (ENRG says HOLD or trend intact)
+      3. Underlying is actively confirming the direction (trending with the trade)
+
+    If none of the runner signals are present, take the +25% scalp.
+    """
+    if gain < scalp_target_pct:
+        return None
+
+    # Runner confirmation #1: already peaked past confirmation threshold
+    if peak_gain >= runner_confirm_pct:
+        debug["scalp_target_skip"] = f"runner confirmed: peak +{peak_gain:.0f}% >= {runner_confirm_pct}%"
+        return None
+
+    # Runner confirmation #2: candle data shows strong momentum
+    if candle_data and candle_data.get("indicators"):
+        from options_owl.collectors.candle_cache import evaluate_enrg
+        enrg_action, enrg_reason = evaluate_enrg(candle_data, option_type)
+        debug["scalp_enrg"] = {"action": enrg_action, "reason": enrg_reason}
+        if enrg_action == "HOLD":
+            # Candles say thesis intact — let it run, don't scalp
+            debug["scalp_target_skip"] = f"ENRG HOLD: {enrg_reason}"
+            return None
+
+    # Runner confirmation #3: underlying actively confirming direction
+    if underlying_confirms and gain >= scalp_target_pct * 0.8:
+        # Underlying trending with us AND we're near/above target — let it develop
+        # Only skip if gain is close to target (not way above it)
+        if gain < scalp_target_pct * 1.5:
+            debug["scalp_target_skip"] = "underlying confirming, letting run"
+            return None
+
+    # No runner signals — take the scalp profit
+    return _exit(
+        ExitReason.SCALP_TARGET,
+        f"Scalp target: +{gain:.1f}% >= {scalp_target_pct}% "
+        f"(no runner confirmation: peak +{peak_gain:.0f}% < {runner_confirm_pct}%)",
         debug=debug,
     )
 

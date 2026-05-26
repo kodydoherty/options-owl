@@ -9,7 +9,11 @@ def test_default_settings():
     assert settings.SCORE_THRESHOLD == 60
     assert "SPY" in settings.ticker_list
     assert "NVDA" in settings.ticker_list
-    assert len(settings.ticker_list) == 13
+    assert len(settings.ticker_list) == 10
+    # GOOGL, MSFT, AVGO excluded — net losers in both ML sweep and real trades
+    assert "GOOGL" not in settings.ticker_list
+    assert "MSFT" not in settings.ticker_list
+    assert "AVGO" not in settings.ticker_list
 
 
 def test_ticker_list_parsing():

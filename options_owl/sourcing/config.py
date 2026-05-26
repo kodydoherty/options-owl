@@ -10,8 +10,12 @@ class SourcingSettings(BaseSettings):
 
     # --- Scan loop ---
     SCAN_INTERVAL_SECONDS: int = 180
-    SOURCING_TICKERS: str = "SPY,QQQ,NVDA,TSLA,META,AAPL,AMZN,GOOGL,MSFT,AMD,MSTR,PLTR,AVGO"
+    SOURCING_TICKERS: str = "SPY,QQQ,NVDA,TSLA,META,AAPL,AMZN,AMD,MSTR,PLTR"
     SCORE_THRESHOLD: int = 60
+
+    # PUT ticker exclusion — don't emit PUT signals for historically losing tickers
+    # Backtested (3+ years): PLTR -$48K, AMD -$9K, MSTR breakeven, AVGO breakeven
+    PUT_EXCLUDED_TICKERS: str = "PLTR,AMD,MSTR,AVGO"
 
     # --- Data sources (technical) ---
     ENABLE_SOURCE_HARVESTER_CANDLES: bool = True
@@ -28,6 +32,7 @@ class SourcingSettings(BaseSettings):
     ENABLE_STOCKTWITS_SENTIMENT: bool = True
 
     # --- ML gates ---
+    ENABLE_ML_SIGNAL_MODEL: bool = False
     ENABLE_ML_FLOW_CLASSIFIER: bool = False
     ENABLE_ML_ENTRY_OPTIMIZER: bool = False
     ENABLE_ML_QUALITY_PREDICTOR: bool = False
@@ -49,6 +54,7 @@ class SourcingSettings(BaseSettings):
     # --- Output ---
     SOURCING_DISCORD_OUTPUT: bool = True
     SOURCING_DB_OUTPUT: bool = True
+    SOURCING_DISCORD_WEBHOOK_URL: str = ""
 
     # --- API keys (injected via env) ---
     TWELVE_DATA_KEY: str = ""

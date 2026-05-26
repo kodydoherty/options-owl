@@ -35,7 +35,9 @@ async def _insert_closed_trade(
     closed_at: str | None = None,
 ) -> None:
     if closed_at is None:
-        closed_at = datetime.now().isoformat()
+        # Use UTC to match circuit breaker's UTC-based date filtering
+        from zoneinfo import ZoneInfo
+        closed_at = datetime.now(tz=ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M:%S")
     async with aiosqlite.connect(db_path) as conn:
         await conn.execute(
             "INSERT INTO paper_trades "

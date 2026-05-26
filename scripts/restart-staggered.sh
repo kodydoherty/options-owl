@@ -14,28 +14,30 @@ run_on_droplet() {
         # Running on droplet directly
         cd /root/options-owl
         for bot in "${BOTS[@]}"; do
-            echo "Restarting $bot..."
-            docker compose restart "$bot"
+            echo "Recreating $bot..."
+            # Use 'up -d' (not 'restart') so config changes in docker-compose.yml
+            # are applied. 'restart' only restarts existing containers with OLD config.
+            docker compose up -d "$bot"
             if [ "$bot" != "${BOTS[-1]}" ]; then
-                echo "  Waiting ${DELAY}s before next restart..."
+                echo "  Waiting ${DELAY}s before next bot..."
                 sleep "$DELAY"
             fi
         done
-        echo "All bots restarted."
+        echo "All bots recreated."
         docker compose ps
     else
         # Running locally — SSH to droplet
-        echo "=== Staggered restart (${DELAY}s delay) ==="
+        echo "=== Staggered recreate (${DELAY}s delay) ==="
         for bot in "${BOTS[@]}"; do
-            echo "Restarting $bot..."
+            echo "Recreating $bot..."
             ssh -i ~/.ssh/id_ed25519_do root@129.212.138.145 \
-                "cd /root/options-owl && docker compose restart $bot"
+                "cd /root/options-owl && docker compose up -d $bot"
             if [ "$bot" != "${BOTS[-1]}" ]; then
-                echo "  Waiting ${DELAY}s before next restart..."
+                echo "  Waiting ${DELAY}s before next bot..."
                 sleep "$DELAY"
             fi
         done
-        echo "=== All bots restarted ==="
+        echo "=== All bots recreated ==="
         ssh -i ~/.ssh/id_ed25519_do root@129.212.138.145 \
             "cd /root/options-owl && docker compose ps"
     fi

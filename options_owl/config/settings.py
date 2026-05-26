@@ -29,9 +29,12 @@ class Settings(BaseSettings):
     # Expiry safety: force-close all open trades N minutes before market close
     EXPIRY_SAFETY_MINUTES: int = 10  # close everything 10 min before 4 PM ET
     PORTFOLIO_SIZE: float = 2000.0
-    MAX_POSITION_PCT: float = 15.0  # max % of portfolio per trade (hard cap, overrides score tier caps)
-    MAX_DCA_POSITION_PCT: float = 15.0  # max % of portfolio for DCA add (5% = tighter DCA sizing)
-    MAX_CONCURRENT: int = 4  # max concurrent slots (backtested: 4 slots — bigger per-slot budget, GFV limits daily count anyway)
+    # Auto-adaptive sizing: set to 0 to auto-compute from portfolio size
+    # Small portfolios (<$8K) → 2 concurrent, 20% position (concentrate capital)
+    # Large portfolios (>=$8K) → 4 concurrent, 15% position (diversify)
+    MAX_POSITION_PCT: float = 0.0  # 0 = auto-adapt from portfolio size
+    MAX_DCA_POSITION_PCT: float = 0.0  # 0 = auto-adapt (half of MAX_POSITION_PCT)
+    MAX_CONCURRENT: int = 0  # 0 = auto-adapt from portfolio size
     MIN_SCORE: int = 78  # only trade signals with score >= this (v2.1: raised from 75)
     DAILY_LOSS_LIMIT_PCT: float = 10.0
     DB_PATH: str = "journal/raw_messages.db"
@@ -187,7 +190,7 @@ class Settings(BaseSettings):
 
     # Exit engine version: "v3" (current production) or "v5" (scalp_and_hold)
     # v5: 45min grace, scalp trail, graduated stop w/ momentum confirm, checkpoint, wider trails
-    EXIT_ENGINE: str = "v3"  # default to v3 for safety; flip to "v5" per-owlet via docker-compose
+    EXIT_ENGINE: str = "v5"  # V5 FSM is the active production engine for all owlets
 
     # --- V6 enhancements (all default OFF — enable per-owlet via docker-compose) ---
     # V6 builds on V5 FSM with per-ticker configs, entry filters, and exit improvements.
@@ -276,7 +279,29 @@ class Settings(BaseSettings):
     STOP_BACKSTOP_EXTRA_PCT: float = 15.0     # absolute backstop = wide stop% + this = 65% (always fires)
 
     # Ticker blocklist — never trade these (comma-separated, empty = none blocked)
-    BLOCKED_TICKERS: str = ""
+    # MSFT removed 2026-05-21: 22% WR, -$2,641 P&L across 9 trades, all DCA losses
+    BLOCKED_TICKERS: str = "MSFT"
+
+    # PUT-excluded tickers — these are allowed for CALLs but blocked for PUTs
+    # Backtested (3+ years): PLTR -$48K, AMD -$9K, MSTR +$1.6K, AVGO +$2.3K on PUTs
+    # High-potential PUT tickers: SPY, QQQ, IWM, TSLA, META (index + high-vol movers)
+    PUT_EXCLUDED_TICKERS: str = "PLTR,AMD,MSTR,AVGO"
+
+    # PUT market direction gate — only enter PUTs when SPY is green (market up)
+    # Rationale: cheap PUTs on green days catch intraday reversals; on red days
+    # PUT premiums are already inflated. When market drops (bear mode), PUTs get
+    # expanded ticker list and more slots.
+    ENABLE_PUT_MARKET_DIRECTION_GATE: bool = True
+    PUT_MARKET_UP_MIN_PCT: float = 0.0  # SPY must be >= this % from open to allow PUTs
+    PUT_BEAR_MODE_THRESHOLD: float = -0.5  # SPY down this % = bear mode (expand PUT tickers)
+    PUT_BEAR_EXPANDED_TICKERS: str = "SPY,QQQ,NVDA,TSLA,META,AAPL,AMZN,GOOGL,AMD,MSTR,PLTR,AVGO,IWM"
+
+    # Directional regime gate — uses candle data to confirm signal direction
+    # PUTs require bearish regime, CALLs require bullish. Dynamic, not static.
+    ENABLE_DIRECTIONAL_REGIME: bool = True
+
+    # Calls-only tickers — fallback when candle data unavailable
+    CALLS_ONLY_TICKERS: str = "SPY,QQQ,TSLA,AAPL,GOOGL,IWM,AMZN,META"
 
     # Minimum option premium — reject deep OTM trades that bleed to theta
     MIN_OPTION_PREMIUM: float = 0.30  # reject options under $0.30 (backtested: $0.30 floor filters lottery tickets)
@@ -432,6 +457,17 @@ class Settings(BaseSettings):
     ENTRY_HARD_CUTOFF_HOUR: int = 15  # no new entries after 3:55 PM ET regardless of score
     ENTRY_HARD_CUTOFF_MINUTE: int = 55  # (theta crush in last 5 min makes even correct alerts lose)
 
+    # Morning cutoff: block ALL entries after this time (backtest: only 9:30-11:00 AM ET is profitable)
+    ENABLE_MORNING_CUTOFF: bool = True
+    ENTRY_MORNING_CUTOFF_HOUR: int = 11  # no new entries after 11:00 AM ET
+    ENTRY_MORNING_CUTOFF_MINUTE: int = 0
+
+    # Scalp target gate: take profit at +25% unless confirmed runner
+    # Backtest: +25% scalp turns -$544K into +$1.4M; runner threshold at +40% has 87% hit rate
+    ENABLE_SCALP_TARGET: bool = True
+    SCALP_TARGET_PCT: float = 25.0  # take profit at this % gain
+    SCALP_RUNNER_CONFIRM_PCT: float = 40.0  # skip scalp if peak gain exceeds this (confirmed runner)
+
     # Correlation cap: max same-direction positions per correlated group
     ENABLE_CORRELATION_CAP: bool = True
     CORRELATION_CAP_MAX_PER_GROUP: int = 3  # max 3 same-direction positions per group
@@ -459,14 +495,54 @@ class Settings(BaseSettings):
     MAX_LOSS_PER_TRADE_PCT: float = 25.0  # max % of portfolio per single trade
     WEEKLY_LOSS_LIMIT_PCT: float = 100.0  # effectively disabled (was 20% — blocked all trades on Apr 24)
 
-    # --- Supabase Shared Brain (Vince's 0DTE alert system mutual learning) ---
-    ENABLE_SUPABASE_BRAIN: bool = False  # off by default — enable per-owlet
-    SUPABASE_URL: str = ""
-    SUPABASE_ANON_KEY: str = ""
-    SUPABASE_WEBULL_JWT: str = ""
-    N8N_WEBHOOK_CLOSE_URL: str = ""
-    SUPABASE_ACCOUNT_STATE_INTERVAL_SEC: int = 300  # push account state every 5 min
-    AGENT_ID: str = ""  # unique ID per bot for Supabase agent tracking (e.g. "owlet_kody")
+    # --- Redis (cross-agent coordination: dedup, regime, rate limiting) ---
+    ENABLE_REDIS: bool = False
+    REDIS_URL: str = "redis://redis:6379/0"
+
+    # --- Shared PostgreSQL (cross-agent trades, signals, analytics) ---
+    ENABLE_POSTGRES: bool = False  # Phase 1: dual-write to SQLite + Postgres
+    DATABASE_URL: str = "postgresql://owl:owl_dev_2026@postgres:5432/options_owl"
+
+    # --- Signal source control ---
+    # When False, Discord signals are still logged/parsed but NOT traded.
+    # Bots only trade signals from the ML sourcing pipeline (via PostgreSQL).
+    ENABLE_DISCORD_SIGNALS: bool = True
+
+    AGENT_ID: str = ""  # unique ID per bot for signal consumer + PG tracking
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def effective_max_concurrent(self) -> int:
+        """Auto-adapt concurrent slots based on portfolio size.
+
+        Small portfolios (<$8K): 2 slots → concentrate capital into fewer, larger positions
+        Large portfolios (>=$8K): 4 slots → diversify across more positions
+        Override: set MAX_CONCURRENT > 0 to use a fixed value.
+        """
+        if self.MAX_CONCURRENT > 0:
+            return self.MAX_CONCURRENT
+        return 2 if self.PORTFOLIO_SIZE < 8000 else 4
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def effective_max_position_pct(self) -> float:
+        """Auto-adapt position sizing based on portfolio size.
+
+        Small portfolios (<$8K): 20% → enough contracts for scaleout/runners
+        Large portfolios (>=$8K): 15% → standard diversification
+        Override: set MAX_POSITION_PCT > 0 to use a fixed value.
+        """
+        if self.MAX_POSITION_PCT > 0:
+            return self.MAX_POSITION_PCT
+        return 20.0 if self.PORTFOLIO_SIZE < 8000 else 15.0
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def effective_max_dca_position_pct(self) -> float:
+        """Auto-adapt DCA position cap (half of effective position %)."""
+        if self.MAX_DCA_POSITION_PCT > 0:
+            return self.MAX_DCA_POSITION_PCT
+        return self.effective_max_position_pct / 2.0
 
     @computed_field  # type: ignore[prop-decorator]
     @property

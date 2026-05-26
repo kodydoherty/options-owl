@@ -157,7 +157,7 @@ class TestEvaluateAndTrade:
         trader = PaperTrader(settings)
         await trader.init()
 
-        # Open two trades (hit the limit)
+        # Open two trades (hit the limit) — use tickers that allow PUTs
         sig1 = _make_signal(ticker="NVDA", score=130, atm_premium=1.70)
         sig2 = _make_signal(ticker="TSLA", score=110, atm_premium=0.93)
         r1 = await trader.evaluate_and_trade(sig1, signal_id=1)
@@ -165,8 +165,8 @@ class TestEvaluateAndTrade:
         assert r1 is not None
         assert r2 is not None
 
-        # Third trade should be skipped
-        sig3 = _make_signal(ticker="AAPL", score=150, atm_premium=2.00)
+        # Third trade should be skipped (concurrent limit hit)
+        sig3 = _make_signal(ticker="META", score=150, atm_premium=2.00)
         r3 = await trader.evaluate_and_trade(sig3, signal_id=3)
         assert r3 is None
 

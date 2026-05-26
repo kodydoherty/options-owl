@@ -151,24 +151,24 @@ class TestCheckScalpTrail:
 
 class TestCheckCheckpointCut:
 
-    def test_fires_when_down_30_and_against(self):
-        """0DTE: exit when premium -30%+ AND underlying against."""
+    def test_fires_when_down_15_and_against(self):
+        """0DTE: exit when premium -15%+ AND underlying against."""
         action = check_checkpoint_cut(
-            is_0dte=True, drop_entry=32, has_underlying=True,
+            is_0dte=True, drop_entry=18, has_underlying=True,
             underlying_against=True, cfg=_cfg(), debug=_debug())
         assert action is not None
         assert action.reason == ExitReason.CHECKPOINT_CUT
 
     def test_holds_when_not_against(self):
-        """Even at -30%, don't exit if underlying isn't against."""
+        """Even at -18%, don't exit if underlying isn't against."""
         action = check_checkpoint_cut(
-            is_0dte=True, drop_entry=32, has_underlying=True,
+            is_0dte=True, drop_entry=18, has_underlying=True,
             underlying_against=False, cfg=_cfg(), debug=_debug())
         assert action is None
 
     def test_holds_when_drop_below_threshold(self):
         action = check_checkpoint_cut(
-            is_0dte=True, drop_entry=25, has_underlying=True,
+            is_0dte=True, drop_entry=10, has_underlying=True,
             underlying_against=True, cfg=_cfg(), debug=_debug())
         assert action is None
 
@@ -199,49 +199,49 @@ class TestCheckCheckpointCut:
 
 class TestCheckGraduatedStop:
 
-    def test_0dte_confirmed_stop_at_35pct(self):
-        """0DTE: tight stop at 35% when underlying against."""
+    def test_0dte_confirmed_stop_at_15pct(self):
+        """0DTE: tight stop at 15% when underlying against."""
         action = check_graduated_stop(
-            drop_entry=36, is_0dte=True, underlying_against=True,
+            drop_entry=16, is_0dte=True, underlying_against=True,
             u_move=-0.6, cfg=_cfg(), debug=_debug())
         assert action is not None
         assert action.reason == ExitReason.CONFIRMED_STOP
 
-    def test_0dte_backstop_at_65pct(self):
-        """0DTE: backstop at 65% when underlying NOT against."""
+    def test_0dte_backstop_at_30pct(self):
+        """0DTE: backstop at 30% when underlying NOT against."""
         action = check_graduated_stop(
-            drop_entry=66, is_0dte=True, underlying_against=False,
+            drop_entry=31, is_0dte=True, underlying_against=False,
             u_move=0.1, cfg=_cfg(), debug=_debug())
         assert action is not None
         assert action.reason == ExitReason.HARD_STOP
 
-    def test_0dte_holds_between_35_and_65(self):
+    def test_0dte_holds_between_15_and_30(self):
         """0DTE: between tight and backstop, underlying not against → hold."""
         action = check_graduated_stop(
-            drop_entry=50, is_0dte=True, underlying_against=False,
+            drop_entry=20, is_0dte=True, underlying_against=False,
             u_move=0.1, cfg=_cfg(), debug=_debug())
         assert action is None
 
-    def test_multiday_confirmed_stop_at_52pct(self):
-        """Multi-day: wider tight stop at 52%."""
+    def test_multiday_confirmed_stop_at_30pct(self):
+        """Multi-day: tight stop at 30%."""
         action = check_graduated_stop(
-            drop_entry=53, is_0dte=False, underlying_against=True,
+            drop_entry=31, is_0dte=False, underlying_against=True,
             u_move=-0.6, cfg=_cfg(), debug=_debug())
         assert action is not None
         assert action.reason == ExitReason.CONFIRMED_STOP
 
-    def test_multiday_backstop_at_75pct(self):
-        """Multi-day: wider backstop at 75%."""
+    def test_multiday_backstop_at_50pct(self):
+        """Multi-day: backstop at 50%."""
         action = check_graduated_stop(
-            drop_entry=76, is_0dte=False, underlying_against=False,
+            drop_entry=51, is_0dte=False, underlying_against=False,
             u_move=0.1, cfg=_cfg(), debug=_debug())
         assert action is not None
         assert action.reason == ExitReason.HARD_STOP
 
-    def test_multiday_holds_at_60pct(self):
-        """Multi-day: 60% drop but not against → hold (tight=52, backstop=75)."""
+    def test_multiday_holds_at_40pct(self):
+        """Multi-day: 40% drop but not against → hold (tight=30, backstop=50)."""
         action = check_graduated_stop(
-            drop_entry=60, is_0dte=False, underlying_against=False,
+            drop_entry=40, is_0dte=False, underlying_against=False,
             u_move=0.1, cfg=_cfg(), debug=_debug())
         assert action is None
 

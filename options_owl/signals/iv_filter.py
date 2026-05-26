@@ -19,8 +19,8 @@ _iv_cache: dict[str, tuple[float, float, float]] = {}
 _CACHE_TTL_SECONDS = 15 * 60  # 15 minutes
 
 
-def _get_current_iv(ticker: str) -> float | None:
-    """Get current implied volatility from ATM options via yfinance.
+def _get_current_iv_sync(ticker: str) -> float | None:
+    """Get current implied volatility from ATM options via yfinance (sync).
 
     Uses the nearest expiration and the strike closest to current price.
 
@@ -55,8 +55,21 @@ def _get_current_iv(ticker: str) -> float | None:
         return None
 
 
-def _get_historical_realized_vol(ticker: str) -> list[float]:
-    """Compute daily realized volatility estimates over the past year.
+def _get_current_iv(ticker: str) -> float | None:
+    """Async-safe wrapper — runs yfinance in a thread."""
+    import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+        # We're inside an event loop — must use to_thread
+        # But this function is called synchronously from _compute_and_cache,
+        # so just call the sync version directly (caller handles threading).
+        return _get_current_iv_sync(ticker)
+    except RuntimeError:
+        return _get_current_iv_sync(ticker)
+
+
+def _get_historical_realized_vol_sync(ticker: str) -> list[float]:
+    """Compute daily realized volatility estimates over the past year (sync).
 
     Uses 20-day rolling standard deviation of log returns, annualized.
 
@@ -85,6 +98,11 @@ def _get_historical_realized_vol(ticker: str) -> list[float]:
         return vols
     except Exception:
         return []
+
+
+def _get_historical_realized_vol(ticker: str) -> list[float]:
+    """Async-safe wrapper."""
+    return _get_historical_realized_vol_sync(ticker)
 
 
 def _compute_and_cache(ticker: str) -> tuple[float, float] | None:

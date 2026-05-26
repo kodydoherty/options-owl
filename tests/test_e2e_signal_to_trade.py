@@ -110,6 +110,7 @@ def _make_e2e_settings(tmp_db_path: str, **overrides) -> Settings:
         "ANTI_CHASE_MAX_MOVE_PCT": 99.0,  # disable for tests (live price != signal price)
         "ENTRY_HARD_CUTOFF_HOUR": 23,  # disable time gate in tests
         "ENTRY_HARD_CUTOFF_MINUTE": 59,
+        "ENABLE_MORNING_CUTOFF": False,  # disable morning cutoff in tests
         "TOD_LATE_CUTOFF_HOUR": 23,
         "TOD_LATE_CUTOFF_MINUTE": 59,
     }

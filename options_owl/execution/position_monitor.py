@@ -100,9 +100,6 @@ CANDLE_FETCH_INTERVAL = 60  # seconds between candle refreshes
 _last_reconciliation_time: float = 0.0
 RECONCILIATION_INTERVAL = 300  # seconds between reconciliation checks
 
-# Track last Supabase account state push time
-_last_supabase_account_push: float = 0.0
-
 # V5 FSM bridge (lazy-initialized when EXIT_ENGINE=v5)
 _v5_bridge: object | None = None  # V5MonitorBridge instance
 
@@ -404,6 +401,27 @@ async def _check_v6_dca(
             )
             return
 
+    # DCA max loss cap: don't DCA if current unrealized loss already exceeds
+    # MAX_TRADE_LOSS_EXIT_PCT of portfolio — doubling down would amplify the loss
+    max_trade_loss_pct = getattr(settings, "MAX_TRADE_LOSS_EXIT_PCT", 25.0)
+    balance_for_cap = getattr(settings, "PORTFOLIO_SIZE", 2000.0)
+    try:
+        live_bal = await paper_trader.get_portfolio_balance()
+        if live_bal and live_bal > 0:
+            balance_for_cap = live_bal
+    except Exception:
+        pass
+    current_cost = trade["contracts"] * entry_prem * 100
+    current_value = trade["contracts"] * exit_premium * 100
+    unrealized_loss = current_cost - current_value
+    max_loss_dollars = balance_for_cap * (max_trade_loss_pct / 100)
+    if unrealized_loss > max_loss_dollars * 0.5:
+        logger.info(
+            f"  #{trade_id} {ticker} V6 DCA blocked: unrealized loss ${unrealized_loss:.0f} "
+            f"> 50% of max trade loss ${max_loss_dollars:.0f} — doubling down too risky"
+        )
+        return
+
     # Fire DCA: add contracts, capped by MAX_DCA_POSITION_PCT
     add_contracts = trade["contracts"]
     dca_cap_pct = getattr(settings, "MAX_DCA_POSITION_PCT", 15.0)
@@ -696,7 +714,7 @@ async def _reconcile_positions(
                     pass
 
             entry_premium = live_premium if live_premium and live_premium > 0 else 0.01
-            underlying_price = _fetch_current_price(ticker) or 0.0
+            underlying_price = (await _fetch_price_async(ticker)) or 0.0
             total_cost = contracts * entry_premium * 100
 
             now_iso = _now_et().isoformat()
@@ -790,7 +808,7 @@ async def _reconcile_positions(
                     # opened_at is stored as naive UTC — compare in UTC
                     if open_time.tzinfo is not None:
                         open_time = open_time.replace(tzinfo=None)
-                    now_utc = datetime.utcnow()
+                    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
                     age_minutes = (now_utc - open_time).total_seconds() / 60
                     if age_minutes < 30:
                         logger.info(
@@ -922,6 +940,9 @@ async def run_position_monitor(
                     if synced is not None:
                         logger.info(f"Daily portfolio sync complete: ${synced:,.2f}")
                         _last_portfolio_sync_date = today_str
+                    elif paper_trader.settings.PAPER_TRADE or paper_trader.webull_executor is None:
+                        # Paper mode — no Webull to sync from, skip silently
+                        _last_portfolio_sync_date = today_str
                     else:
                         logger.warning("Daily portfolio sync failed — will retry next cycle")
                 else:
@@ -962,9 +983,21 @@ async def run_position_monitor(
 
                 # --- Fetch current underlying price ---
                 if market_stream is not None:
-                    current_price = await market_stream.get_price(ticker)
+                    try:
+                        current_price = await asyncio.wait_for(
+                            market_stream.get_price(ticker), timeout=15,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(f"  {ticker} — price fetch timed out (15s)")
+                        current_price = None
                 else:
-                    current_price = await _fetch_price_async(ticker)
+                    try:
+                        current_price = await asyncio.wait_for(
+                            _fetch_price_async(ticker), timeout=15,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(f"  {ticker} — price fetch timed out (15s)")
+                        current_price = None
 
                 if current_price is None:
                     logger.warning(f"Position monitor: could not get price for {ticker}, skipping")
@@ -981,12 +1014,19 @@ async def run_position_monitor(
 
                 # Source 1: market stream (Polygon WS or yfinance chain)
                 if exit_premium is None and market_stream is not None and expiry_date:
-                    exit_premium = await market_stream.get_option_premium(
-                        ticker,
-                        strike=trade["strike"],
-                        expiry=expiry_date,
-                        option_type=trade["option_type"],
-                    )
+                    try:
+                        exit_premium = await asyncio.wait_for(
+                            market_stream.get_option_premium(
+                                ticker,
+                                strike=trade["strike"],
+                                expiry=expiry_date,
+                                option_type=trade["option_type"],
+                            ),
+                            timeout=15,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(f"  {ticker} — stream premium timed out (15s)")
+                        exit_premium = None
                     if exit_premium is not None:
                         logger.debug(
                             f"  {ticker} — stream premium ${exit_premium:.2f} "
@@ -999,13 +1039,20 @@ async def run_position_monitor(
                         polygon_option_premium,
                     )
 
-                    exit_premium = await polygon_option_premium(
-                        polygon_api_key,
-                        ticker,
-                        strike=trade["strike"],
-                        expiry=expiry_date,
-                        option_type=trade["option_type"],
-                    )
+                    try:
+                        exit_premium = await asyncio.wait_for(
+                            polygon_option_premium(
+                                polygon_api_key,
+                                ticker,
+                                strike=trade["strike"],
+                                expiry=expiry_date,
+                                option_type=trade["option_type"],
+                            ),
+                            timeout=15,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(f"  {ticker} — Polygon premium timed out (15s)")
+                        exit_premium = None
                     if exit_premium is not None:
                         logger.debug(
                             f"  {ticker} — Polygon premium ${exit_premium:.2f} "
@@ -1016,7 +1063,13 @@ async def run_position_monitor(
                 if exit_premium is None and expiry_date:
                     cache_key = (ticker, expiry_date)
                     if cache_key not in chain_cache:
-                        chain_cache[cache_key] = await _fetch_option_chain_async(ticker, expiry_date)
+                        try:
+                            chain_cache[cache_key] = await asyncio.wait_for(
+                                _fetch_option_chain_async(ticker, expiry_date), timeout=15,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning(f"  {ticker} — yfinance chain timed out (15s)")
+                            chain_cache[cache_key] = None
 
                     chain = chain_cache[cache_key]
                     if chain is not None:
@@ -1646,42 +1699,5 @@ async def run_position_monitor(
             await _reconcile_positions(paper_trader, discord_client)
         except Exception:
             logger.debug("Position reconciliation error", exc_info=True)
-
-        # Supabase account state push (every 5 min during market hours)
-        global _last_supabase_account_push
-        supabase = getattr(paper_trader, "supabase", None)
-        push_interval = getattr(paper_trader.settings, "SUPABASE_ACCOUNT_STATE_INTERVAL_SEC", 300)
-        _now_mono = asyncio.get_event_loop().time()
-        if supabase and supabase.enabled and (_now_mono - _last_supabase_account_push) >= push_interval:
-            try:
-                open_trades = await get_open_trades(db_path)
-                balance = await paper_trader.get_portfolio_balance()
-                # Get daily P&L from DB
-                today_str = _now_et().strftime("%Y-%m-%d")
-                async with _connect_db(db_path) as conn:
-                    cursor = await conn.execute(
-                        "SELECT COALESCE(SUM(pnl_dollars), 0) FROM paper_trades "
-                        "WHERE status = 'closed' AND date(closed_at) = ? "
-                        "AND webull_order_id IS NOT NULL",
-                        (today_str,),
-                    )
-                    daily_pnl = (await cursor.fetchone())[0]
-                buying_power = None
-                if paper_trader.webull_executor:
-                    try:
-                        info = await paper_trader.webull_executor.get_account_info()
-                        buying_power = info.buying_power
-                    except Exception:
-                        pass
-                await supabase.push_account_state(
-                    equity_usd=balance,
-                    cash_usd=balance,
-                    daily_pnl_usd=daily_pnl,
-                    open_positions=len(open_trades),
-                    buying_power=buying_power,
-                )
-                _last_supabase_account_push = _now_mono
-            except Exception as exc:
-                logger.debug(f"Supabase account state push error: {exc}")
 
         await asyncio.sleep(poll_interval)

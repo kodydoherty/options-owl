@@ -40,6 +40,7 @@ _REASON_MAP = {
     ExitReason.BREAKEVEN_RATCHET: "breakeven_ratchet",
     ExitReason.SCALEOUT: "scaleout_20",
     ExitReason.SIDEWAYS_SCALP: "sideways_scalp",
+    ExitReason.SCALP_TARGET: "scalp_target",
 }
 
 
@@ -123,14 +124,27 @@ class V5MonitorBridge:
         )
         return state
 
-    def _get_fsm(self, ticker: str) -> ExitFSM:
-        """Get the FSM for a ticker, using per-ticker config if V6 enabled."""
-        if not self._use_per_ticker:
+    def _get_fsm(self, ticker: str, option_type: str = "call") -> ExitFSM:
+        """Get the FSM for a ticker+direction, using per-ticker config if V6 enabled.
+
+        PUT trades always get PUT_SCALP_CONFIG regardless of per-ticker setting.
+        CALL trades without per-ticker config return the default FSM.
+        """
+        is_put = option_type.lower() == "put"
+
+        # CALL trades: use default FSM if per-ticker is disabled
+        if not is_put and not self._use_per_ticker:
             return self.fsm
-        if ticker not in self._ticker_fsms:
-            cfg = get_ticker_config(ticker, use_per_ticker=True)
-            self._ticker_fsms[ticker] = ExitFSM(cfg, settings=self.settings)
-        return self._ticker_fsms[ticker]
+
+        cache_key = f"{ticker}:{option_type.lower()}"
+        if cache_key not in self._ticker_fsms:
+            cfg = get_ticker_config(
+                ticker,
+                use_per_ticker=self._use_per_ticker,
+                option_type=option_type,
+            )
+            self._ticker_fsms[cache_key] = ExitFSM(cfg, settings=self.settings)
+        return self._ticker_fsms[cache_key]
 
     def evaluate(
         self,
@@ -162,10 +176,11 @@ class V5MonitorBridge:
             ask = exit_premium * (1 + spread_pct)
 
         # Compute minutes to close (market closes at 4:00 PM ET)
-        minutes_to_close = max(0, (16 * 60) - (now_et.hour * 60 + now_et.minute))
+        seconds_left = max(0, (16 * 60 * 60) - (now_et.hour * 3600 + now_et.minute * 60 + now_et.second))
+        minutes_to_close = seconds_left / 60.0
 
-        # V6: per-ticker FSM config
-        fsm = self._get_fsm(state.ticker)
+        # V6: per-ticker FSM config (PUT trades get PUT_SCALP_CONFIG)
+        fsm = self._get_fsm(state.ticker, state.option_type)
 
         action = fsm.evaluate(
             state=state,

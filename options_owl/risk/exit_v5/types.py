@@ -27,6 +27,7 @@ class ExitReason(Enum):
     BREAKEVEN_RATCHET = "breakeven_ratchet"
     SCALEOUT = "scaleout"
     SIDEWAYS_SCALP = "sideways_scalp"
+    SCALP_TARGET = "scalp_target"
 
 
 @dataclass

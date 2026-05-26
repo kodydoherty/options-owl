@@ -11,6 +11,7 @@ from options_owl.risk.pipeline import (
     CircuitBreakerGate,
     ConcurrentPositionsGate,
     DailyLossGate,
+    DirectionalRegimeGate,
     DuplicateTickerGate,
     EODExitGate,
     EXIT_GATE_TO_REASON,
@@ -522,3 +523,212 @@ class TestPipelineResult:
         )
         assert result.failure_reasons == ["bad", "also bad"]
         assert len(result.failures) == 2
+
+
+# ---------------------------------------------------------------------------
+# DirectionalRegimeGate tests
+# ---------------------------------------------------------------------------
+
+
+class _FakeBar:
+    """Minimal bar for candle data tests."""
+    def __init__(self, open_: float, close: float):
+        self.open = open_
+        self.close = close
+
+
+def _make_candle_data(bars_5m, rsi_5m=None, rsi_15m=None, ema9=None, ema21=None):
+    """Build a candle_data dict matching what candle_cache.get_candle_data() returns."""
+    return {
+        "5m": bars_5m,
+        "indicators": {
+            "5m": {"rsi": rsi_5m, "ema9": ema9, "ema21": ema21},
+            "15m": {"rsi": rsi_15m},
+        },
+    }
+
+
+class TestDirectionalRegimeGate:
+    """Tests for the dynamic directional regime gate."""
+
+    @pytest.mark.asyncio
+    async def test_put_blocked_in_bullish_regime(self):
+        """PUT should be blocked when candles show strong bullish momentum."""
+        from options_owl.models.signals import Direction
+        signal = AsyncMock()
+        signal.direction = Direction.PUT
+        signal.ticker = "SPY"
+
+        # 6 bullish bars, RSI high, underlying up
+        bars = [_FakeBar(100.0, 101.0) for _ in range(6)]
+        candle_cache = AsyncMock()
+        candle_cache.get_candle_data.return_value = _make_candle_data(
+            bars, rsi_5m=65, rsi_15m=62, ema9=101.0, ema21=100.0
+        )
+        settings = AsyncMock()
+        settings.ENABLE_DIRECTIONAL_REGIME = True
+
+        gate = DirectionalRegimeGate()
+        result = await gate.evaluate({
+            "signal": signal, "settings": settings, "candle_cache": candle_cache
+        })
+        assert result.result == GateResult.FAIL
+        assert "PUT blocked" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_put_allowed_in_bearish_regime(self):
+        """PUT should pass when candles show bearish momentum."""
+        from options_owl.models.signals import Direction
+        signal = AsyncMock()
+        signal.direction = Direction.PUT
+        signal.ticker = "SPY"
+
+        # 6 bearish bars, RSI low, underlying down
+        bars = [_FakeBar(101.0, 100.0) for _ in range(6)]
+        candle_cache = AsyncMock()
+        candle_cache.get_candle_data.return_value = _make_candle_data(
+            bars, rsi_5m=35, rsi_15m=38, ema9=99.0, ema21=100.0
+        )
+        settings = AsyncMock()
+        settings.ENABLE_DIRECTIONAL_REGIME = True
+
+        gate = DirectionalRegimeGate()
+        result = await gate.evaluate({
+            "signal": signal, "settings": settings, "candle_cache": candle_cache
+        })
+        assert result.result == GateResult.PASS
+        assert "PUT confirmed" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_call_blocked_in_bearish_regime(self):
+        """CALL should be blocked when candles show bearish momentum."""
+        from options_owl.models.signals import Direction
+        signal = AsyncMock()
+        signal.direction = Direction.CALL
+        signal.ticker = "NVDA"
+
+        bars = [_FakeBar(101.0, 100.0) for _ in range(6)]
+        candle_cache = AsyncMock()
+        candle_cache.get_candle_data.return_value = _make_candle_data(
+            bars, rsi_5m=32, rsi_15m=35, ema9=99.0, ema21=100.0
+        )
+        settings = AsyncMock()
+        settings.ENABLE_DIRECTIONAL_REGIME = True
+
+        gate = DirectionalRegimeGate()
+        result = await gate.evaluate({
+            "signal": signal, "settings": settings, "candle_cache": candle_cache
+        })
+        assert result.result == GateResult.FAIL
+        assert "CALL blocked" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_call_allowed_in_bullish_regime(self):
+        """CALL should pass in bullish regime."""
+        from options_owl.models.signals import Direction
+        signal = AsyncMock()
+        signal.direction = Direction.CALL
+        signal.ticker = "NVDA"
+
+        bars = [_FakeBar(100.0, 101.0) for _ in range(6)]
+        candle_cache = AsyncMock()
+        candle_cache.get_candle_data.return_value = _make_candle_data(
+            bars, rsi_5m=62, rsi_15m=58, ema9=101.0, ema21=100.0
+        )
+        settings = AsyncMock()
+        settings.ENABLE_DIRECTIONAL_REGIME = True
+
+        gate = DirectionalRegimeGate()
+        result = await gate.evaluate({
+            "signal": signal, "settings": settings, "candle_cache": candle_cache
+        })
+        assert result.result == GateResult.PASS
+        assert "CALL confirmed" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_fallback_to_calls_only_when_no_candle_cache(self):
+        """Without candle data, PUT on a CALLS_ONLY ticker should be blocked."""
+        from options_owl.models.signals import Direction
+        signal = AsyncMock()
+        signal.direction = Direction.PUT
+        signal.ticker = "SPY"
+
+        settings = AsyncMock()
+        settings.ENABLE_DIRECTIONAL_REGIME = True
+        settings.CALLS_ONLY_TICKERS = "SPY,QQQ,TSLA"
+
+        gate = DirectionalRegimeGate()
+        result = await gate.evaluate({
+            "signal": signal, "settings": settings,
+            # No candle_cache
+        })
+        assert result.result == GateResult.FAIL
+        assert "fallback" in result.reason
+
+    @pytest.mark.asyncio
+    async def test_put_on_non_blocklist_passes_without_candles(self):
+        """PUT on a ticker NOT in CALLS_ONLY should pass even without candle data."""
+        from options_owl.models.signals import Direction
+        signal = AsyncMock()
+        signal.direction = Direction.PUT
+        signal.ticker = "AMD"
+
+        settings = AsyncMock()
+        settings.ENABLE_DIRECTIONAL_REGIME = True
+        settings.CALLS_ONLY_TICKERS = "SPY,QQQ,TSLA"
+
+        gate = DirectionalRegimeGate()
+        result = await gate.evaluate({
+            "signal": signal, "settings": settings,
+        })
+        assert result.result == GateResult.PASS
+
+    @pytest.mark.asyncio
+    async def test_gate_disabled_skips(self):
+        """Gate should skip when ENABLE_DIRECTIONAL_REGIME=False."""
+        from options_owl.models.signals import Direction
+        signal = AsyncMock()
+        signal.direction = Direction.PUT
+
+        settings = AsyncMock()
+        settings.ENABLE_DIRECTIONAL_REGIME = False
+
+        gate = DirectionalRegimeGate()
+        result = await gate.evaluate({
+            "signal": signal, "settings": settings,
+        })
+        assert result.result == GateResult.SKIP
+
+    @pytest.mark.asyncio
+    async def test_neutral_regime_allows_both_directions(self):
+        """In neutral regime (score between -1 and +1), both directions pass."""
+        from options_owl.models.signals import Direction
+
+        # Mixed bars — some up, some down
+        bars = [_FakeBar(100.0, 100.5), _FakeBar(100.5, 100.0),
+                _FakeBar(100.0, 100.3), _FakeBar(100.3, 100.1),
+                _FakeBar(100.1, 100.2), _FakeBar(100.2, 100.1)]
+        candle_cache = AsyncMock()
+        candle_cache.get_candle_data.return_value = _make_candle_data(
+            bars, rsi_5m=50, rsi_15m=50, ema9=100.1, ema21=100.1
+        )
+        settings = AsyncMock()
+        settings.ENABLE_DIRECTIONAL_REGIME = True
+
+        gate = DirectionalRegimeGate()
+
+        # PUT in neutral
+        signal = AsyncMock()
+        signal.direction = Direction.PUT
+        signal.ticker = "SPY"
+        result = await gate.evaluate({
+            "signal": signal, "settings": settings, "candle_cache": candle_cache
+        })
+        assert result.result == GateResult.PASS
+
+        # CALL in neutral
+        signal.direction = Direction.CALL
+        result = await gate.evaluate({
+            "signal": signal, "settings": settings, "candle_cache": candle_cache
+        })
+        assert result.result == GateResult.PASS

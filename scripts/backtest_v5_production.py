@@ -30,9 +30,14 @@ sys.path.insert(0, str(PROJECT_DIR))
 
 from types import SimpleNamespace
 
+from zoneinfo import ZoneInfo
+
 from options_owl.risk.exit_v5.config import V5Config, get_ticker_config
 from options_owl.risk.exit_v5.fsm import ExitFSM, TradeState
 from options_owl.collectors.support_levels import find_support_levels, is_at_support
+
+ET = ZoneInfo("America/New_York")
+UTC = ZoneInfo("UTC")
 
 # Mock settings matching production docker-compose V6 flags (ALL enabled flags)
 _V6_SETTINGS = SimpleNamespace(
@@ -61,13 +66,25 @@ _V6_SETTINGS = SimpleNamespace(
     V6_DCA_MIN_DIP_PCT=15.0,
     V6_DCA_MAX_DIP_PCT=35.0,
     V6_DCA_UNDERLYING_THRESHOLD=0.5,
+    # Scalp target gate — take +25% unless confirmed runner
+    ENABLE_SCALP_TARGET=True,
+    SCALP_TARGET_PCT=25.0,
+    SCALP_RUNNER_CONFIRM_PCT=40.0,
+    # Sideways scalp
+    ENABLE_V6_SIDEWAYS_SCALP=True,
 )
 
 SIGNALS_DB = str(PROJECT_DIR / "journal" / "owlet-kody" / "raw_messages.db")
 HARVESTER_DB = str(PROJECT_DIR / "journal" / "owlet-harvester" / "options_data.db")
 
 POLYGON_API_KEY = "Vk7gXTz6dbp_F69UmmqIx9BDEasHfExb"
-PORTFOLIO = 23000
+PORTFOLIO = 20000
+
+# Morning cutoff: block entries after configured time ET
+# Set via command line: --morning-cutoff 11:00 (or --no-morning-cutoff)
+ENABLE_MORNING_CUTOFF = False  # Default OFF for backtest comparison
+MORNING_CUTOFF_HOUR = 11
+MORNING_CUTOFF_MINUTE = 0
 
 # Toggle VWAP+Support gate A/B test
 ENABLE_VWAP_SUPPORT_GATE = True
@@ -339,12 +356,14 @@ def simulate_with_production_fsm(df, entry_premium, contracts, direction, dte, e
         underlying = df["underlying_price"].iloc[idx] or 0.0
 
         # Compute minutes_to_close (market closes at 16:00 ET)
-        # Timestamps are UTC, ET = UTC - 4
-        et_hour = now.hour - 4
-        if et_hour < 0:
-            et_hour += 24
-        et_minute = now.minute
+        # Use proper timezone conversion (handles DST correctly)
+        now_utc = now.replace(tzinfo=UTC) if now.tzinfo is None else now
+        now_et = now_utc.astimezone(ET)
+        et_hour = now_et.hour
+        et_minute = now_et.minute
         minutes_to_close = max(0, (16 * 60) - (et_hour * 60 + et_minute))
+        # Pass naive ET time to FSM (it expects naive datetimes)
+        now = now_et.replace(tzinfo=None)
 
         action = fsm.evaluate(
             state, premium, bid, ask, now,
@@ -456,6 +475,25 @@ def main():
         if score < 78:
             continue
 
+        # Morning cutoff: block entries after 11:00 AM ET
+        if ENABLE_MORNING_CUTOFF:
+            sig_time = sig["created_at"]
+            try:
+                sig_dt_full = (
+                    datetime.strptime(sig_time[:19], "%Y-%m-%dT%H:%M:%S")
+                    if "T" in sig_time
+                    else datetime.strptime(sig_time[:19], "%Y-%m-%d %H:%M:%S")
+                )
+                # DB times are UTC — convert properly to ET (handles DST)
+                sig_utc = sig_dt_full.replace(tzinfo=UTC)
+                sig_et = sig_utc.astimezone(ET)
+                cutoff_minutes = MORNING_CUTOFF_HOUR * 60 + MORNING_CUTOFF_MINUTE
+                signal_minutes = sig_et.hour * 60 + sig_et.minute
+                if signal_minutes >= cutoff_minutes:
+                    continue  # Skip — after morning cutoff
+            except (ValueError, TypeError):
+                pass
+
         # V6 premium cap gate (production: ENABLE_V6_PREMIUM_CAP=true)
         if _V6_SETTINGS.ENABLE_V6_PREMIUM_CAP:
             cap = _V6_SETTINGS.V6_PREMIUM_CAP
@@ -492,13 +530,12 @@ def main():
             sig_time = sig["created_at"]
             try:
                 sig_dt_full = datetime.strptime(sig_time[:19], "%Y-%m-%dT%H:%M:%S") if "T" in sig_time else datetime.strptime(sig_time[:19], "%Y-%m-%d %H:%M:%S")
-                # DB times are UTC, ET = UTC - 4
-                et_hour = sig_dt_full.hour - 4
-                if et_hour < 0:
-                    et_hour += 24
-                if et_hour >= 14:  # 2 PM ET or later
+                # DB times are UTC — convert properly to ET (handles DST)
+                sig_utc = sig_dt_full.replace(tzinfo=UTC)
+                sig_et = sig_utc.astimezone(ET)
+                if sig_et.hour >= 14:  # 2 PM ET or later
                     contracts = 1
-                elif et_hour >= 13:  # 1 PM ET or later
+                elif sig_et.hour >= 13:  # 1 PM ET or later
                     contracts = max(1, contracts // 2)
             except (ValueError, TypeError):
                 pass
@@ -852,6 +889,201 @@ def main():
     except ImportError:
         print("\nmatplotlib not installed — skipping chart generation")
         print("Install with: pip install matplotlib")
+
+    # ── DOCX Report ─────────────────────────────────────────────────────
+    try:
+        _export_docx(df_results, daily, total_pnl, win_rate, wins, losses, no_data)
+    except Exception as e:
+        print(f"\nDOCX export failed: {e}")
+
+
+def _export_docx(df_results, daily, total_pnl, win_rate, wins, losses, no_data):
+    """Export comprehensive backtest report to DOCX."""
+    from docx import Document
+    from docx.shared import Inches, Pt, RGBColor
+    from docx.enum.table import WD_TABLE_ALIGNMENT
+
+    doc = Document()
+
+    # Title
+    title = doc.add_heading("OptionsOwl V5 FSM Backtest Report", 0)
+    doc.add_paragraph(
+        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M ET')} | "
+        f"Portfolio: ${PORTFOLIO:,.0f} | "
+        f"Period: {daily['day'].iloc[0]} to {daily['day'].iloc[-1]} ({len(daily)} trading days)"
+    )
+
+    # Executive summary
+    doc.add_heading("Executive Summary", level=1)
+    summary_data = [
+        ("Total Trades", f"{len(df_results)}"),
+        ("Skipped (no data)", f"{no_data}"),
+        ("Total P&L", f"${total_pnl:,.2f}"),
+        ("Win Rate", f"{win_rate:.1f}% ({wins}W / {losses}L)"),
+        ("Avg Win", f"${df_results[df_results['pnl'] > 0]['pnl'].mean():,.2f}" if wins > 0 else "N/A"),
+        ("Avg Loss", f"${df_results[df_results['pnl'] <= 0]['pnl'].mean():,.2f}" if losses > 0 else "N/A"),
+        ("Max Win", f"${df_results['pnl'].max():,.2f}"),
+        ("Max Loss", f"${df_results['pnl'].min():,.2f}"),
+        ("Avg Hold Time", f"{df_results['hold'].mean():.0f} min"),
+        ("Morning Cutoff", f"{'Enabled (11:00 AM ET)' if ENABLE_MORNING_CUTOFF else 'Disabled'}"),
+        ("Scalp Target", f"{'Enabled (+25%, runner confirm +40%)' if _V6_SETTINGS.ENABLE_SCALP_TARGET else 'Disabled'}"),
+    ]
+    tbl = doc.add_table(rows=len(summary_data), cols=2)
+    tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
+    for i, (label, value) in enumerate(summary_data):
+        tbl.rows[i].cells[0].text = label
+        tbl.rows[i].cells[1].text = value
+
+    # Exit reason breakdown
+    doc.add_heading("Exit Reason Breakdown", level=1)
+    reason_groups = df_results.groupby("reason")
+    tbl = doc.add_table(rows=len(reason_groups) + 1, cols=5)
+    tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
+    headers = ["Exit Reason", "Count", "Total P&L", "Avg P&L", "Win %"]
+    for i, h in enumerate(headers):
+        tbl.rows[0].cells[i].text = h
+        for run in tbl.rows[0].cells[i].paragraphs[0].runs:
+            run.bold = True
+    row_idx = 1
+    for reason, group in reason_groups:
+        gpnl = group["pnl"]
+        gwins = (gpnl > 0).sum()
+        gwr = gwins / len(gpnl) * 100 if len(gpnl) > 0 else 0
+        tbl.rows[row_idx].cells[0].text = str(reason)
+        tbl.rows[row_idx].cells[1].text = str(len(gpnl))
+        tbl.rows[row_idx].cells[2].text = f"${gpnl.sum():,.2f}"
+        tbl.rows[row_idx].cells[3].text = f"${gpnl.mean():,.2f}"
+        tbl.rows[row_idx].cells[4].text = f"{gwr:.0f}%"
+        row_idx += 1
+
+    # Per-ticker breakdown
+    doc.add_heading("Per-Ticker Breakdown", level=1)
+    ticker_groups = df_results.groupby("ticker")
+    tbl = doc.add_table(rows=len(ticker_groups) + 1, cols=6)
+    tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
+    headers = ["Ticker", "Trades", "Total P&L", "Avg P&L", "Win %", "Top Exit Reason"]
+    for i, h in enumerate(headers):
+        tbl.rows[0].cells[i].text = h
+        for run in tbl.rows[0].cells[i].paragraphs[0].runs:
+            run.bold = True
+    row_idx = 1
+    for tkr, group in sorted(ticker_groups, key=lambda x: x[1]["pnl"].sum(), reverse=True):
+        gpnl = group["pnl"]
+        gwins = (gpnl > 0).sum()
+        gwr = gwins / len(gpnl) * 100 if len(gpnl) > 0 else 0
+        top_reason = group["reason"].value_counts().index[0] if len(group) > 0 else "N/A"
+        tbl.rows[row_idx].cells[0].text = str(tkr)
+        tbl.rows[row_idx].cells[1].text = str(len(gpnl))
+        tbl.rows[row_idx].cells[2].text = f"${gpnl.sum():,.2f}"
+        tbl.rows[row_idx].cells[3].text = f"${gpnl.mean():,.2f}"
+        tbl.rows[row_idx].cells[4].text = f"{gwr:.0f}%"
+        tbl.rows[row_idx].cells[5].text = str(top_reason)
+        row_idx += 1
+
+    # Daily P&L table
+    doc.add_heading("Daily P&L Report", level=1)
+    doc.add_paragraph(
+        "Each trading day's performance with cumulative P&L. "
+        "All times in ET (America/New_York)."
+    )
+    tbl = doc.add_table(rows=len(daily) + 1, cols=6)
+    tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
+    headers = ["Date", "Trades", "Day P&L", "Cum P&L", "W/L", "Win %"]
+    for i, h in enumerate(headers):
+        tbl.rows[0].cells[i].text = h
+        for run in tbl.rows[0].cells[i].paragraphs[0].runs:
+            run.bold = True
+    for row_idx, (_, row) in enumerate(daily.iterrows(), start=1):
+        losses_d = row["trades"] - row["wins"]
+        tbl.rows[row_idx].cells[0].text = str(row["day"])
+        tbl.rows[row_idx].cells[1].text = str(int(row["trades"]))
+        tbl.rows[row_idx].cells[2].text = f"${row['pnl']:,.2f}"
+        tbl.rows[row_idx].cells[3].text = f"${row['cum_pnl']:,.2f}"
+        tbl.rows[row_idx].cells[4].text = f"{int(row['wins'])}/{int(losses_d)}"
+        tbl.rows[row_idx].cells[5].text = f"{row['win_rate']:.0f}%"
+
+    # Full trade log — every trade with exit logic detail
+    doc.add_heading("Full Trade Log", level=1)
+    doc.add_paragraph(
+        "Every trade with entry/exit details and exit gate logic. "
+        "All times in ET."
+    )
+
+    # Group by day for readability
+    for day_str, day_group in df_results.groupby("day"):
+        doc.add_heading(f"{day_str}", level=2)
+        day_pnl = day_group["pnl"].sum()
+        day_wins = (day_group["pnl"] > 0).sum()
+        day_losses = (day_group["pnl"] <= 0).sum()
+        doc.add_paragraph(
+            f"Trades: {len(day_group)} | Day P&L: ${day_pnl:,.2f} | "
+            f"W/L: {day_wins}/{day_losses}"
+        )
+
+        tbl = doc.add_table(rows=len(day_group) + 1, cols=9)
+        tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
+        headers = ["Ticker", "Dir", "Score", "Entry$", "Ct", "Exit$", "P&L", "Peak%", "Exit Reason"]
+        for i, h in enumerate(headers):
+            cell = tbl.rows[0].cells[i]
+            cell.text = h
+            for run in cell.paragraphs[0].runs:
+                run.bold = True
+                run.font.size = Pt(8)
+
+        for t_idx, (_, trade) in enumerate(day_group.iterrows(), start=1):
+            direction_str = trade["direction"][:4] if isinstance(trade["direction"], str) else "?"
+            vals = [
+                str(trade["ticker"]),
+                direction_str,
+                str(int(trade["score"])),
+                f"${trade['entry']:.2f}",
+                str(int(trade["contracts"])),
+                f"${trade.get('exit_prem', 0):.2f}",
+                f"${trade['pnl']:,.2f}",
+                f"{trade.get('peak_gain', 0):.0f}%",
+                str(trade["reason"]),
+            ]
+            for i, val in enumerate(vals):
+                cell = tbl.rows[t_idx].cells[i]
+                cell.text = val
+                for run in cell.paragraphs[0].runs:
+                    run.font.size = Pt(8)
+                    # Color P&L
+                    if i == 6:
+                        if trade["pnl"] > 0:
+                            run.font.color.rgb = RGBColor(0, 128, 0)
+                        elif trade["pnl"] < 0:
+                            run.font.color.rgb = RGBColor(200, 0, 0)
+
+    # Add chart image if it exists
+    chart_path = str(PROJECT_DIR / "v5_daily_pnl.png")
+    if Path(chart_path).exists():
+        doc.add_heading("Equity Curve", level=1)
+        doc.add_picture(chart_path, width=Inches(6.5))
+
+    # Strategy configuration appendix
+    doc.add_heading("Strategy Configuration", level=1)
+    config_items = [
+        "V5 FSM Exit Engine (category-aware, DTE-aware)",
+        f"Portfolio: ${PORTFOLIO:,.0f}",
+        f"Max Concurrent: 4 trades",
+        f"Max Position: 15% of portfolio",
+        f"Max Portfolio Risk: 75%",
+        f"Morning Cutoff: {'11:00 AM ET' if ENABLE_MORNING_CUTOFF else 'Disabled'}",
+        f"Scalp Target: +{_V6_SETTINGS.SCALP_TARGET_PCT}% (runner confirm at +{_V6_SETTINGS.SCALP_RUNNER_CONFIRM_PCT}%)",
+        f"Break-even Ratchet: +{_V6_SETTINGS.V6_BREAKEVEN_TRIGGER_PCT}%",
+        f"Scaleout: 33% at +{_V6_SETTINGS.V6_SCALEOUT_GAIN_PCT}%",
+        f"2PM Trail Tighten: 30% (factor {_V6_SETTINGS.V6_2PM_TRAIL_TIGHTEN_FACTOR})",
+        f"Per-ticker Configs: Enabled",
+        f"DCA: Enabled (dip 15-35%)",
+        f"Score Floor: 78",
+    ]
+    for item in config_items:
+        doc.add_paragraph(item, style="List Bullet")
+
+    docx_path = str(PROJECT_DIR / "v5_backtest_report.docx")
+    doc.save(docx_path)
+    print(f"\nDOCX report saved: {docx_path}")
 
 
 if __name__ == "__main__":

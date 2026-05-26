@@ -550,12 +550,36 @@ def check_anti_chase(
 
 
 
-# Flat sizing: scores above 78 get equal allocation.
-# Backtested 2026-05-20: tiered multipliers don't improve P&L because scores
-# don't predict outcomes. The 78 floor is the real filter; above that, flat
-# sizing avoids under-sizing trades that happen to score low but win big.
-_SCORE_BUDGET_MULT = 0.85  # 85% of per-slot budget for all qualifying trades
+# Confidence-weighted sizing (backtested 2026-05-21):
+# ML confidence 0.70-0.80 is the sweet spot (71.9% WR) → full allocation.
+# 0.80-0.90 is weakest qualifying bucket (63.3% WR) → reduced.
+# 0.90+ has big runners (65.6% WR) → near-full.
+# Score floor still applies — trades below 78 are rejected.
 _SCORE_FLOOR = 78  # below this, trade is rejected
+_FALLBACK_MULT = 0.85  # when no ML confidence available
+
+# (threshold, multiplier) — checked top-down, first match wins
+_CONFIDENCE_TIERS: list[tuple[float, float]] = [
+    (0.90, 0.95),   # 95% budget — big movers, runners justify near-full
+    (0.80, 0.60),   # 60% budget — weakest bucket (58% WR, negative P&L)
+    (0.70, 1.00),   # 100% budget — sweet spot (76% WR, best P&L)
+]
+_MIN_ML_CONFIDENCE = 0.70  # below this, ML signal is too weak
+
+
+def _ml_confidence_to_mult(ml_confidence: float | None) -> tuple[float, str]:
+    """Map ML confidence to budget multiplier.
+
+    Returns (multiplier, description).
+    """
+    if ml_confidence is None:
+        return _FALLBACK_MULT, "no_ml"
+    if ml_confidence < _MIN_ML_CONFIDENCE:
+        return 0.0, f"ml_conf={ml_confidence:.2f}<{_MIN_ML_CONFIDENCE}"
+    for threshold, mult in _CONFIDENCE_TIERS:
+        if ml_confidence >= threshold:
+            return mult, f"ml_conf={ml_confidence:.2f}≥{threshold}"
+    return _CONFIDENCE_TIERS[-1][1], f"ml_conf={ml_confidence:.2f}≥{_CONFIDENCE_TIERS[-1][0]}"
 
 
 def score_to_contracts(
@@ -565,30 +589,38 @@ def score_to_contracts(
     max_position_pct: float = 15.0,
     max_concurrent: int = 4,
     max_portfolio_risk_pct: float = 75.0,
+    ml_confidence: float | None = None,
 ) -> int:
-    """Flat sizing — equal allocation for all trades above score floor.
+    """Confidence-weighted sizing — allocate more capital where ML edge is strongest.
 
     1. Score floor: < 78 = rejected (0 contracts)
-    2. Dollar target: balance × risk_cap / max_concurrent = slot budget
-    3. Flat multiplier: 85% of slot budget for all qualifying trades
-    4. Final = min(scaled_target, position_cap)
+    2. ML confidence floor: < 0.70 = rejected (signal too weak)
+    3. Dollar target: balance × risk_cap / max_concurrent = slot budget
+    4. Confidence multiplier: 100% (0.70-0.80), 75% (0.80-0.90), 90% (0.90+)
+    5. Final = min(scaled_target, position_cap)
 
-    Scores don't predict outcomes (backtested 2026-05-20), so every trade
-    above the 78 floor gets the same allocation. The real edge comes from
-    the V5 exit engine, not entry sizing.
+    The 0.70-0.80 confidence bucket has the highest win rate (71.9%) and P&L,
+    so it gets full allocation. Higher confidence doesn't always mean better
+    outcomes — 0.80-0.90 is actually the weakest qualifying bucket.
     """
     if score < _SCORE_FLOOR:
         logger.info(f"SIZING: score {score} < {_SCORE_FLOOR} → 0 contracts (rejected)")
         return 0
 
-    score_mult = _SCORE_BUDGET_MULT
+    score_mult, mult_desc = _ml_confidence_to_mult(ml_confidence)
+
+    if score_mult <= 0:
+        logger.info(
+            f"SIZING: score={score} {mult_desc} → 0 contracts (ML confidence too low)"
+        )
+        return 0
 
     if cost_per_contract is not None and balance is not None and cost_per_contract > 0:
         # Primary: target each trade to fit max_concurrent trades in the risk cap
         total_deployable = balance * (max_portfolio_risk_pct / 100)
         target_per_trade = total_deployable / max(1, max_concurrent)
 
-        # Flat budget scaling
+        # Confidence-weighted budget scaling
         scaled_target = target_per_trade * score_mult
         raw_contracts = int(scaled_target / cost_per_contract)
 
@@ -614,7 +646,7 @@ def score_to_contracts(
             f"SIZING: score={score} balance=${balance:.2f} cost/contract=${cost_per_contract:.2f} "
             f"| risk_cap={max_portfolio_risk_pct}% deployable=${total_deployable:.2f} "
             f"| max_concurrent={max_concurrent} target/slot=${target_per_trade:.2f} "
-            f"| flat_mult={score_mult:.0%} scaled=${scaled_target:.2f} raw={raw_contracts} "
+            f"| {mult_desc} mult={score_mult:.0%} scaled=${scaled_target:.2f} raw={raw_contracts} "
             f"| pos_cap({max_position_pct}%=${max_spend:.2f})={max_by_position} "
             f"→ {final_contracts} contracts "
             f"(total=${final_contracts * cost_per_contract:.2f})"

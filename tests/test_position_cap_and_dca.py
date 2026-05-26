@@ -230,7 +230,7 @@ class TestSettingsHasDCACap:
         from options_owl.config.settings import Settings
         s = Settings(DISCORD_TOKEN="test")
         assert hasattr(s, "MAX_DCA_POSITION_PCT")
-        assert s.MAX_DCA_POSITION_PCT == 15.0  # default
+        assert s.MAX_DCA_POSITION_PCT == 0.0  # 0 = auto-adapt from portfolio size
 
     def test_setting_overridable(self, monkeypatch):
         monkeypatch.setenv("MAX_DCA_POSITION_PCT", "5.0")
@@ -245,15 +245,15 @@ class TestSettingsHasDCACap:
 class TestSourceCodeSafety:
     """Inspect actual source to catch regressions."""
 
-    def test_flat_sizing_no_tier_table(self):
-        """vinny_strategy.py must use flat sizing (no per-tier position caps)."""
+    def test_confidence_weighted_sizing(self):
+        """vinny_strategy.py must use confidence-weighted sizing via _ml_confidence_to_mult."""
         import inspect
         source = inspect.getsource(score_to_contracts)
-        assert "_SCORE_BUDGET_MULT" in source, (
-            "score_to_contracts must use flat _SCORE_BUDGET_MULT"
+        assert "_ml_confidence_to_mult" in source, (
+            "score_to_contracts must use _ml_confidence_to_mult for confidence-weighted sizing"
         )
         assert "_SCORE_TIER_TABLE" not in source, (
-            "score_to_contracts must NOT reference _SCORE_TIER_TABLE (flat sizing)"
+            "score_to_contracts must NOT reference _SCORE_TIER_TABLE"
         )
 
     def test_dca_cap_variable_exists_in_monitor(self):

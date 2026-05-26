@@ -40,12 +40,12 @@ def configure_logging(verbose: bool = False) -> None:
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-    # File: human-readable, rotated daily, kept 90 days
+    # File: human-readable, rotated daily, kept 7 days
     logger.add(
         LOG_DIR / "options_owl_{time:YYYY-MM-DD}.log",
         level="DEBUG",
         rotation="00:00",
-        retention="90 days",
+        retention="7 days",
         format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} — {message}",
     )
 
@@ -54,7 +54,7 @@ def configure_logging(verbose: bool = False) -> None:
         LOG_DIR / "options_owl.json",
         level="INFO",
         rotation="50 MB",
-        retention="90 days",
+        retention="7 days",
         serialize=True,
     )
 
@@ -179,6 +179,29 @@ def check_polygon_realtime_entitlement(settings: Settings) -> None:
         logger.warning(f"Polygon quote is {age_sec/60:.1f} min old — paper mode, continuing.")
 
 
+def _cleanup_connections() -> None:
+    """Best-effort cleanup of PG pool and Redis on crash/exit."""
+    try:
+        loop = asyncio.new_event_loop()
+
+        async def _close():
+            try:
+                from options_owl.db import postgres as pg
+                await pg.close_pool()
+            except Exception:
+                pass
+            try:
+                from options_owl.db import redis_client
+                await redis_client.close()
+            except Exception:
+                pass
+
+        loop.run_until_complete(_close())
+        loop.close()
+    except Exception:
+        pass  # best-effort — don't crash on cleanup
+
+
 def run_collector_with_retry(settings: Settings) -> None:
     """Run the Discord collector with exponential backoff on failures."""
     from options_owl.collectors.discord_collector import run_collector
@@ -196,10 +219,12 @@ def run_collector_with_retry(settings: Settings) -> None:
             logger.warning("Collector exited cleanly — restarting in {backoff}s")
         except KeyboardInterrupt:
             logger.info("Collector stopped by user")
+            _cleanup_connections()
             return
         except Exception as exc:
             logger.error(f"Collector crashed: {type(exc).__name__}: {exc}")
             logger.debug("Full traceback:", exc_info=True)
+            _cleanup_connections()
 
         logger.info(f"Retrying in {backoff}s…")
         time.sleep(backoff)
@@ -395,7 +420,7 @@ async def _backtest(settings: Settings, args: argparse.Namespace) -> None:
 
     config = BacktestConfig(
         starting_balance=args.balance,
-        max_position_pct=settings.MAX_POSITION_PCT,
+        max_position_pct=getattr(settings, "effective_max_position_pct", None) or settings.MAX_POSITION_PCT,
         max_concurrent=args.max_concurrent,
         min_score=args.min_score,
         start_date=args.start,

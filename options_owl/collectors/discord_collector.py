@@ -554,21 +554,27 @@ class OptionsOwlBot(discord.Client):
         # Wire market stream to paper trader for dip-confirm entry
         self.paper_trader.market_stream = self._market_stream
 
-        # Initialize Supabase Shared Brain (Vince's alert system integration)
-        if getattr(self.settings, "ENABLE_SUPABASE_BRAIN", False):
-            from options_owl.collectors.supabase_brain import SupabaseBrain
-            self._supabase_brain = SupabaseBrain(self.settings)
-            if self._supabase_brain.enabled:
-                self.paper_trader.supabase = self._supabase_brain
-                logger.info("Supabase Shared Brain enabled — mutual learning active")
-                # Replay any queued writes from previous session
-                replayed = await self._supabase_brain.replay_recovery_queue()
-                if replayed:
-                    logger.info(f"Replayed {replayed} queued Supabase writes")
-            else:
-                logger.warning(
-                    "ENABLE_SUPABASE_BRAIN=true but missing credentials — disabled"
+        # Initialize Redis for cross-agent coordination
+        if getattr(self.settings, "ENABLE_REDIS", False):
+            try:
+                from options_owl.db import redis_client
+                await redis_client.init_redis(
+                    getattr(self.settings, "REDIS_URL", "redis://redis:6379/0")
                 )
+                logger.info("Redis cross-agent coordination enabled")
+            except Exception as exc:
+                logger.warning(f"Redis init failed (continuing without coordination): {exc}")
+
+        # Initialize shared PostgreSQL (Phase 1: dual-write)
+        if getattr(self.settings, "ENABLE_POSTGRES", False):
+            try:
+                from options_owl.db import postgres as pg
+                await pg.init_pool(
+                    getattr(self.settings, "DATABASE_URL", None)
+                )
+                logger.info("PostgreSQL shared DB connected — dual-write active")
+            except Exception as exc:
+                logger.warning(f"PostgreSQL init failed (continuing with SQLite only): {exc}")
 
         # Launch background position monitor with the data stream
         from options_owl.execution.position_monitor import run_position_monitor
@@ -577,6 +583,14 @@ class OptionsOwlBot(discord.Client):
             run_position_monitor(self.paper_trader, self._market_stream, discord_client=self)
         )
         logger.info("Position monitor background task launched")
+
+        # Launch ML signal consumer (polls PG for sourcing signals)
+        if getattr(self.settings, "ENABLE_POSTGRES", False):
+            from options_owl.collectors.signal_consumer import run_signal_consumer
+            self._signal_consumer_task = asyncio.create_task(
+                run_signal_consumer(self.paper_trader, self.settings)
+            )
+            logger.info("ML signal consumer background task launched")
 
         # Start heartbeat loop for Docker healthcheck
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -669,7 +683,30 @@ class OptionsOwlBot(discord.Client):
                 f"({result.expected_move_pct:+.1f}%)"
             )
 
+            # Redis signal dedup: prevent 4 bots from entering the same signal
+            if getattr(self.settings, "ENABLE_REDIS", False):
+                try:
+                    from options_owl.db import redis_client
+                    agent_id = getattr(self.settings, "AGENT_ID", "unknown")
+                    signal_key = f"{result.ticker}:{result.direction.value}:{result.strike}:{result.entry_price}"
+                    claimed = await redis_client.try_claim_signal(signal_key, agent_id)
+                    if not claimed:
+                        logger.info(
+                            f"SIGNAL DEDUP: {result.ticker} already claimed by another agent — skipping"
+                        )
+                        return
+                except Exception as exc:
+                    logger.debug(f"Redis dedup check failed (proceeding): {exc}")
+
             # Evaluate signal and trade (paper + Webull if live)
+            # Skip if Discord signals disabled (sourcing-only mode)
+            if not getattr(self.settings, "ENABLE_DISCORD_SIGNALS", True):
+                logger.info(
+                    f"DISCORD SIGNAL SKIPPED (sourcing-only mode): {result.ticker} "
+                    f"{result.direction.value} score={result.score}"
+                )
+                return
+
             if self.paper_trader:
                 try:
                     await self.paper_trader.evaluate_and_trade(result, sig_id)

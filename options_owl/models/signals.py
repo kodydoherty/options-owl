@@ -36,6 +36,7 @@ class BotSource(str, Enum):
     SMEE = "Smee"
     RUFIO = "Rufio"
     UNKNOWN = "unknown"
+    ML_SOURCING = "ml_sourcing"
 
 
 class TradeOutcome(str, Enum):
