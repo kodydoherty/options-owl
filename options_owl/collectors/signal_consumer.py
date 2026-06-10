@@ -71,10 +71,13 @@ async def _poll_and_route(paper_trader, settings: Settings, agent_id: str) -> No
         strike = sig.get("strike")
         expiry = sig.get("expiry_date")
 
-        # Skip if score below min
-        if score < settings.MIN_SCORE:
+        # ML signals carry score = int(model_confidence * 100) — a different
+        # scale than Discord scores. The model threshold is the real gate
+        # (applied upstream); ML_MIN_SCORE (settings.py) is just a sanity floor.
+        ml_min_score = settings.ML_MIN_SCORE
+        if score < ml_min_score:
             logger.debug(
-                f"Signal consumer: skipping {ticker} score={score} < {settings.MIN_SCORE}"
+                f"Signal consumer: skipping {ticker} score={score} < {ml_min_score}"
             )
             await pg.mark_signal_consumed(sig["id"], agent_id)
             continue
@@ -82,6 +85,13 @@ async def _poll_and_route(paper_trader, settings: Settings, agent_id: str) -> No
         # Convert to TradeSignal (the format the entry pipeline expects)
         try:
             direction = Direction.CALL if direction_str == "CALL" else Direction.PUT
+            # entry_price = underlying price (for anti_chase gate), not option premium
+            underlying = sig.get("underlying_price", 0) or (strike or 0)
+            # stop_price: 0.5% adverse from underlying
+            if direction == Direction.CALL:
+                stop = round(underlying * 0.995, 2) if underlying > 0 else None
+            else:
+                stop = round(underlying * 1.005, 2) if underlying > 0 else None
             trade_signal = TradeSignal(
                 ticker=ticker,
                 direction=direction,
@@ -89,7 +99,7 @@ async def _poll_and_route(paper_trader, settings: Settings, agent_id: str) -> No
                 score=score,
                 strength=_score_to_strength(score),
                 bot_source=BotSource.ML_SOURCING,
-                entry_price=premium or 0,
+                entry_price=underlying,
                 target_price=0,
                 expected_move_pct=0,
                 strike=strike or 0,
@@ -97,7 +107,7 @@ async def _poll_and_route(paper_trader, settings: Settings, agent_id: str) -> No
                 risk_reward=0,
                 target_1=None,
                 target_2=None,
-                stop_price=None,
+                stop_price=stop,
                 exit_by=None,
                 atm_strike=strike,
                 atm_premium=premium,

@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from dataclasses import dataclass
+from enum import Enum
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -22,6 +24,41 @@ if TYPE_CHECKING:
 
 from options_owl.collectors.support_levels import is_at_support
 from options_owl.journal.db import connect as _connect_db
+
+
+class SellOutcome(Enum):
+    """Categorized outcome of a Webull sell attempt.
+
+    Distinguishes the only failure mode that means "the position is genuinely
+    gone from Webull" (POSITION_NOT_FOUND) from transient failures that must
+    NOT be treated as a manual close.
+    """
+
+    FILLED = "filled"                  # Sell succeeded (or no executor — paper-only)
+    POSITION_NOT_FOUND = "position_not_found"  # User sold/expired — no live position
+    NOT_FILLED = "not_filled"          # Order placed but did not fill (retry, transient)
+    TRANSIENT_ERROR = "transient_error"  # API/network/exception/rejection (retry)
+
+
+@dataclass
+class SellResult:
+    """Structured result of close_webull_position.
+
+    ``success`` keeps backward-compat with callers that treat the result as a
+    bool (``if result:``) — SellResult is truthy iff the sell succeeded.
+    ``outcome`` carries the error category so the monitor can decide whether to
+    count a failure toward the manual-close abandonment budget.
+    """
+
+    outcome: SellOutcome
+    error: str | None = None
+
+    @property
+    def success(self) -> bool:
+        return self.outcome is SellOutcome.FILLED
+
+    def __bool__(self) -> bool:
+        return self.success
 
 
 def _fire_and_forget(coro) -> None:
@@ -517,9 +554,50 @@ async def _verify_live_premium(
     nbbo: dict | None = None  # bid/ask/mid at order time for NBBO logging
     expiry_candidates = _build_expiry_candidates(signal.ticker, expiry_date)
 
-    # Fast path: Polygon option quote with bid/ask (async, ~1-2s)
+    # Fastest path: Webull DataClient quote (same venue as execution, ~1s)
     used_expiry = expiry_date
-    if polygon_key:
+    if getattr(settings, "WEBULL_PRIMARY_QUOTES", False):
+        # Import here to avoid circular — webull_executor is passed via settings context
+        _wb_exec = getattr(settings, "_webull_executor", None)
+        if _wb_exec is not None:
+            for try_expiry in expiry_candidates:
+                try:
+                    wb_quote = await asyncio.wait_for(
+                        _wb_exec.get_option_quote(
+                            signal.ticker, signal.strike, try_expiry, option_type,
+                        ),
+                        timeout=10,
+                    )
+                    if wb_quote and wb_quote.get("mid") and wb_quote["mid"] > 0:
+                        ask = wb_quote.get("ask", 0)
+                        bid = wb_quote.get("bid", 0)
+                        mid = wb_quote["mid"]
+                        nbbo = {"bid": bid, "ask": ask, "mid": mid}
+                        if ask > 0:
+                            buffer_pct = getattr(settings, "SMART_ENTRY_ASK_BUFFER_PCT", 5.0)
+                            live_premium = round(ask * (1 + buffer_pct / 100), 2)
+                        else:
+                            live_premium = mid
+                        if try_expiry != expiry_date:
+                            logger.info(
+                                f"[SmartEntry] {signal.ticker}: Webull found {try_expiry} "
+                                f"(not {expiry_date})"
+                            )
+                        used_expiry = try_expiry
+                        expiry_date = try_expiry
+                        logger.info(
+                            f"[SmartEntry] {signal.ticker}: Webull quote "
+                            f"bid=${bid:.2f} ask=${ask:.2f} mid=${mid:.2f} "
+                            f"→ live=${live_premium:.2f} (exp={used_expiry})"
+                        )
+                        break
+                except asyncio.TimeoutError:
+                    logger.debug(f"[SmartEntry] Webull quote timed out for {try_expiry}")
+                except Exception as exc:
+                    logger.debug(f"[SmartEntry] Webull quote failed for {try_expiry}: {exc}")
+
+    # Fast path: Polygon option quote with bid/ask (async, ~1-2s)
+    if not live_premium and polygon_key:
         for try_expiry in expiry_candidates:
             try:
                 quote = await polygon_option_quote(
@@ -631,6 +709,14 @@ async def _verify_live_premium(
     # Calculate deviation from signal
     deviation_pct = (live_premium - signal_premium) / signal_premium * 100
     max_dev = getattr(settings, "SMART_ENTRY_MAX_DEVIATION_PCT", 30.0)
+
+    # ML-sourced signals: always accept the live premium (matches gold standard backtest)
+    # The scanner premium is a snapshot; the live premium is the real price we'd pay.
+    # For 0DTE, prices move 50-100% in seconds — deviation check fights against gamma.
+    from options_owl.models.signals import BotSource
+    is_ml_signal = getattr(signal, "bot_source", None) == BotSource.ML_SOURCING
+    if is_ml_signal:
+        max_dev = getattr(settings, "SMART_ENTRY_ML_MAX_DEVIATION_PCT", 500.0)
 
     # Decision logic
     # Always allow cheaper entries (negative deviation = better deal for us)
@@ -812,6 +898,9 @@ class PaperTrader:
         self.settings = settings
         self.db_path = settings.DB_PATH
         self.webull_executor = webull_executor
+        # Expose executor on settings for _verify_live_premium (avoids signature change)
+        if webull_executor is not None:
+            settings._webull_executor = webull_executor  # type: ignore[attr-defined]
         self.market_stream = None  # set by discord_collector after market stream starts
         self._signal_engine = None
         self._cached_live_balance: float | None = None
@@ -1282,6 +1371,7 @@ class PaperTrader:
                     _max_pos = 20.0 if _live_bal < 8000 else 15.0
                 if _max_conc <= 0:  # auto-adapt
                     _max_conc = 2 if _live_bal < 8000 else 4
+                _is_put = signal.direction == Direction.PUT
                 total_contracts = score_to_contracts(
                     signal.score,
                     cost_per_contract=cost_per_contract,
@@ -1290,6 +1380,8 @@ class PaperTrader:
                     max_concurrent=_max_conc,
                     max_portfolio_risk_pct=self.settings.MAX_PORTFOLIO_RISK_PCT,
                     ml_confidence=getattr(self, "_current_ml_confidence", None),
+                    is_put=_is_put,
+                    put_budget_multiplier=getattr(self.settings, "PUT_BUDGET_MULTIPLIER", 0.50),
                 )
                 if total_contracts <= 0:
                     logger.info(f"Score {signal.score} too low for Vinny sizing — 0 contracts")
@@ -1495,6 +1587,21 @@ class PaperTrader:
         nbbo_at_order: dict | None = None,
     ) -> None:
         """Place a real Webull order for a paper trade. Updates DB with order IDs."""
+        # Check Redis dashboard paper mode override
+        try:
+            from options_owl.db import redis_client
+            agent_id = getattr(self.settings, "AGENT_ID", "")
+            if agent_id and redis_client.is_connected():
+                paper_override = await redis_client.get_paper_mode(agent_id)
+                if paper_override is True:
+                    logger.warning(
+                        f"[TradeLifecycle] trade#{trade_id} {trade_info['ticker']}: "
+                        f"PAPER MODE via dashboard — Webull order SKIPPED"
+                    )
+                    return
+        except Exception:
+            pass  # Redis failure should never block trading
+
         order_value = trade_info["contracts"] * trade_info["premium"] * 100
 
         # ── Wait for market open if pre-market signal ────────────────────
@@ -1800,7 +1907,7 @@ class PaperTrader:
     async def close_webull_position(
         self, trade: dict, exit_premium: float,
         child_trade_id: int | None = None,
-    ) -> bool:
+    ) -> SellResult:
         """Close the corresponding Webull position when a paper trade is closed.
 
         Retry-aware: tracks attempts per trade and adjusts pricing on each retry.
@@ -1816,11 +1923,23 @@ class PaperTrader:
                 exit fill (for scaleout partial closes where the child row
                 has the actual P&L record).
 
-        Returns True if sell succeeded (or no executor), False if sell failed
-        and the position is still open on Webull.
+        Returns a :class:`SellResult` whose ``outcome`` categorizes the result:
+            - FILLED — sell succeeded (or no executor / paper-only).
+            - POSITION_NOT_FOUND — the position is genuinely gone from Webull
+              (user sold manually, expired, or exercised). ONLY this outcome
+              should count toward the monitor's manual-close abandonment budget.
+            - NOT_FILLED — order placed but did not fill (chase bid, retry).
+            - TRANSIENT_ERROR — API/network/exception/rejection (retry; never
+              force-close as manual).
+
+        SellResult is truthy iff the sell filled, so existing ``if result:``
+        callers (partial-close branches) keep working unchanged.
+
+        All SDK round-trips are wrapped in ``asyncio.wait_for`` so a hung
+        Webull call cannot stall the monitor loop for every other trade.
         """
         if self.webull_executor is None:
-            return True
+            return SellResult(SellOutcome.FILLED)
 
         ticker = trade["ticker"]
         trade_id = trade["id"]
@@ -1876,7 +1995,9 @@ class PaperTrader:
         # in SUBMITTED state or a prior sell attempt is pending.
         if retry_count > 0:
             try:
-                open_orders = await self.webull_executor.get_open_orders()
+                open_orders = await asyncio.wait_for(
+                    self.webull_executor.get_open_orders(), timeout=15,
+                )
                 strike_str = str(trade["strike"])
                 exp_str = trade.get("expiry_date") or ""
                 ot_str = trade["option_type"].upper()
@@ -1893,24 +2014,50 @@ class PaperTrader:
                                 f"CANCELLING PENDING ORDER before sell: "
                                 f"trade#{trade_id} {ticker} client_id={coid}"
                             )
-                            await self.webull_executor.cancel_order(coid)
+                            await asyncio.wait_for(
+                                self.webull_executor.cancel_order(coid), timeout=15,
+                            )
                             await asyncio.sleep(1)  # let Webull settle
                             break
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Cancel-pending lookup timed out (15s) for {ticker} #{trade_id} "
+                    f"— proceeding with sell"
+                )
             except Exception as exc:
                 logger.warning(
                     f"Failed to cancel pending orders for {ticker} #{trade_id}: {exc}"
                 )
 
         try:
-            result = await self.webull_executor.sell_option(
-                ticker=ticker,
-                strike=trade["strike"],
-                expiry_date=trade.get("expiry_date") or "",
-                option_type=trade["option_type"].upper(),
-                contracts=trade["contracts"],
-                limit_price=sell_price,
-                has_webull_order_id=bool(trade.get("webull_order_id")),
-            )
+            # The whole sell round-trip internally does: position lookup
+            # (~6s with backoff retries) + place + _wait_for_fill (SELL: 10s).
+            # Wrap WELL ABOVE that combined window (45s) so a genuinely-pending
+            # fill is never cancelled prematurely, but a hung SDK socket can't
+            # stall the monitor loop for every other open trade.
+            try:
+                result = await asyncio.wait_for(
+                    self.webull_executor.sell_option(
+                        ticker=ticker,
+                        strike=trade["strike"],
+                        expiry_date=trade.get("expiry_date") or "",
+                        option_type=trade["option_type"].upper(),
+                        contracts=trade["contracts"],
+                        limit_price=sell_price,
+                        has_webull_order_id=bool(trade.get("webull_order_id")),
+                    ),
+                    timeout=45,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    f"WEBULL EXIT TIMEOUT (attempt #{retry_count + 1}): "
+                    f"{ticker} #{trade_id} — sell_option hung >45s. "
+                    f"Treating as transient; position may still be open on Webull."
+                )
+                return SellResult(
+                    SellOutcome.TRANSIENT_ERROR,
+                    error="sell_option timed out (45s)",
+                )
 
             logger.debug(
                 f"WEBULL EXIT RESPONSE: trade#{trade_id} success={result.success} "
@@ -1939,15 +2086,27 @@ class PaperTrader:
                         )],
                         context=f"partial fill update for trade #{trade_id}",
                     )
-                    # Return False so the monitor reopens the trade for the remainder
-                    return False
+                    # Return NOT_FILLED so the monitor reopens the trade for the
+                    # remainder (not a manual close — position still partly open).
+                    return SellResult(
+                        SellOutcome.NOT_FILLED,
+                        error=f"partial fill {filled}/{requested}, retrying remainder",
+                    )
 
                 # Fetch real exit fill price from Webull (with retry for 429)
                 exit_fill_price = None
                 if result.client_order_id:
-                    exit_fill_price = await self.webull_executor.get_fill_price(
-                        result.client_order_id
-                    )
+                    try:
+                        exit_fill_price = await asyncio.wait_for(
+                            self.webull_executor.get_fill_price(result.client_order_id),
+                            timeout=15,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            f"get_fill_price timed out (15s) for trade#{trade_id} "
+                            f"{ticker} — sell still FILLED, skipping P&L reconcile"
+                        )
+                        exit_fill_price = None
                 logger.info(
                     f"WEBULL EXIT FILLED: {ticker} x{trade['contracts']} "
                     f"@ ${sell_price:.2f} ({price_source}) — order_id={result.order_id}"
@@ -2027,21 +2186,41 @@ class PaperTrader:
                             )],
                             context=f"webull exit fill for trade #{trade_id}",
                         )
-                return True
+                return SellResult(SellOutcome.FILLED)
             else:
                 logger.error(
                     f"WEBULL EXIT FAILED (attempt #{retry_count + 1}): "
                     f"{ticker} #{trade_id} — {result.error} "
                     f"@ ${sell_price:.2f} ({price_source})"
                 )
-                return False
+                # Categorize: only a genuine position-lookup miss means the
+                # position is GONE from Webull (user sold / expired). Everything
+                # else (order rejected, not filled, cancelled) is transient and
+                # must NOT count toward the manual-close abandonment budget.
+                err = (result.error or "").lower()
+                fill_status = (getattr(result, "fill_status", "") or "").upper()
+                if (
+                    "position lookup failed" in err
+                    or "no webull position found" in err
+                    or "nothing to close" in err
+                    or "position not found" in err
+                ):
+                    return SellResult(
+                        SellOutcome.POSITION_NOT_FOUND, error=result.error,
+                    )
+                if fill_status in ("SUBMITTED", "PARTIAL", "PARTIAL_FILLED"):
+                    return SellResult(SellOutcome.NOT_FILLED, error=result.error)
+                # Rejection / FAILED / unknown — treat as transient (retry).
+                return SellResult(SellOutcome.TRANSIENT_ERROR, error=result.error)
         except Exception as exc:
             logger.error(
                 f"WEBULL EXIT ERROR (attempt #{retry_count + 1}): "
                 f"{ticker} #{trade_id} — {type(exc).__name__}: {exc} "
                 f"@ ${sell_price:.2f} ({price_source})"
             )
-            return False
+            return SellResult(
+                SellOutcome.TRANSIENT_ERROR, error=f"{type(exc).__name__}: {exc}",
+            )
 
     async def _is_underlying_favorable(self, trade_info: dict) -> bool:
         """Check if the underlying is moving in our trade's favor.
@@ -2184,7 +2363,39 @@ class PaperTrader:
         # Build expiry candidates using the same per-ticker schedule as smart entry
         expiry_candidates = _build_expiry_candidates(signal.ticker, expiry_date)
 
-        # --- Primary: Polygon REST snapshot (use ask price for buys) ---
+        # --- Webull quote (fastest, same venue as execution) ---
+        if getattr(self.settings, "WEBULL_PRIMARY_QUOTES", False) and self.webull_executor:
+            for try_expiry in expiry_candidates:
+                try:
+                    wb_quote = await asyncio.wait_for(
+                        self.webull_executor.get_option_quote(
+                            signal.ticker, signal.strike, try_expiry, option_type,
+                        ),
+                        timeout=10,
+                    )
+                    if wb_quote and wb_quote.get("mid") and wb_quote["mid"] > 0:
+                        ask = wb_quote.get("ask", 0)
+                        mid = wb_quote["mid"]
+                        if ask > 0:
+                            buffer_pct = getattr(self.settings, "SMART_ENTRY_ASK_BUFFER_PCT", 5.0)
+                            premium = round(ask * (1 + buffer_pct / 100), 2)
+                        else:
+                            premium = mid
+                        if premium and premium > 0:
+                            update = {"atm_premium": premium, "atm_strike": signal.strike}
+                            if try_expiry != expiry_date:
+                                update["expiry"] = try_expiry
+                            logger.info(
+                                f"Webull filled premium for {signal.ticker} "
+                                f"${signal.strike} {option_type}: ${premium:.2f} (exp={try_expiry})"
+                            )
+                            return signal.model_copy(update=update)
+                except asyncio.TimeoutError:
+                    pass
+                except Exception as exc:
+                    logger.debug(f"Webull fill_premium failed for {try_expiry}: {exc}")
+
+        # --- Polygon REST snapshot (use ask price for buys) ---
         api_key = getattr(self.settings, "POLYGON_API_KEY", "")
         if api_key:
             from options_owl.collectors.polygon_options import polygon_option_quote
@@ -2261,6 +2472,11 @@ class PaperTrader:
     ) -> dict | None:
         """Evaluate a signal through the entry pipeline and open a paper trade if approved."""
         self._current_ml_confidence = ml_confidence
+
+        # PUT kill switch — block all PUT entries when disabled
+        if signal.direction == Direction.PUT and not getattr(self.settings, "ENABLE_PUT_TRADING", False):
+            logger.info(f"[TradeLifecycle] {signal.ticker}: PUT blocked — ENABLE_PUT_TRADING=false")
+            return None
 
         # Daily circuit breaker: stop trading if today's realized + unrealized losses exceed threshold.
         # Includes open-trade unrealized P&L so a string of underwater positions triggers the breaker.
@@ -2389,6 +2605,10 @@ class PaperTrader:
             )
             open_positions = [(row[0], row[1]) for row in await cursor.fetchall()]
 
+            # Per-direction counts for regime-based slot gating
+            open_calls = sum(1 for _, ot in open_positions if ot and ot.lower() == "call")
+            open_puts = sum(1 for _, ot in open_positions if ot and ot.lower() == "put")
+
         # Lazy-init candle cache for momentum confirmation gate
         candle_cache = None
         polygon_key = getattr(self.settings, "POLYGON_API_KEY", None)
@@ -2404,21 +2624,97 @@ class PaperTrader:
             except Exception as exc:
                 logger.warning(f"Failed to init candle cache for momentum gate: {exc}")
 
-        # Compute SPY change from open for PUT market direction gate
-        spy_change_from_open = None
-        if candle_cache:
+        # Parallel pre-pipeline data fetches — SPY candles + delta lookup run
+        # concurrently instead of sequentially (saves up to 12s worst case).
+
+        async def _fetch_spy_change() -> float | None:
+            # Primary: read from Redis (shared harvester data — no per-bot API call)
+            try:
+                from options_owl.db import redis_client
+                if redis_client.is_connected():
+                    spy = await asyncio.wait_for(
+                        redis_client.get_spy_change(), timeout=2,
+                    )
+                    if spy and spy.get("change_pct") is not None:
+                        change = spy["change_pct"]
+                        logger.debug(
+                            f"SPY change from open: {change:+.2f}% "
+                            f"(open={spy['open']:.2f} last={spy['last']:.2f}) [redis]"
+                        )
+                        return change
+            except Exception:
+                pass
+
+            # Fallback: Polygon REST (per-bot API key, may 429)
+            if not candle_cache:
+                return None
             try:
                 spy_data = await asyncio.wait_for(
                     candle_cache.get_candle_data("SPY"), timeout=10,
                 )
                 spy_bars = spy_data.get("5m", []) if spy_data else []
                 if spy_bars and len(spy_bars) >= 2:
-                    spy_open = spy_bars[0].get("open", 0)
-                    spy_last = spy_bars[-1].get("close", 0)
+                    bar0 = spy_bars[0]
+                    bar_last = spy_bars[-1]
+                    spy_open = getattr(bar0, "open", None) or (bar0.get("open", 0) if isinstance(bar0, dict) else 0)
+                    spy_last = getattr(bar_last, "close", None) or (bar_last.get("close", 0) if isinstance(bar_last, dict) else 0)
                     if spy_open > 0:
-                        spy_change_from_open = (spy_last / spy_open - 1) * 100
-            except (asyncio.TimeoutError, Exception):
-                pass  # fail-open: allow PUTs if we can't get SPY data
+                        change = (spy_last / spy_open - 1) * 100
+                        logger.debug(f"SPY change from open: {change:+.2f}% (open={spy_open:.2f} last={spy_last:.2f} bars={len(spy_bars)}) [polygon]")
+                        return change
+                    else:
+                        logger.warning(f"SPY candle has zero open price, bars={len(spy_bars)}")
+                else:
+                    logger.warning(f"SPY candle data insufficient: bars={len(spy_bars) if spy_bars else 0} data={'present' if spy_data else 'None'}")
+            except asyncio.TimeoutError:
+                logger.warning("SPY candle fetch timed out (10s) for PUT direction gate")
+            except Exception as exc:
+                logger.warning(f"SPY candle fetch failed for PUT direction gate: {exc}")
+            return None
+
+        async def _fetch_entry_delta() -> float | None:
+            if not getattr(self.settings, "ENABLE_DELTA_GATE", False) or not signal.strike:
+                return None
+            try:
+                from options_owl.db import redis_client
+                if not redis_client.is_connected():
+                    return None
+                direction = signal.direction.value.lower()
+                expiry_str = resolve_expiry_date(signal.expiry) or ""
+                if not expiry_str:
+                    return None
+                contract_key = (
+                    f"{signal.ticker}:{direction}:"
+                    f"{signal.strike}:{expiry_str}"
+                )
+                snap = await asyncio.wait_for(
+                    redis_client.get_option_snapshot(contract_key),
+                    timeout=2,
+                )
+                if snap and snap.get("delta"):
+                    logger.debug(
+                        f"  {signal.ticker} delta={snap['delta']:.3f} "
+                        f"from Redis snapshot"
+                    )
+                    return snap["delta"]
+            except asyncio.TimeoutError:
+                pass
+            except Exception:
+                pass
+            return None
+
+        spy_change_from_open, entry_delta = await asyncio.gather(
+            _fetch_spy_change(), _fetch_entry_delta(),
+        )
+
+        # Get regime state for direction slot gating (instant — no I/O)
+        regime_state = None
+        try:
+            from options_owl.execution.position_monitor import _regime_detector
+            if _regime_detector is not None:
+                regime_state = _regime_detector.state
+        except Exception:
+            pass
 
         ctx = {
             "signal": signal,
@@ -2426,12 +2722,20 @@ class PaperTrader:
             "db_path": self.db_path,
             "portfolio": portfolio,
             "open_count": open_count,
+            "open_calls": open_calls,
+            "open_puts": open_puts,
             "open_tickers": open_tickers,
             "open_positions": open_positions,
             "current_price": current_underlying,
             "webull_executor": self.webull_executor,
             "candle_cache": candle_cache,
             "spy_change_from_open": spy_change_from_open,
+            "regime_state": regime_state,
+            "entry_delta": entry_delta,
+            # NBBO from smart-entry live lookup — without this the V6 spread gate
+            # always SKIPs (it reads ctx["bid"]/["ask"]) and never blocks wide spreads.
+            "bid": (nbbo_at_order or {}).get("bid", 0.0),
+            "ask": (nbbo_at_order or {}).get("ask", 0.0),
         }
         result = await run_entry_pipeline(ctx)
 
@@ -2455,7 +2759,15 @@ class PaperTrader:
                 f"{old_dir}→{signal.direction.value.lower()}, "
                 f"closing old position"
             )
-            await self._close_signal_flip(flip_ticker, old_dir)
+            flip_ok = await self._close_signal_flip(flip_ticker, old_dir)
+            if not flip_ok:
+                logger.warning(
+                    f"[TradeLifecycle] SIGNAL FLIP BLOCKED: {flip_ticker} "
+                    f"— failed to close old {old_dir} on Webull, "
+                    f"skipping new {signal.direction.value.lower()} to avoid "
+                    f"holding both directions"
+                )
+                return None
 
         logger.info(
             f"[TradeLifecycle] {signal.ticker}: pipeline=APPROVED, "
@@ -2600,31 +2912,50 @@ class PaperTrader:
                     return True, t1
 
                 # VWAP direction block: counter-trend trades are high risk
-                # Put above VWAP = buying puts in bullish structure (e.g. GOOGL bug)
+                # Put above VWAP = buying puts in bullish structure
                 # Call below VWAP = buying calls in bearish structure
+                # ML-sourced signals: don't block, just log and fall through to
+                # dip-wait polling (get a cheaper entry instead of killing the trade).
+                from options_owl.models.signals import BotSource
+                is_ml_signal = getattr(signal, "bot_source", None) == BotSource.ML_SOURCING
+
                 if above_vwap and option_type == "put":
-                    logger.info(
-                        f"[DipConfirm] {signal.ticker}: VWAP BLOCK — put above VWAP "
-                        f"(counter-trend, fade={fade:+.1f}%) — {details}"
-                    )
-                    await log_trade_event(
-                        self.db_path, signal.ticker, "dip_confirm_vwap_blocked",
-                        f"put_above_vwap: fade={fade:+.1f}% underlying above VWAP "
-                        f"= counter-trend — SKIPPING — {details}",
-                    )
-                    return False, None
+                    if is_ml_signal:
+                        logger.info(
+                            f"[DipConfirm] {signal.ticker}: put above VWAP "
+                            f"(counter-trend, fade={fade:+.1f}%) — ML signal, "
+                            f"waiting for dip instead of blocking — {details}"
+                        )
+                    else:
+                        logger.info(
+                            f"[DipConfirm] {signal.ticker}: VWAP BLOCK — put above VWAP "
+                            f"(counter-trend, fade={fade:+.1f}%) — {details}"
+                        )
+                        await log_trade_event(
+                            self.db_path, signal.ticker, "dip_confirm_vwap_blocked",
+                            f"put_above_vwap: fade={fade:+.1f}% underlying above VWAP "
+                            f"= counter-trend — SKIPPING — {details}",
+                        )
+                        return False, None
 
                 if not above_vwap and option_type == "call":
-                    logger.info(
-                        f"[DipConfirm] {signal.ticker}: VWAP BLOCK — call below VWAP "
-                        f"(counter-trend, fade={fade:+.1f}%) — {details}"
-                    )
-                    await log_trade_event(
-                        self.db_path, signal.ticker, "dip_confirm_vwap_blocked",
-                        f"call_below_vwap: fade={fade:+.1f}% underlying below VWAP "
-                        f"= counter-trend — SKIPPING — {details}",
-                    )
-                    return False, None
+                    if is_ml_signal:
+                        logger.info(
+                            f"[DipConfirm] {signal.ticker}: call below VWAP "
+                            f"(counter-trend, fade={fade:+.1f}%) — ML signal, "
+                            f"waiting for dip instead of blocking — {details}"
+                        )
+                    else:
+                        logger.info(
+                            f"[DipConfirm] {signal.ticker}: VWAP BLOCK — call below VWAP "
+                            f"(counter-trend, fade={fade:+.1f}%) — {details}"
+                        )
+                        await log_trade_event(
+                            self.db_path, signal.ticker, "dip_confirm_vwap_blocked",
+                            f"call_below_vwap: fade={fade:+.1f}% underlying below VWAP "
+                            f"= counter-trend — SKIPPING — {details}",
+                        )
+                        return False, None
 
             await log_trade_event(
                 self.db_path, signal.ticker, "dip_confirm_wait",
@@ -2661,8 +2992,20 @@ class PaperTrader:
                     return True, current
                 prev = current
 
-            # No uptick — skip trade
+            # No uptick after polling
             total_fade = (t0_premium - prev) / t0_premium * 100 if prev else fade
+            from options_owl.models.signals import BotSource
+            is_ml = getattr(signal, "bot_source", None) == BotSource.ML_SOURCING
+            if is_ml:
+                # ML signals: enter anyway at best price seen (model already validated)
+                best_price = low_water if low_water and low_water > 0 else prev
+                savings_pct = (t0_premium - best_price) / t0_premium * 100 if best_price else 0
+                logger.info(
+                    f"[DipConfirm] {signal.ticker}: no uptick after {max_polls} polls "
+                    f"(t0=${t0_premium:.2f} → low=${low_water:.2f}) — ML signal, "
+                    f"entering at ${best_price:.2f} (saved {savings_pct:+.1f}%)"
+                )
+                return True, best_price
             logger.info(
                 f"[DipConfirm] {signal.ticker}: NO uptick after {max_polls} polls "
                 f"(t0=${t0_premium:.2f} → low=${low_water:.2f} → last=${prev:.2f}, "
@@ -2736,11 +3079,14 @@ class PaperTrader:
         )
         return at_support_result, above_vwap, detail
 
-    async def _close_signal_flip(self, ticker: str, old_direction: str) -> None:
+    async def _close_signal_flip(self, ticker: str, old_direction: str) -> bool:
         """Close open positions on ticker with the given direction (signal flip).
 
         Called when a new signal arrives for the same ticker but opposite direction.
         Closes at current premium via the normal close flow.
+
+        Returns True if all Webull closes succeeded (or no Webull positions),
+        False if any Webull close failed (caller should NOT open the new trade).
         """
         async with _connect_db(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
@@ -2751,6 +3097,7 @@ class PaperTrader:
             )
             trades = [dict(row) for row in await cursor.fetchall()]
 
+        webull_close_ok = True
         for trade in trades:
             # Use entry premium as fallback — position_monitor will handle
             # the actual close with real premium on its next cycle
@@ -2768,8 +3115,18 @@ class PaperTrader:
             await self.close_trade(
                 trade["id"], exit_price, exit_premium, "signal_flip"
             )
-            # Also close on Webull if live
-            await self.close_webull_position(trade, exit_premium)
+            # Also close on Webull if live — if this fails, block new trade
+            if trade.get("webull_order_id"):
+                sold = await self.close_webull_position(trade, exit_premium)
+                if not sold:
+                    logger.error(
+                        f"[TradeLifecycle] SIGNAL FLIP WEBULL CLOSE FAILED: "
+                        f"#{trade['id']} {ticker} {old_direction} "
+                        f"— position still on Webull"
+                    )
+                    webull_close_ok = False
+
+        return webull_close_ok
 
     async def close_trade(
         self,
@@ -2863,7 +3220,35 @@ class PaperTrader:
                 "pnl_pct": pnl_pct,
                 "reason": reason,
                 "balance": new_balance,
+                # Needed to reverse the portfolio side-effects if the
+                # corresponding Webull sell fails and the trade is reopened
+                # (otherwise proceeds are credited again on the next cycle).
+                "proceeds": proceeds,
+                "strategy": strategy,
             }
+
+    async def revert_close_effects(
+        self, strategy: str, proceeds: float, pnl: float,
+    ) -> None:
+        """Reverse the portfolio side-effects of close_trade().
+
+        Called when a paper trade was closed in the DB (crediting proceeds and
+        bumping win/loss + daily_pnl) but the live Webull sell failed and the
+        trade is being reopened for retry. Without this, every retry cycle
+        re-credits proceeds and double-counts the win/loss — corrupting the
+        balance that feeds sizing, the daily loss cap, and DCA spend caps.
+        """
+        win_col = "wins" if pnl >= 0 else "losses"
+        async with _connect_db(self.db_path) as conn:
+            await conn.execute(
+                f"UPDATE paper_portfolio SET "
+                f"current_balance = current_balance - ?, "
+                f"daily_pnl = daily_pnl - ?, "
+                f"{win_col} = MAX(0, {win_col} - 1) "
+                f"WHERE strategy = ?",
+                (proceeds, pnl, strategy),
+            )
+            await self._commit_with_retry(conn, f"revert close effects ({strategy})")
 
     # ------------------------------------------------------------------
     # PostgreSQL dual-write helpers (Phase 1 — fire-and-forget)

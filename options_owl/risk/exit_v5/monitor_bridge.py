@@ -98,10 +98,32 @@ class V5MonitorBridge:
         # Use actual Webull fill price when available — signal premium can be
         # stale/inflated, causing the FSM to undercount gain% and miss exits.
         # e.g. AVGO #135: signal $2.11, fill $1.83, peak $2.26 → +7% vs +23%.
-        entry_prem = (
-            trade.get("webull_entry_fill_price")
-            or trade.get("premium_per_contract", 0.0)
+        webull_fill = trade.get("webull_entry_fill_price") or 0.0
+        blended = trade.get("premium_per_contract", 0.0) or 0.0
+
+        # RESTART DURABILITY (FIX 3a): if this trade was DCA'd, webull_entry_fill_price
+        # holds only the ORIGINAL first fill — using it would overstate gain% and
+        # break the FSM after a restart. premium_per_contract is the blended average
+        # (updated by dca_add_contracts). Detect a DCA via dca_last_add_at (set on
+        # every add) or the blended price diverging from the first fill beyond a
+        # penny of rounding. When detected, prefer the blended average.
+        dca_occurred = bool(trade.get("dca_last_add_at")) or (
+            webull_fill > 0 and blended > 0 and abs(blended - webull_fill) > 0.01
         )
+        if dca_occurred and blended > 0:
+            entry_prem = blended
+            entry_source = "blended(DCA)"
+        elif webull_fill > 0:
+            entry_prem = webull_fill
+            entry_source = "webull_fill"
+        else:
+            entry_prem = blended
+            entry_source = "premium_per_contract"
+
+        peak_premium = trade.get("mfe_premium") or entry_prem
+        # Guard: peak can never be below entry (mfe may be stale/null pre-DCA).
+        if peak_premium < entry_prem:
+            peak_premium = entry_prem
 
         state = TradeState(
             trade_id=trade_id,
@@ -110,16 +132,40 @@ class V5MonitorBridge:
             entry_premium=entry_prem,
             entry_time=entry_time,
             contracts=trade.get("contracts", 1),
-            peak_premium=trade.get("mfe_premium") or entry_prem,
+            peak_premium=peak_premium,
             entry_underlying_price=trade.get("entry_price", 0.0),
             dte=dte,
             expiry_date=expiry_date,
         )
 
+        # RESTART DURABILITY (FIX 3c): restore scaled_out so a trade that already
+        # scaled out before a restart does NOT scale out again. The monitor injects
+        # `_scaled_out_restore=True` when a scaleout child row exists for this parent.
+        if trade.get("_scaled_out_restore"):
+            state.scaled_out = True
+
+        # RESTART DURABILITY (FIX 3b): arm the breakeven ratchet from PEAK gain, not
+        # current gain. A trade that peaked >= the trigger but now sits at a loss
+        # must keep its break-even protection across a restart. check_breakeven_ratchet
+        # will (re-)arm on current gain too, so the normal in-process path is unchanged.
+        if self.settings is not None and getattr(
+            self.settings, "ENABLE_V6_BREAKEVEN_RATCHET", False
+        ):
+            trigger_pct = getattr(self.settings, "V6_BREAKEVEN_TRIGGER_PCT", 20.0)
+            peak_gain = (
+                (peak_premium - entry_prem) / entry_prem * 100
+                if entry_prem > 0 else 0.0
+            )
+            if peak_gain >= trigger_pct:
+                state.breakeven_ratchet_armed = True
+
         self._states[trade_id] = state
         logger.info(
             f"EXIT_FSM: Created TradeState #{trade_id} {trade['ticker']} "
-            f"entry=${state.entry_premium:.2f} contracts={state.contracts} "
+            f"entry=${state.entry_premium:.2f} ({entry_source}) "
+            f"peak=${state.peak_premium:.2f} contracts={state.contracts} "
+            f"scaled_out={state.scaled_out} "
+            f"ratchet_armed={state.breakeven_ratchet_armed} "
             f"dte={dte} expiry={expiry_date}"
         )
         return state
@@ -166,14 +212,21 @@ class V5MonitorBridge:
         if db_contracts != state.contracts:
             state.contracts = db_contracts
 
-        # Use real bid/ask from trade dict if available.
-        # Fall back to spread estimate based on premium level.
-        bid = trade.get("bid", 0.0) or 0.0
-        ask = trade.get("ask", 0.0) or 0.0
-        if bid <= 0 or ask <= 0:
+        # Use real bid/ask from the trade dict when the monitor supplied them
+        # (position_monitor injects only when a quote source actually returned
+        # NBBO). A real bid of 0.0 is meaningful — it's exactly the "no buyers"
+        # signal the bid-disappearance gate exists to catch — so it must pass
+        # through, NOT be replaced by a synthetic positive bid. Only estimate a
+        # spread when no real quote was provided (bid/ask absent or None).
+        raw_bid = trade.get("bid")
+        raw_ask = trade.get("ask")
+        if raw_bid is None or raw_ask is None:
             spread_pct = 0.05 if exit_premium < 1.0 else 0.02
             bid = exit_premium * (1 - spread_pct)
             ask = exit_premium * (1 + spread_pct)
+        else:
+            bid = raw_bid
+            ask = raw_ask
 
         # Compute minutes to close (market closes at 4:00 PM ET)
         seconds_left = max(0, (16 * 60 * 60) - (now_et.hour * 3600 + now_et.minute * 60 + now_et.second))

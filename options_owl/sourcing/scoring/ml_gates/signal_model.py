@@ -23,6 +23,52 @@ MODELS_DIR = Path(os.environ.get(
 # Lazy-loaded model cache: ticker -> (booster, meta_dict)
 _model_cache: dict[str, tuple] = {}
 
+# Once-per-model warning registry for missing serve-time features
+_missing_feature_warned: set[str] = set()
+
+
+def _feature_contract_ok(name: str, model, meta: dict) -> bool:
+    """Validate that meta['features'] exactly matches the booster's features.
+
+    A mismatch means serve-time feature vectors would be built in the wrong
+    order / with wrong columns — silently corrupting every prediction.
+    Fail loudly and refuse to use the model.
+    """
+    meta_features = meta.get("features")
+    if not meta_features:
+        # No meta features — predict path will bail out (returns model_source=none)
+        return True
+    try:
+        booster_features = list(model.feature_name())
+    except Exception:
+        return True  # cannot introspect (e.g. mocks) — skip validation
+    if list(meta_features) != booster_features:
+        logger.error(
+            f"ML_SIGNAL: FEATURE CONTRACT MISMATCH for {name} — "
+            f"meta has {len(meta_features)} features, booster has "
+            f"{len(booster_features)}. meta_only={set(meta_features) - set(booster_features)} "
+            f"booster_only={set(booster_features) - set(meta_features)}. REFUSING to load."
+        )
+        return False
+    return True
+
+
+def _warn_missing_features(model_name: str, feature_names: list, features: dict) -> None:
+    """Log a once-per-model WARNING for any meta feature the live dict didn't supply.
+
+    Silent .get(f, 0) defaults hide serve-time feature skew — this makes it loud.
+    """
+    if model_name in _missing_feature_warned:
+        return
+    missing = [f for f in feature_names if f not in features]
+    if missing:
+        logger.warning(
+            f"ML_SIGNAL: {model_name} — live feature dict is missing "
+            f"{len(missing)}/{len(feature_names)} model features (defaulting to 0): "
+            f"{missing}"
+        )
+    _missing_feature_warned.add(model_name)
+
 
 def _load_model(ticker: str, direction: str = ""):
     """Lazy-load a signal model with fallback chain.
@@ -60,6 +106,8 @@ def _load_model(ticker: str, direction: str = ""):
                 if meta_path.exists():
                     with open(meta_path) as f:
                         meta = json.load(f)
+                if not _feature_contract_ok(name, model, meta):
+                    continue  # try next candidate — never serve a skewed model
                 _model_cache[cache_key] = (model, meta)
                 logger.info(f"ML_SIGNAL: loaded {name} (threshold={meta.get('optimal_threshold', 0.5):.2f})")
                 return model, meta
@@ -100,6 +148,8 @@ def _load_runner_model(ticker: str, direction: str = ""):
                 if meta_path.exists():
                     with open(meta_path) as f:
                         meta = json.load(f)
+                if not _feature_contract_ok(name, model, meta):
+                    continue
                 _model_cache[cache_key] = (model, meta)
                 return model, meta
             except Exception:
@@ -149,6 +199,7 @@ def predict_entry_confidence(ticker: str, features: dict, direction: str = "") -
 
     import numpy as np
 
+    _warn_missing_features(f"signal_{meta.get('ticker', ticker)}", feature_names, features)
     X = np.array([[features.get(f, 0) for f in feature_names]])
     confidence = float(model.predict(X)[0])
     threshold = meta.get("optimal_threshold", 0.5)
@@ -158,6 +209,7 @@ def predict_entry_confidence(ticker: str, features: dict, direction: str = "") -
     runner_model, runner_meta = _load_runner_model(ticker, dir_key)
     if runner_model is not None:
         runner_features = runner_meta.get("features", feature_names)
+        _warn_missing_features(f"runner_{runner_meta.get('ticker', ticker)}", runner_features, features)
         X_runner = np.array([[features.get(f, 0) for f in runner_features]])
         runner_score = float(runner_model.predict(X_runner)[0])
 
@@ -195,11 +247,27 @@ def compute_option_features_from_live(
     premium_history: list[float] | None = None,
     volume_history: list[int] | None = None,
     underlying_history: list[float] | None = None,
+    bid_size: float = 0.0,
+    ask_size: float = 0.0,
+    spread_history: list[float] | None = None,
+    iv_history: list[float] | None = None,
 ) -> dict:
     """Build feature dict from live market data for model prediction.
 
-    This mirrors compute_setup_features() from train_option_signals_v2.py
-    but uses live data instead of historical DataFrames.
+    This is the SINGLE source of truth for serve-time V2 signal features.
+    Both the sourcing scanner (scanner._run_ml_gate) and the ML pipeline
+    (ml_pipeline._build_v2_signal_features) MUST build features through this
+    function so serving matches training (train_option_signals_v2.py
+    compute_setup_features) exactly.
+
+    History conventions (matching training windows):
+      - premium_history / volume_history: trailing values OLDEST→NEWEST,
+        EXCLUDING the current snapshot (current values are passed as
+        `premium` / `volume`).
+      - spread_history / iv_history / underlying_history: trailing values
+        oldest→newest INCLUDING the current snapshot as the last element
+        (training computes these from the full lookback window whose last
+        row is the decision candle).
     """
     import numpy as np
 
@@ -285,19 +353,44 @@ def compute_option_features_from_live(
     mid = (bid + ask) / 2 if (bid + ask) > 0 else premium
     f["spread"] = max(0, ask - bid)
     f["spread_pct"] = f["spread"] / mid * 100 if mid > 0 else 0
-    f["spread_tightening"] = 0  # would need spread history
-    f["bid_size"] = 0  # not always available live
-    f["ask_size"] = 0
-    f["size_imbalance"] = 0
+
+    # Spread tightening — training: mean(first half) - mean(second half) of the
+    # window's spreads (positive = tightening). Requires > 3 spread observations.
+    sp_hist = [s for s in (spread_history or []) if s is not None and s >= 0]
+    if len(sp_hist) > 3:
+        sp_arr = np.array(sp_hist, dtype=np.float64)
+        first_half = float(np.mean(sp_arr[: len(sp_arr) // 2]))
+        second_half = float(np.mean(sp_arr[len(sp_arr) // 2 :]))
+        f["spread_tightening"] = first_half - second_half
+    else:
+        f["spread_tightening"] = 0
+
+    # Quote sizes — real values from the live quote (training: bid_size/ask_size
+    # from option_quotes; size_imbalance = (bid-ask)/max(bid+ask, 1))
+    f["bid_size"] = float(bid_size or 0)
+    f["ask_size"] = float(ask_size or 0)
+    f["size_imbalance"] = (f["bid_size"] - f["ask_size"]) / max(f["bid_size"] + f["ask_size"], 1)
 
     # Greeks
-    f["iv"] = iv
-    f["delta"] = abs(delta)
-    f["theta"] = theta
-    f["vega"] = vega
-    f["iv_change_5m"] = 0  # would need IV history
-    f["iv_change_15m"] = 0
-    f["iv_trend"] = 0
+    f["iv"] = iv if iv is not None else 0
+    f["delta"] = abs(delta) if delta is not None else 0
+    f["theta"] = theta if theta is not None else 0
+    f["vega"] = vega if vega is not None else 0
+
+    # IV dynamics — training (with ivs = window IVs incl. decision candle, NaNs dropped):
+    #   iv_change_5m  = ivs[-1] - ivs[-6]  (if > 5 obs, else 0)
+    #   iv_change_15m = ivs[-1] - ivs[0]
+    #   iv_trend      = linear slope over the window (if > 2 obs)
+    # Requires > 3 valid IV observations (training guard), else all zero.
+    ivs = [v for v in (iv_history or []) if v is not None and v > 0]
+    if len(ivs) > 3:
+        f["iv_change_5m"] = float(ivs[-1] - ivs[-6]) if len(ivs) > 5 else 0
+        f["iv_change_15m"] = float(ivs[-1] - ivs[0])
+        f["iv_trend"] = float(np.polyfit(range(len(ivs)), ivs, 1)[0]) if len(ivs) > 2 else 0
+    else:
+        f["iv_change_5m"] = 0
+        f["iv_change_15m"] = 0
+        f["iv_trend"] = 0
 
     # Underlying
     f["underlying_price"] = underlying_price
@@ -312,6 +405,12 @@ def compute_option_features_from_live(
     if underlying_history and len(underlying_history) > 2:
         arr = np.array(underlying_history)
         f["underlying_volatility"] = float(np.std(np.diff(arr) / arr[:-1]) * 100)
+        # NOTE: training defines vwap_deviation as deviation from the MEAN of the
+        # trailing stock-close window (train_option_signals_v2.py:634), NOT true
+        # session VWAP. Serving must match training, so we use the same
+        # trailing-window mean here. If the model is retrained on real session
+        # VWAP (Polygon AM-bar vwap is now captured in ml_pipeline.MinuteBar),
+        # update this to match.
         vwap = np.mean(arr)
         f["vwap_deviation"] = (underlying_price / vwap - 1) * 100 if vwap > 0 else 0
     else:

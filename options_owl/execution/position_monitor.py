@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import discord
@@ -86,6 +86,8 @@ def _cleanup_trade_state(trade_id: int) -> None:
     _thesis_cut_states.pop(trade_id, None)
     _premium_fail_count.pop(trade_id, None)
     _v6_dca_fired.discard(trade_id)
+    _transient_sell_failures.pop(trade_id, None)
+    _premium_tick_last_write.pop(trade_id, None)
     if _v5_bridge is not None:
         _v5_bridge.cleanup_trade(trade_id)
 
@@ -103,11 +105,31 @@ RECONCILIATION_INTERVAL = 300  # seconds between reconciliation checks
 # V5 FSM bridge (lazy-initialized when EXIT_ENGINE=v5)
 _v5_bridge: object | None = None  # V5MonitorBridge instance
 
+# Intraday regime detector (shared with bot_runner, set via set_regime_detector())
+_regime_detector: object | None = None
+
+
+def set_regime_detector(detector) -> None:
+    """Set the shared regime detector instance (called by bot_runner)."""
+    global _regime_detector
+    _regime_detector = detector
+
 # Phantom trade detection: consecutive miss counts per trade_id
 _phantom_miss_counts: dict[int, int] = {}
 
+# Transient sell-failure counts per trade_id. Distinct from the abandonment
+# budget (which only counts POSITION_NOT_FOUND) — used purely for alerting so a
+# Webull outage never force-closes a still-open live position as 'manual'.
+_transient_sell_failures: dict[int, int] = {}
+
 # V6 DCA: tracks which trade IDs have already fired DCA (one-shot per trade)
 _v6_dca_fired: set[int] = set()
+
+# Premium tick buffer for PG writes (spec 01: exit model training data)
+_premium_tick_buffer: list[dict] = []
+_premium_tick_last_write: dict[int, float] = {}  # trade_id -> last write timestamp
+_PREMIUM_TICK_INTERVAL = 15.0  # write every 15s per trade (every 3rd poll cycle)
+_PREMIUM_TICK_FLUSH_SIZE = 20  # flush to PG when buffer reaches this size
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +171,16 @@ def _fetch_current_price(ticker: str) -> float | None:
 
 async def _fetch_price_async(ticker: str) -> float | None:
     return await asyncio.to_thread(_fetch_current_price, ticker)
+
+
+async def _write_premium_ticks(ticks: list[dict]) -> None:
+    """Fire-and-forget write of premium ticks to PG. Never blocks the monitor."""
+    try:
+        from options_owl.db import postgres as pg
+        if pg.is_connected():
+            await pg.write_premium_ticks_batch(ticks)
+    except Exception as exc:
+        logger.debug(f"Premium tick flush failed ({len(ticks)} ticks): {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -560,8 +592,20 @@ async def _check_v6_dca(
                 fs.peak_premium = exit_premium
                 # Also reset the FSM state to GRACE so the trade gets a fresh
                 # grace period after averaging in.
-                fs.state = "GRACE"
-                fs.entry_time = datetime.now()
+                # CRITICAL: entry_time MUST be naive ET to match the FSM's
+                # _elapsed_minutes(), which compares against naive ET. Using a
+                # bare datetime.now() (naive UTC in the container) makes elapsed
+                # negative → clamped to 0 → the trade is stuck in GRACE for ~4-5h,
+                # disabling every exit gate on a freshly-doubled position.
+                from options_owl.risk.exit_v5.fsm import FSMState
+                fs.state = FSMState.GRACE
+                fs.entry_time = _now_et().replace(tzinfo=None)
+                # New blended cost basis ⇒ re-arm V6 protections from scratch.
+                # An armed ratchet / completed scaleout from the old basis would
+                # otherwise fire immediately against the new (lower) entry.
+                fs.breakeven_ratchet_armed = False
+                fs.scaled_out = False
+                fs.seconds_at_zero_bid = 0.0
                 logger.info(
                     f"  #{trade_id} V6 DCA: reset FSM — "
                     f"avg=${new_avg_premium:.2f}, contracts={new_total_contracts}, "
@@ -642,7 +686,15 @@ async def _reconcile_positions(
         return
 
     try:
-        webull_positions = await paper_trader.webull_executor.get_open_option_positions()
+        webull_positions = await asyncio.wait_for(
+            paper_trader.webull_executor.get_open_option_positions(), timeout=15,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Position reconciliation: get_open_option_positions timed out (15s) "
+            "— skipping this cycle"
+        )
+        return
     except Exception as exc:
         logger.debug(f"Position reconciliation: failed to fetch Webull positions: {exc}")
         return
@@ -689,7 +741,6 @@ async def _reconcile_positions(
         )
 
         try:
-            import aiosqlite
 
             # Try to fetch live premium so exit logic works correctly
             live_premium = None
@@ -936,7 +987,16 @@ async def run_position_monitor(
             if today_str != _last_portfolio_sync_date:
                 open_trades = await get_open_trades(db_path)
                 if not open_trades:
-                    synced = await paper_trader.sync_portfolio_from_webull()
+                    try:
+                        synced = await asyncio.wait_for(
+                            paper_trader.sync_portfolio_from_webull(), timeout=15,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "sync_portfolio_from_webull timed out (15s) — "
+                            "will retry next cycle"
+                        )
+                        synced = None
                     if synced is not None:
                         logger.info(f"Daily portfolio sync complete: ${synced:,.2f}")
                         _last_portfolio_sync_date = today_str
@@ -965,10 +1025,20 @@ async def run_position_monitor(
                     if t["id"] not in _subscribed_options:
                         exp = _resolve_expiry_for_lookup(t)
                         if exp:
-                            await market_stream.subscribe_option(
-                                t["ticker"], t["strike"], exp, t["option_type"],
-                            )
-                            _subscribed_options.add(t["id"])
+                            try:
+                                await asyncio.wait_for(
+                                    market_stream.subscribe_option(
+                                        t["ticker"], t["strike"], exp,
+                                        t["option_type"],
+                                    ),
+                                    timeout=15,
+                                )
+                                _subscribed_options.add(t["id"])
+                            except asyncio.TimeoutError:
+                                logger.warning(
+                                    f"subscribe_option timed out (15s) for "
+                                    f"#{t['id']} {t['ticker']} — will retry next cycle"
+                                )
                 # Unsubscribe closed trades
                 closed_ids = _subscribed_options - open_ids
                 if closed_ids:
@@ -1005,12 +1075,72 @@ async def run_position_monitor(
 
                 # --- Determine current option premium ---
                 exit_premium: float | None = None
+                _prem_source: str = "unknown"  # track which source provided the premium
+                # Real NBBO when the source provides it (Redis snapshot / Webull
+                # quote). Plumbed into the trade dict so the V5 bid-disappearance
+                # gate can actually fire — without it the bridge synthesizes a
+                # positive bid and the gate is permanently inert.
+                exit_bid: float | None = None
+                exit_ask: float | None = None
                 expiry_date = _resolve_expiry_for_lookup(trade)
 
-                # Source 0: Webull quote API — disabled.
-                # The /trade/security endpoint returns 404 for options;
-                # Webull's OpenAPI SDK doesn't support option quote lookups.
-                # Polygon WS stream is reliable and lower-latency anyway.
+                # Source -1: Redis snapshot (near-instant from harvester flow WS)
+                if exit_premium is None and expiry_date:
+                    try:
+                        from options_owl.db import redis_client
+                        if redis_client.is_connected():
+                            contract_key = (
+                                f"{ticker}:{trade['option_type']}:"
+                                f"{trade['strike']}:{expiry_date}"
+                            )
+                            snap = await asyncio.wait_for(
+                                redis_client.get_option_snapshot(contract_key),
+                                timeout=2,
+                            )
+                            if snap and snap.get("mid") and snap["mid"] > 0:
+                                import time as _t
+                                age = _t.time() - snap.get("t", 0) if "t" in snap else 999
+                                if age < 30:  # only use if < 30s old
+                                    exit_premium = snap["mid"]
+                                    _prem_source = "redis_snapshot"
+                                    exit_bid = snap.get("bid")
+                                    exit_ask = snap.get("ask")
+                                    logger.debug(
+                                        f"  {ticker} — Redis snapshot ${exit_premium:.2f} "
+                                        f"(age={age:.0f}s, bid={snap.get('bid')}, ask={snap.get('ask')})"
+                                    )
+                    except asyncio.TimeoutError:
+                        pass
+                    except Exception:
+                        pass
+
+                # Source 0: Webull DataClient quote (same venue as execution)
+                if (
+                    exit_premium is None
+                    and expiry_date
+                    and getattr(paper_trader.settings, "WEBULL_PRIMARY_QUOTES", False)
+                    and paper_trader.webull_executor is not None
+                ):
+                    try:
+                        wb_quote = await asyncio.wait_for(
+                            paper_trader.webull_executor.get_option_quote(
+                                ticker, trade["strike"], expiry_date, trade["option_type"],
+                            ),
+                            timeout=10,
+                        )
+                        if wb_quote and wb_quote.get("mid") and wb_quote["mid"] > 0:
+                            exit_premium = wb_quote["mid"]
+                            _prem_source = "webull"
+                            exit_bid = wb_quote.get("bid")
+                            exit_ask = wb_quote.get("ask")
+                            logger.debug(
+                                f"  {ticker} — Webull premium ${exit_premium:.2f} "
+                                f"(bid={wb_quote.get('bid')}, ask={wb_quote.get('ask')})"
+                            )
+                    except asyncio.TimeoutError:
+                        logger.warning(f"  {ticker} — Webull premium timed out (10s)")
+                    except Exception as exc:
+                        logger.debug(f"  {ticker} — Webull premium failed: {exc}")
 
                 # Source 1: market stream (Polygon WS or yfinance chain)
                 if exit_premium is None and market_stream is not None and expiry_date:
@@ -1028,6 +1158,7 @@ async def run_position_monitor(
                         logger.warning(f"  {ticker} — stream premium timed out (15s)")
                         exit_premium = None
                     if exit_premium is not None:
+                        _prem_source = "polygon_ws"
                         logger.debug(
                             f"  {ticker} — stream premium ${exit_premium:.2f} "
                             f"(strike={trade['strike']}, exp={expiry_date})"
@@ -1054,6 +1185,7 @@ async def run_position_monitor(
                         logger.warning(f"  {ticker} — Polygon premium timed out (15s)")
                         exit_premium = None
                     if exit_premium is not None:
+                        _prem_source = "polygon_rest"
                         logger.debug(
                             f"  {ticker} — Polygon premium ${exit_premium:.2f} "
                             f"(strike={trade['strike']}, exp={expiry_date})"
@@ -1079,6 +1211,7 @@ async def run_position_monitor(
                             option_type=trade["option_type"],
                         )
                         if exit_premium is not None:
+                            _prem_source = "yfinance"
                             logger.debug(
                                 f"  {ticker} — yfinance chain premium ${exit_premium:.2f} "
                                 f"(strike={trade['strike']}, exp={expiry_date})"
@@ -1092,6 +1225,7 @@ async def run_position_monitor(
                         current_price=current_price,
                         option_type=trade["option_type"],
                     )
+                    _prem_source = "delta_approx"
                     logger.warning(
                         f"  #{trade['id']} {ticker} — using delta-estimated premium "
                         f"${exit_premium:.2f} (stream + chain both failed)"
@@ -1152,11 +1286,13 @@ async def run_position_monitor(
                 )
 
                 # DCA: check if we should add contracts on a dip
+                # NEVER DCA on PUTs — PUTs are scalps, doubling down amplifies losses
                 settings = paper_trader.settings
                 if (
                     settings.ENABLE_DCA
                     and (trade.get("dca_tranches_remaining") or 0) > 0
                     and exit_premium is not None
+                    and trade.get("option_type", "call").lower() != "put"
                 ):
                     entry_prem = trade["premium_per_contract"]
                     dip_pct = (entry_prem - exit_premium) / entry_prem * 100 if entry_prem > 0 else 0
@@ -1199,10 +1335,12 @@ async def run_position_monitor(
 
                 # V6 DCA: add contracts on a dip during the developing phase
                 # Separate from V3 DCA — fires once per trade for whitelisted tickers
+                # NEVER DCA on PUTs — PUTs are scalps, doubling down amplifies losses
                 if (
                     getattr(settings, "ENABLE_V6_DCA", False)
                     and exit_premium is not None
                     and trade["id"] not in _v6_dca_fired
+                    and trade.get("option_type", "call").lower() != "put"
                 ):
                     await _check_v6_dca(
                         trade, exit_premium, current_price, settings,
@@ -1226,6 +1364,14 @@ async def run_position_monitor(
 
                 # Record premium history for velocity/decel calculations
                 trade_id = trade["id"]
+                # Snapshot the PRIOR premium BEFORE appending this cycle's value —
+                # the plausibility check below must compare against the previous
+                # cycle, not the value we're about to append (which would always
+                # equal exit_premium → 0% drop → check never fires).
+                _prev_premium = None
+                _prior_hist = _premium_histories.get(trade_id)
+                if _prior_hist:
+                    _prev_premium = _prior_hist[-1][1]
                 if exit_premium is not None:
                     import time as _time
                     _premium_histories.setdefault(trade_id, []).append(
@@ -1234,6 +1380,22 @@ async def run_position_monitor(
                     # Cap at 200 entries (~16 min at 5s polls) to bound memory
                     if len(_premium_histories[trade_id]) > 200:
                         _premium_histories[trade_id] = _premium_histories[trade_id][-200:]
+
+                    # Buffer premium tick for PG (throttled to every 15s per trade)
+                    now_ts = _time.time()
+                    last_write = _premium_tick_last_write.get(trade_id, 0.0)
+                    if now_ts - last_write >= _PREMIUM_TICK_INTERVAL:
+                        _premium_tick_last_write[trade_id] = now_ts
+                        _premium_tick_buffer.append({
+                            "agent_id": getattr(paper_trader.settings, "AGENT_ID", "unknown"),
+                            "trade_id": trade_id,
+                            "ticker": ticker,
+                            "premium": exit_premium,
+                            "bid": exit_bid,
+                            "ask": exit_ask,
+                            "underlying_price": current_price,
+                            "source": _prem_source,
+                        })
 
                 # Track underlying price for volume-peak + underlying trail (v2.1)
                 if current_price and current_price > 0:
@@ -1253,6 +1415,14 @@ async def run_position_monitor(
 
                 # Inject peak_underlying into trade dict for the exit gate
                 trade["peak_underlying_price"] = _peak_underlying_prices.get(trade_id, 0.0)
+
+                # Inject real NBBO (when a source provided it) so the V5
+                # bid-disappearance gate sees a genuine zero bid instead of a
+                # synthesized positive one. None ⇒ bridge keeps its estimate.
+                if exit_bid is not None:
+                    trade["bid"] = exit_bid
+                if exit_ask is not None:
+                    trade["ask"] = exit_ask
 
                 # Fetch multi-timeframe candle data
                 # When market_stream is available, candles are built from WS
@@ -1325,10 +1495,35 @@ async def run_position_monitor(
                             f"({max_loss_pct}% of ${portfolio_base:.0f})"
                         )
 
+                # Premium plausibility check: if premium drops > 50% in a single
+                # poll cycle, the data is almost certainly stale/bad (e.g. Polygon
+                # REST failure returning fallback garbage). Skip this cycle.
+                _PREMIUM_SPIKE_PCT = 50.0  # max single-cycle drop before flagging
+                if exit_premium is not None and exit_premium > 0:
+                    if _prev_premium is not None:
+                        last_prem = _prev_premium
+                        if last_prem > 0:
+                            drop_pct = (last_prem - exit_premium) / last_prem * 100
+                            if drop_pct > _PREMIUM_SPIKE_PCT:
+                                logger.warning(
+                                    f"  #{trade_id} {ticker} PREMIUM PLAUSIBILITY FAIL: "
+                                    f"${last_prem:.2f} → ${exit_premium:.2f} "
+                                    f"({drop_pct:.0f}% drop in one cycle, "
+                                    f"source={_prem_source}) — skipping cycle"
+                                )
+                                continue
+
                 # Run exit engine (v3 pipeline or v5 FSM based on EXIT_ENGINE setting)
                 now_et = _now_et()
                 exit_engine = getattr(paper_trader.settings, "EXIT_ENGINE", "v3")
                 use_v5 = exit_engine in ("v4", "v5")  # v4 accepted for backward compat
+
+                # Initialize before the conditional block — referenced
+                # unconditionally below (the `if not use_v5:` ENRG-persist path).
+                # If reason was set by the max-loss cap AND the engine is v3, the
+                # v3 else-branch is skipped, leaving exit_ctx unbound → NameError
+                # every cycle (the 2026-05-07 UnboundLocalError class of bug).
+                exit_ctx: dict = {}
 
                 if reason is not None:
                     pass  # max_loss_cap already triggered above, skip FSM
@@ -1339,6 +1534,39 @@ async def run_position_monitor(
                         from options_owl.risk.exit_v5.monitor_bridge import V5MonitorBridge
                         _v5_bridge = V5MonitorBridge(paper_trader.settings)
                         logger.info("EXIT_FSM: Initialized v5 exit engine")
+
+                    # Regime-triggered stop tightening (spec 08)
+                    if (getattr(settings, "ENABLE_REGIME_STOP_TIGHTEN", False)
+                            and _regime_detector is not None):
+                        option_type = trade.get("option_type", "call")
+                        fsm = _v5_bridge._get_fsm(ticker, option_type)
+                        if _regime_detector.is_counter_trend(option_type):
+                            factor = _regime_detector.get_tighten_factor(option_type)
+                            if factor < 1.0:
+                                fsm.apply_regime_tighten(factor)
+                        else:
+                            fsm.clear_regime_tighten()
+
+                    # RESTART DURABILITY (FIX 3c): on the FIRST cycle for a trade
+                    # (state not yet built), tell the bridge whether this parent
+                    # already scaled out — a 'scaleout_20' child row exists — so
+                    # the FSM does not scale out a second time after a restart.
+                    if trade["id"] not in _v5_bridge._states:
+                        try:
+                            async with _connect_db(db_path) as conn:
+                                cur = await conn.execute(
+                                    "SELECT 1 FROM paper_trades WHERE "
+                                    "parent_trade_id = ? AND exit_reason = 'scaleout_20' "
+                                    "LIMIT 1",
+                                    (trade["id"],),
+                                )
+                                if await cur.fetchone():
+                                    trade = {**trade, "_scaled_out_restore": True}
+                        except Exception as exc:
+                            logger.debug(
+                                f"  #{trade['id']} scaleout-child lookup failed: {exc}"
+                            )
+
                     reason, description = _v5_bridge.evaluate(
                         trade, exit_premium, current_price, now_et,
                         candle_data=candle_data,
@@ -1579,7 +1807,7 @@ async def run_position_monitor(
                     else:
                         # T5, stop, trailing_stop, phase_trail,
                         # theta_bleed, time_decay_zone, time, EOD, theta → close all
-                        await paper_trader.close_trade(
+                        close_result = await paper_trader.close_trade(
                             trade_id=trade["id"],
                             exit_price=current_price,
                             exit_premium=exit_premium,
@@ -1602,16 +1830,86 @@ async def run_position_monitor(
                                     trade = {**trade, "contracts": row[0]}
                         except Exception as exc:
                             logger.warning(f"  #{trade['id']} contract count re-read failed: {exc}")
-                        webull_sold = await paper_trader.close_webull_position(trade, exit_premium)
+                        sell_result = await paper_trader.close_webull_position(trade, exit_premium)
+                        webull_sold = bool(sell_result)
 
                         # If Webull sell failed, reopen trade so monitor retries
                         # on next cycle with adjusted pricing
                         if not webull_sold and trade.get("webull_order_id"):
                             retry_count = (trade.get("sell_retry_count") or 0)
 
-                            # After 7 failed attempts, the position likely doesn't
-                            # exist on Webull (already sold, expired, or exercised).
-                            # Force-close in DB to stop the infinite retry loop.
+                            # CRITICAL: only a POSITION_NOT_FOUND outcome means the
+                            # position is genuinely gone from Webull (user sold,
+                            # expired, exercised). Transient errors (API/network/
+                            # exception/no-fill) return TRANSIENT_ERROR/NOT_FILLED
+                            # and must NOT count toward the manual-close budget — a
+                            # transient outage force-closing a still-open live
+                            # position as 'manual' previously triggered orphan
+                            # recovery (entry $0.01 → FSM saw +5000% → garbage P&L).
+                            from options_owl.execution.paper_trader import (
+                                SellOutcome,
+                            )
+                            outcome = getattr(
+                                sell_result, "outcome", SellOutcome.TRANSIENT_ERROR,
+                            )
+                            is_position_gone = outcome is SellOutcome.POSITION_NOT_FOUND
+
+                            # Track transient failures separately for alerting only.
+                            if not is_position_gone:
+                                _transient_sell_failures[trade["id"]] = (
+                                    _transient_sell_failures.get(trade["id"], 0) + 1
+                                )
+                                transient_count = _transient_sell_failures[trade["id"]]
+                                logger.warning(
+                                    f"  #{trade['id']} {ticker} WEBULL SELL "
+                                    f"TRANSIENT FAILURE ({outcome.value}, "
+                                    f"#{transient_count}) — reopening for retry "
+                                    f"WITHOUT consuming abandonment budget. "
+                                    f"err={getattr(sell_result, 'error', None)}"
+                                )
+                                # Alert (but never force-close) after N transient failures.
+                                if transient_count in (5, 10, 20) and discord_client:
+                                    from options_owl.execution.alerts import alert_critical
+                                    await alert_critical(
+                                        discord_client, paper_trader.settings,
+                                        f"SELL TRANSIENT FAILURES: {ticker} ${trade['strike']} "
+                                        f"{trade['option_type'].upper()} x{trade['contracts']} "
+                                        f"— {transient_count} transient sell failures "
+                                        f"({outcome.value}). Position likely STILL OPEN on "
+                                        f"Webull. NOT force-closing. Investigate.",
+                                    )
+                                # Reverse close-effects + reopen, then retry next cycle.
+                                try:
+                                    await paper_trader.revert_close_effects(
+                                        close_result["strategy"],
+                                        close_result["proceeds"],
+                                        close_result["pnl"],
+                                    )
+                                except Exception as exc:
+                                    logger.error(
+                                        f"  #{trade['id']} {ticker} failed to revert "
+                                        f"close effects on transient reopen: {exc}"
+                                    )
+                                async with _connect_db(db_path) as conn:
+                                    await conn.execute(
+                                        "UPDATE paper_trades SET status = 'open', "
+                                        "exit_reason = NULL, closed_at = NULL, "
+                                        "exit_premium = NULL, pnl_dollars = NULL, "
+                                        "pnl_pct = NULL WHERE id = ?",
+                                        (trade["id"],),
+                                    )
+                                    await conn.commit()
+                                # Don't cleanup state — monitor will re-evaluate.
+                                continue
+
+                            # POSITION_NOT_FOUND path: the position is gone from
+                            # Webull. Reset the transient counter and proceed with
+                            # the (legitimate) abandonment budget below.
+                            _transient_sell_failures.pop(trade["id"], None)
+
+                            # After 7 confirmed POSITION_NOT_FOUND attempts, the
+                            # position is gone from Webull (already sold, expired,
+                            # or exercised). Force-close in DB to stop the loop.
                             MAX_SELL_RETRIES = 7
                             if retry_count >= MAX_SELL_RETRIES:
                                 logger.error(
@@ -1656,6 +1954,22 @@ async def run_position_monitor(
                                 f"(attempt #{retry_count}) — "
                                 f"reopening trade for retry with adjusted price"
                             )
+                            # Reverse the portfolio side-effects close_trade just
+                            # applied — otherwise proceeds get credited again next
+                            # cycle (up to 8× over MAX_SELL_RETRIES) and win/loss
+                            # double-counts, corrupting the balance that drives
+                            # sizing, the daily loss cap, and DCA spend caps.
+                            try:
+                                await paper_trader.revert_close_effects(
+                                    close_result["strategy"],
+                                    close_result["proceeds"],
+                                    close_result["pnl"],
+                                )
+                            except Exception as exc:
+                                logger.error(
+                                    f"  #{trade['id']} {ticker} failed to revert "
+                                    f"close effects on reopen: {exc}"
+                                )
                             async with _connect_db(db_path) as conn:
                                 await conn.execute(
                                     "UPDATE paper_trades SET status = 'open', "
@@ -1699,5 +2013,11 @@ async def run_position_monitor(
             await _reconcile_positions(paper_trader, discord_client)
         except Exception:
             logger.debug("Position reconciliation error", exc_info=True)
+
+        # Flush buffered premium ticks to PG (fire-and-forget)
+        if len(_premium_tick_buffer) >= _PREMIUM_TICK_FLUSH_SIZE:
+            _flush_ticks = _premium_tick_buffer.copy()
+            _premium_tick_buffer.clear()
+            asyncio.create_task(_write_premium_ticks(_flush_ticks))
 
         await asyncio.sleep(poll_interval)

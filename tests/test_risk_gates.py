@@ -91,7 +91,7 @@ class TestPremiumFloor:
             MIN_OPTION_PREMIUM=0.30,
         )
         ctx = {"signal": signal, "settings": settings}
-        result = asyncio.get_event_loop().run_until_complete(gate.evaluate(ctx))
+        result = asyncio.run(gate.evaluate(ctx))
         assert result.result == GateResult.FAIL
         assert "0.25" in result.reason
         assert "0.30" in result.reason
@@ -107,7 +107,7 @@ class TestPremiumFloor:
             MIN_OPTION_PREMIUM=0.30,
         )
         ctx = {"signal": signal, "settings": settings}
-        result = asyncio.get_event_loop().run_until_complete(gate.evaluate(ctx))
+        result = asyncio.run(gate.evaluate(ctx))
         assert result.result == GateResult.PASS
 
     def test_entry_pipeline_passes_at_exact_floor(self):
@@ -121,7 +121,7 @@ class TestPremiumFloor:
             MIN_OPTION_PREMIUM=0.30,
         )
         ctx = {"signal": signal, "settings": settings}
-        result = asyncio.get_event_loop().run_until_complete(gate.evaluate(ctx))
+        result = asyncio.run(gate.evaluate(ctx))
         assert result.result == GateResult.PASS
 
 
@@ -202,8 +202,8 @@ class TestSizingWith15Pct4C:
             assert result == expected, f"Score {score} got {result}, expected {expected}"
 
     def test_below_floor_rejected(self):
-        """Score 77 → 0 contracts."""
-        assert score_to_contracts(77, cost_per_contract=150, balance=8227) == 0
+        """Score 74 → 0 contracts."""
+        assert score_to_contracts(74, cost_per_contract=150, balance=8227) == 0
 
     def test_all_scores_respect_15pct_cap(self):
         """All scores cap at 15% of portfolio."""

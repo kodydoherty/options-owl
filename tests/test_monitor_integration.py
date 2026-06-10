@@ -57,6 +57,7 @@ def _make_settings(**overrides) -> Settings:
         ENABLE_VINNY_STRATEGY=True,
         POLYGON_API_KEY="",
         ENABLE_POLYGON_WS=False,
+        ENABLE_PUT_TRADING=True,
     )
     defaults.update(overrides)
     return Settings(**defaults)
@@ -568,6 +569,44 @@ class TestSourceCodeSafety:
         # description should be initialized right after reason (within 2 lines)
         assert desc_init - reason_init <= 2, \
             f"'description' init should be immediately after 'reason' init"
+
+    def test_abandonment_gated_on_position_not_found(self):
+        """FIX 1: force-close-as-manual must only happen on POSITION_NOT_FOUND.
+
+        A transient Webull failure (outage / exception / no-fill) must reopen
+        the trade WITHOUT consuming the abandonment budget — never force-close a
+        still-open live position as 'manual'.
+        """
+        import inspect
+        from options_owl.execution import position_monitor
+
+        source = inspect.getsource(position_monitor.run_position_monitor)
+
+        # The transient path must reopen without setting exit_source='manual'.
+        assert "is_position_gone = outcome is SellOutcome.POSITION_NOT_FOUND" in source, \
+            "abandonment must key off POSITION_NOT_FOUND outcome"
+        assert "_transient_sell_failures" in source, \
+            "transient failures must be tracked separately from the budget"
+
+        # The 'manual' force-close must be guarded by the POSITION_NOT_FOUND path:
+        # `if not is_position_gone: ... continue` must appear BEFORE the
+        # MAX_SELL_RETRIES manual block.
+        idx_transient = source.find("if not is_position_gone:")
+        idx_manual = source.find("MAX_SELL_RETRIES = 7")
+        assert idx_transient != -1, "transient guard branch missing"
+        assert idx_manual != -1, "MAX_SELL_RETRIES manual block missing"
+        assert idx_transient < idx_manual, \
+            "transient path must short-circuit BEFORE the manual force-close block"
+
+    def test_sell_path_sdk_calls_have_timeout(self):
+        """FIX 2: the sell round-trip must be wrapped in asyncio.wait_for."""
+        import inspect
+        from options_owl.execution.paper_trader import PaperTrader
+
+        src = inspect.getsource(PaperTrader.close_webull_position)
+        assert "asyncio.wait_for(" in src
+        # sell_option wrapper must use a generous timeout (>= internal poll window)
+        assert "timeout=45" in src
 
 
 # ---------------------------------------------------------------------------

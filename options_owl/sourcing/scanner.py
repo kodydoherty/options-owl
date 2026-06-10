@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 from loguru import logger
 from zoneinfo import ZoneInfo
@@ -223,74 +224,74 @@ def _run_ml_gate(ctx: SignalContext) -> dict:
     snapshots, NOT stock candle proxies. This matches the ThetaData features
     the model was trained on.
 
-    Falls back to candle-derived features if harvester data is unavailable.
+    If harvester option data is unavailable, DECLINES to score
+    (model_source="none") rather than feeding fabricated greeks and
+    candle-low/high-as-bid/ask garbage to the model. Delta is the model's #1
+    feature — a hardcoded 0.50 produces meaningless confidences.
     """
     is_call = ctx.direction == Direction.CALL
     direction_str = "CALL" if is_call else "PUT"
 
-    # Try to get real option data from harvester (preferred — matches training data)
+    # Real option data from harvester is REQUIRED (matches training data)
     option_snap = getattr(ctx, "_option_snapshot", None)
     option_hist = getattr(ctx, "_option_history", None)
 
-    if option_snap and option_snap.midpoint > 0:
-        # Use REAL option data — matches ThetaData training features
-        premium = option_snap.midpoint
-        bid = option_snap.bid
-        ask = option_snap.ask
-        iv = option_snap.iv if option_snap.iv > 0 else 0.3
-        delta = abs(option_snap.delta) if option_snap.delta else 0.50
-        theta = option_snap.theta if option_snap.theta else -0.05
-        vega = option_snap.vega if option_snap.vega else 0.10
-        volume = option_snap.volume
-        underlying_price = option_snap.underlying_price
-
-        # Build history from harvester snapshots
-        if option_hist and option_hist.snapshots:
-            premium_history = option_hist.premium_history
-            volume_history = option_hist.volume_history
-            underlying_history = option_hist.underlying_history
-        else:
-            premium_history = [premium]
-            volume_history = [volume]
-            underlying_history = [underlying_price]
-
-        logger.debug(
-            f"SCAN {ctx.ticker}: ML using REAL option data — "
-            f"premium=${premium:.2f} bid=${bid:.2f} ask=${ask:.2f} "
-            f"iv={iv:.3f} delta={delta:.3f} vol={volume}"
+    if not option_snap or option_snap.midpoint <= 0:
+        logger.info(
+            f"SCAN {ctx.ticker}: ML gate declined — no harvester option data "
+            f"(refusing to score with fabricated greeks)"
         )
+        return {"confidence": 0.0, "threshold": 1.0, "is_signal": False,
+                "runner_score": 0.0, "model_source": "none"}
+
+    # Use REAL option data — matches ThetaData training features.
+    # Missing values are 0-filled, matching the training convention
+    # (training fills 0 when greeks/IV are absent — never fabricated constants).
+    premium = option_snap.midpoint
+    bid = option_snap.bid
+    ask = option_snap.ask
+    iv = option_snap.iv if option_snap.iv > 0 else 0.0
+    delta = abs(option_snap.delta or 0)
+    theta = option_snap.theta or 0.0
+    vega = option_snap.vega or 0.0
+    volume = option_snap.volume
+    underlying_price = option_snap.underlying_price
+    bid_size = float(getattr(option_snap, "bid_size", 0) or 0)
+    ask_size = float(getattr(option_snap, "ask_size", 0) or 0)
+
+    # Build history from harvester snapshots. Per the shared builder's
+    # conventions: premium/volume histories EXCLUDE the current snapshot;
+    # spread/IV/underlying histories INCLUDE it as the last element.
+    if option_hist and option_hist.snapshots:
+        snaps = option_hist.snapshots
+        premium_history = [s.midpoint for s in snaps[:-1] if s.midpoint > 0]
+        volume_history = [s.volume for s in snaps[:-1]]
+        underlying_history = [s.underlying_price for s in snaps if s.underlying_price > 0]
+        spread_history = [
+            s.ask - s.bid for s in snaps if s.ask > 0 and s.bid > 0 and s.ask >= s.bid
+        ]
+        iv_history = [s.iv for s in snaps if s.iv and s.iv > 0]
     else:
-        # Fallback to candle-derived features (less accurate but functional)
-        indicators = ctx.indicators
-        candles = ctx.candles_5m or []
+        premium_history = []
+        volume_history = []
+        underlying_history = [underlying_price]
+        spread_history = [ask - bid] if (ask > 0 and bid > 0 and ask >= bid) else []
+        iv_history = [iv] if iv > 0 else []
 
-        if not candles or not indicators:
-            return {"confidence": 0.0, "threshold": 1.0, "is_signal": False,
-                    "runner_score": 0.0, "model_source": "none"}
-
-        last = candles[-1]
-        premium = last.get("close", 0)
-        bid = last.get("low", 0)
-        ask = last.get("high", 0)
-        volume = int(last.get("volume", 0))
-        underlying_price = last.get("close", 0)
-
-        premium_history = [c["close"] for c in candles[-15:]]
-        volume_history = [int(c.get("volume", 0)) for c in candles[-15:]]
-        underlying_history = [c["close"] for c in candles[-15:]]
-
-        iv = getattr(indicators, "iv", 0.3) or 0.3
-        delta = 0.50
-        theta = -0.05
-        vega = 0.10
-
-        logger.debug(f"SCAN {ctx.ticker}: ML using CANDLE fallback (no harvester option data)")
+    logger.debug(
+        f"SCAN {ctx.ticker}: ML using REAL option data — "
+        f"premium=${premium:.2f} bid=${bid:.2f} ask=${ask:.2f} "
+        f"iv={iv:.3f} delta={delta:.3f} vol={volume}"
+    )
 
     # Minutes since market open (9:30 ET)
     now_et = datetime.now(tz=ET)
     market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
     minutes_since_open = max(0, int((now_et - market_open).total_seconds() / 60))
 
+    # Quote sizes now flow through from the harvester option_ticks snapshot
+    # (bid_size/ask_size). The shared builder computes size_imbalance from these,
+    # matching the ml_pipeline path and the V2 training features.
     features = compute_option_features_from_live(
         ticker=ctx.ticker,
         premium=premium,
@@ -307,6 +308,10 @@ def _run_ml_gate(ctx: SignalContext) -> dict:
         premium_history=premium_history,
         volume_history=volume_history,
         underlying_history=underlying_history,
+        bid_size=bid_size,
+        ask_size=ask_size,
+        spread_history=spread_history,
+        iv_history=iv_history,
     )
     return predict_entry_confidence(ctx.ticker, features, direction=direction_str)
 
@@ -404,27 +409,8 @@ async def scan_once(settings: SourcingSettings) -> list[SignalContext]:
                     except Exception:
                         logger.exception(f"SCAN {ticker}: signal DB write failed")
 
-                # Emit to ml_signals table (consumed by trading bots)
-                try:
-                    from options_owl.db import postgres as pg
-                    if pg.is_connected():
-                        await pg.emit_ml_signal({
-                            "ticker": ctx.ticker,
-                            "direction": ctx.direction.value if ctx.direction else "CALL",
-                            "score": ctx.score_total,
-                            "ml_confidence": ctx.ml_confidence,
-                            "ml_threshold": ctx.ml_threshold,
-                            "ml_model_source": ctx.ml_model_source,
-                            "ml_runner_score": ctx.ml_runner_score,
-                            "premium": ctx.premium,
-                            "strike": ctx.strike,
-                            "expiry_date": None,
-                            "indicators": {},
-                            "score_breakdown": {},
-                            "emitted_at": datetime.now(tz=timezone.utc),
-                        })
-                except Exception:
-                    logger.debug(f"SCAN {ticker}: ml_signals write failed (non-critical)")
+                # NOTE: emit_signal_db already writes to ml_signals table
+                # (consumed by trading bots via signal_consumer)
 
                 # Emit to Discord webhook
                 if settings.SOURCING_DISCORD_OUTPUT:
@@ -462,14 +448,27 @@ async def scan_loop() -> None:
         f"| tickers={settings.SOURCING_TICKERS}"
     )
 
-    # Initialize PostgreSQL connection pool + schema
+    # Initialize PostgreSQL connection pools
     try:
         from options_owl.sourcing import db
         await db.init_pool()
     except Exception:
-        logger.exception("Failed to initialize PostgreSQL — running without DB output")
+        logger.exception("Failed to initialize sourcing DB — running without DB output")
+
+    # Initialize shared PG pool (used by fetch_candles → read_stock_candles)
+    try:
+        from options_owl.db import postgres as pg
+        await pg.init_pool()
+    except Exception:
+        logger.exception("Failed to initialize shared PG pool — candle reads will fail")
+
+    heartbeat_path = Path("journal/heartbeat")
+    heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
 
     while True:
+        # Write heartbeat for Docker healthcheck
+        heartbeat_path.write_text(str(int(time.time())))
+
         if not _is_market_open():
             await asyncio.sleep(60)
             continue

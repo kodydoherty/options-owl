@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import AsyncIterator
 
 import asyncpg
@@ -180,6 +181,8 @@ CREATE TABLE IF NOT EXISTS option_ticks (
     expiry_date TEXT NOT NULL,
     bid REAL,
     ask REAL,
+    bid_size INTEGER,
+    ask_size INTEGER,
     mid REAL,
     last REAL,
     volume INTEGER,
@@ -213,6 +216,76 @@ CREATE INDEX IF NOT EXISTS idx_stock_ticks_time ON stock_ticks(ticker, captured_
 CREATE INDEX IF NOT EXISTS idx_option_ticks_time ON option_ticks(ticker, captured_at);
 CREATE INDEX IF NOT EXISTS idx_option_ticks_contract ON option_ticks(ticker, option_type, strike, expiry_date, captured_at);
 CREATE INDEX IF NOT EXISTS idx_stock_candles_time ON stock_candles(ticker, timeframe, bar_time);
+
+-- Premium ticks: per-trade option premium every ~15s for exit model training
+CREATE TABLE IF NOT EXISTS trade_premium_ticks (
+    id BIGSERIAL PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    trade_id INTEGER NOT NULL,
+    ticker TEXT NOT NULL,
+    premium REAL NOT NULL,
+    bid REAL,
+    ask REAL,
+    underlying_price REAL,
+    source TEXT NOT NULL,
+    captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_prem_ticks_trade ON trade_premium_ticks(agent_id, trade_id);
+CREATE INDEX IF NOT EXISTS idx_prem_ticks_ticker ON trade_premium_ticks(ticker, captured_at);
+
+-- Options flow: individual option trades from Polygon WS (institutional flow detection)
+CREATE TABLE IF NOT EXISTS option_flow (
+    id BIGSERIAL PRIMARY KEY,
+    ticker TEXT NOT NULL,
+    contract TEXT NOT NULL,
+    option_type TEXT NOT NULL,
+    strike REAL NOT NULL,
+    expiry_date TEXT NOT NULL,
+    trade_price REAL NOT NULL,
+    trade_size INTEGER NOT NULL,
+    trade_value REAL NOT NULL,
+    conditions INTEGER[],
+    is_sweep BOOLEAN DEFAULT FALSE,
+    is_above_ask BOOLEAN,
+    is_below_bid BOOLEAN,
+    exchange_id INTEGER,
+    sip_timestamp TIMESTAMPTZ NOT NULL,
+    captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_flow_ticker ON option_flow(ticker, sip_timestamp);
+CREATE INDEX IF NOT EXISTS idx_flow_size ON option_flow(trade_size) WHERE trade_size >= 50;
+CREATE INDEX IF NOT EXISTS idx_flow_sweep ON option_flow(ticker, sip_timestamp) WHERE is_sweep = TRUE;
+
+-- Options flow 5-minute aggregates (pre-computed ML features)
+CREATE TABLE IF NOT EXISTS option_flow_5m (
+    id BIGSERIAL PRIMARY KEY,
+    ticker TEXT NOT NULL,
+    bar_time TIMESTAMPTZ NOT NULL,
+    call_volume INTEGER NOT NULL DEFAULT 0,
+    call_value REAL NOT NULL DEFAULT 0,
+    call_sweeps INTEGER NOT NULL DEFAULT 0,
+    call_large_trades INTEGER NOT NULL DEFAULT 0,
+    call_buyer_aggressor_pct REAL,
+    put_volume INTEGER NOT NULL DEFAULT 0,
+    put_value REAL NOT NULL DEFAULT 0,
+    put_sweeps INTEGER NOT NULL DEFAULT 0,
+    put_large_trades INTEGER NOT NULL DEFAULT 0,
+    put_buyer_aggressor_pct REAL,
+    call_put_ratio REAL,
+    net_flow_dollars REAL,
+    sweep_ratio REAL,
+    UNIQUE(ticker, bar_time)
+);
+
+CREATE INDEX IF NOT EXISTS idx_flow_5m_ticker ON option_flow_5m(ticker, bar_time);
+
+-- Migrations: idempotent column additions for existing production tables.
+-- option_ticks gained quote sizes (bid_size/ask_size) so the ML scanner can
+-- compute size_imbalance. Old rows remain NULL, which is fine.
+ALTER TABLE option_ticks ADD COLUMN IF NOT EXISTS bid_size INTEGER;
+ALTER TABLE option_ticks ADD COLUMN IF NOT EXISTS ask_size INTEGER;
 """
 
 
@@ -615,6 +688,7 @@ async def write_option_tick(
     volume: int = 0, open_interest: int = 0, iv: float = 0,
     delta: float = 0, gamma: float = 0, theta: float = 0, vega: float = 0,
     underlying_price: float = 0,
+    bid_size: int | None = None, ask_size: int | None = None,
 ) -> None:
     """Write an option contract snapshot for future backtesting."""
     if not is_connected():
@@ -624,12 +698,12 @@ async def write_option_tick(
             """
             INSERT INTO option_ticks (
                 ticker, option_type, strike, expiry_date,
-                bid, ask, mid, last, volume, open_interest,
+                bid, ask, bid_size, ask_size, mid, last, volume, open_interest,
                 iv, delta, gamma, theta, vega, underlying_price
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
             """,
             ticker, option_type, strike, expiry_date,
-            bid or None, ask or None, mid or None, last or None,
+            bid or None, ask or None, bid_size, ask_size, mid or None, last or None,
             volume or None, open_interest or None,
             iv or None, delta or None, gamma or None, theta or None, vega or None,
             underlying_price or None,
@@ -687,6 +761,91 @@ async def write_stock_ticks_batch(ticks: list[dict]) -> None:
         logger.debug(f"PG write_stock_ticks_batch failed: {exc}")
 
 
+async def write_stock_candles_batch(candles: list[dict]) -> None:
+    """Batch write stock candles (upsert on conflict).
+
+    Accepts candle dicts from CandleCollector with bar_start_ts in milliseconds.
+    Converts to proper timestamps for PG storage.
+    """
+    if not is_connected() or not candles:
+        return
+    try:
+        pool = _pool
+        if pool is None:
+            return
+        async with pool.acquire() as conn:
+            await conn.executemany(
+                """
+                INSERT INTO stock_candles (ticker, timeframe, open, high, low, close, volume, vwap, bar_time)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                ON CONFLICT (ticker, timeframe, bar_time) DO UPDATE SET
+                    high = GREATEST(stock_candles.high, EXCLUDED.high),
+                    low = LEAST(stock_candles.low, EXCLUDED.low),
+                    close = EXCLUDED.close,
+                    volume = EXCLUDED.volume,
+                    vwap = EXCLUDED.vwap
+                """,
+                [
+                    (
+                        c["ticker"],
+                        c["timeframe"],
+                        c["open"],
+                        c["high"],
+                        c["low"],
+                        c["close"],
+                        int(c.get("volume", 0)),
+                        c.get("vwap") or None,
+                        datetime.fromtimestamp(c["bar_start_ts"] / 1000, tz=timezone.utc),
+                    )
+                    for c in candles
+                ],
+            )
+    except Exception as exc:
+        logger.debug(f"PG write_stock_candles_batch failed: {exc}")
+
+
+async def read_stock_candles(
+    ticker: str,
+    timeframe: str = "5m",
+    limit: int = 78,
+) -> list[dict] | None:
+    """Read stock candles from PostgreSQL (primary data store).
+
+    Returns oldest-first list of candle dicts, or None if no data.
+    """
+    if not is_connected():
+        return None
+    try:
+        rows = await fetch(
+            """
+            SELECT bar_time, open, high, low, close, volume, vwap
+            FROM stock_candles
+            WHERE ticker = $1 AND timeframe = $2
+            ORDER BY bar_time DESC
+            LIMIT $3
+            """,
+            ticker.upper(), timeframe, limit,
+        )
+        if not rows:
+            return None
+        # Reverse to oldest-first
+        return [
+            {
+                "bar_time": r["bar_time"],
+                "open": float(r["open"]),
+                "high": float(r["high"]),
+                "low": float(r["low"]),
+                "close": float(r["close"]),
+                "volume": int(r["volume"] or 0),
+                "vwap": float(r["vwap"] or 0),
+            }
+            for r in reversed(rows)
+        ]
+    except Exception as exc:
+        logger.warning(f"PG read_stock_candles failed for {ticker}/{timeframe}: {exc}")
+        return None
+
+
 async def write_option_ticks_batch(ticks: list[dict]) -> None:
     """Batch write option ticks (more efficient for snapshots)."""
     if not is_connected() or not ticks:
@@ -700,13 +859,14 @@ async def write_option_ticks_batch(ticks: list[dict]) -> None:
                 """
                 INSERT INTO option_ticks (
                     ticker, option_type, strike, expiry_date,
-                    bid, ask, mid, last, volume, open_interest,
+                    bid, ask, bid_size, ask_size, mid, last, volume, open_interest,
                     iv, delta, gamma, theta, vega, underlying_price
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
                 """,
                 [
                     (t["ticker"], t["option_type"], t["strike"], t["expiry_date"],
-                     t.get("bid"), t.get("ask"), t.get("mid"), t.get("last"),
+                     t.get("bid"), t.get("ask"), t.get("bid_size"), t.get("ask_size"),
+                     t.get("mid"), t.get("last"),
                      t.get("volume"), t.get("open_interest"),
                      t.get("iv"), t.get("delta"), t.get("gamma"),
                      t.get("theta"), t.get("vega"), t.get("underlying_price"))
@@ -715,3 +875,171 @@ async def write_option_ticks_batch(ticks: list[dict]) -> None:
             )
     except Exception as exc:
         logger.debug(f"PG write_option_ticks_batch failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Premium tick helpers (for exit model training)
+# ---------------------------------------------------------------------------
+
+
+async def write_premium_ticks_batch(ticks: list[dict]) -> None:
+    """Batch write trade premium ticks. Fire-and-forget from position monitor."""
+    if not is_connected() or not ticks:
+        return
+    try:
+        pool = _pool
+        if pool is None:
+            return
+        async with pool.acquire() as conn:
+            await conn.executemany(
+                """
+                INSERT INTO trade_premium_ticks (
+                    agent_id, trade_id, ticker, premium,
+                    bid, ask, underlying_price, source
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                """,
+                [
+                    (t["agent_id"], t["trade_id"], t["ticker"], t["premium"],
+                     t.get("bid"), t.get("ask"), t.get("underlying_price"),
+                     t["source"])
+                    for t in ticks
+                ],
+            )
+    except Exception as exc:
+        logger.debug(f"PG write_premium_ticks_batch failed: {exc}")
+
+
+async def read_premium_ticks(
+    agent_id: str, trade_id: int, limit: int = 5000,
+) -> list[dict] | None:
+    """Read premium tick history for a specific trade (chronological order)."""
+    if not is_connected():
+        return None
+    try:
+        rows = await fetch(
+            """SELECT captured_at, premium, bid, ask, underlying_price, source
+               FROM trade_premium_ticks
+               WHERE agent_id = $1 AND trade_id = $2
+               ORDER BY captured_at ASC LIMIT $3""",
+            agent_id, trade_id, limit,
+        )
+        if not rows:
+            return None
+        return [
+            {
+                "captured_at": r["captured_at"],
+                "premium": float(r["premium"]),
+                "bid": float(r["bid"]) if r["bid"] else None,
+                "ask": float(r["ask"]) if r["ask"] else None,
+                "underlying_price": float(r["underlying_price"]) if r["underlying_price"] else None,
+                "source": r["source"],
+            }
+            for r in rows
+        ]
+    except Exception as exc:
+        logger.warning(f"PG read_premium_ticks failed for {agent_id}/{trade_id}: {exc}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Options flow helpers (institutional flow detection)
+# ---------------------------------------------------------------------------
+
+
+async def write_option_flow_batch(trades: list[dict]) -> None:
+    """Batch write option flow trades. Fire-and-forget from FlowCollector."""
+    if not is_connected() or not trades:
+        return
+    try:
+        pool = _pool
+        if pool is None:
+            return
+        async with pool.acquire() as conn:
+            await conn.executemany(
+                """
+                INSERT INTO option_flow (
+                    ticker, contract, option_type, strike, expiry_date,
+                    trade_price, trade_size, trade_value,
+                    conditions, is_sweep, is_above_ask, is_below_bid,
+                    exchange_id, sip_timestamp
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                """,
+                [
+                    (t["ticker"], t["contract"], t["option_type"], t["strike"],
+                     t["expiry_date"], t["trade_price"], t["trade_size"],
+                     t["trade_value"], t.get("conditions"),
+                     t.get("is_sweep", False), t.get("is_above_ask"),
+                     t.get("is_below_bid"), t.get("exchange_id"),
+                     t["sip_timestamp"])
+                    for t in trades
+                ],
+            )
+    except Exception as exc:
+        logger.debug(f"PG write_option_flow_batch failed: {exc}")
+
+
+async def write_option_flow_5m(bars: list[dict]) -> None:
+    """Upsert 5-minute flow aggregates."""
+    if not is_connected() or not bars:
+        return
+    try:
+        pool = _pool
+        if pool is None:
+            return
+        async with pool.acquire() as conn:
+            await conn.executemany(
+                """
+                INSERT INTO option_flow_5m (
+                    ticker, bar_time,
+                    call_volume, call_value, call_sweeps, call_large_trades, call_buyer_aggressor_pct,
+                    put_volume, put_value, put_sweeps, put_large_trades, put_buyer_aggressor_pct,
+                    call_put_ratio, net_flow_dollars, sweep_ratio
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                ON CONFLICT (ticker, bar_time) DO UPDATE SET
+                    call_volume = EXCLUDED.call_volume, call_value = EXCLUDED.call_value,
+                    call_sweeps = EXCLUDED.call_sweeps, call_large_trades = EXCLUDED.call_large_trades,
+                    call_buyer_aggressor_pct = EXCLUDED.call_buyer_aggressor_pct,
+                    put_volume = EXCLUDED.put_volume, put_value = EXCLUDED.put_value,
+                    put_sweeps = EXCLUDED.put_sweeps, put_large_trades = EXCLUDED.put_large_trades,
+                    put_buyer_aggressor_pct = EXCLUDED.put_buyer_aggressor_pct,
+                    call_put_ratio = EXCLUDED.call_put_ratio,
+                    net_flow_dollars = EXCLUDED.net_flow_dollars,
+                    sweep_ratio = EXCLUDED.sweep_ratio
+                """,
+                [
+                    (b["ticker"], b["bar_time"],
+                     b["call_volume"], b["call_value"], b["call_sweeps"],
+                     b["call_large_trades"], b.get("call_buyer_aggressor_pct"),
+                     b["put_volume"], b["put_value"], b["put_sweeps"],
+                     b["put_large_trades"], b.get("put_buyer_aggressor_pct"),
+                     b.get("call_put_ratio"), b.get("net_flow_dollars"),
+                     b.get("sweep_ratio"))
+                    for b in bars
+                ],
+            )
+    except Exception as exc:
+        logger.debug(f"PG write_option_flow_5m failed: {exc}")
+
+
+async def read_option_flow_5m(
+    ticker: str, limit: int = 78,
+) -> list[dict] | None:
+    """Read recent 5-minute flow aggregates for a ticker."""
+    if not is_connected():
+        return None
+    try:
+        rows = await fetch(
+            """SELECT bar_time, call_volume, call_value, call_sweeps, call_large_trades,
+                      call_buyer_aggressor_pct, put_volume, put_value, put_sweeps,
+                      put_large_trades, put_buyer_aggressor_pct,
+                      call_put_ratio, net_flow_dollars, sweep_ratio
+               FROM option_flow_5m WHERE ticker = $1
+               ORDER BY bar_time DESC LIMIT $2""",
+            ticker.upper(), limit,
+        )
+        if not rows:
+            return None
+        return [dict(r) for r in reversed(rows)]
+    except Exception as exc:
+        logger.warning(f"PG read_option_flow_5m failed for {ticker}: {exc}")
+        return None

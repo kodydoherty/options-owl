@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     WEBULL_APP_SECRET: str = ""
     WEBULL_ACCOUNT_ID: str = ""  # optional — auto-detects from API based on MARGIN_ACCOUNT setting
     WEBULL_KILL_SWITCH: bool = False  # emergency halt all orders
-    WEBULL_ENTRY_AGGRESS_PCT: float = 2.0  # bump BUY limit price up by N% to cross spread and ensure fill
+    WEBULL_ENTRY_AGGRESS_PCT: float = 5.0  # bump BUY limit price above ask to cross spread (0DTE spreads are wide)
     MAX_ENTRY_RETRIES: int = 3  # retry entry up to N times with fresh pricing (10s per attempt)
     MAX_ENTRY_CHASE_PCT: float = 15.0  # max % above signal premium we'll chase on retries
     GFV_BUFFER_PCT: float = 15.0  # safety buffer on GFV limit (only allow 85% of start-of-day balance)
@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     MAX_DCA_POSITION_PCT: float = 0.0  # 0 = auto-adapt (half of MAX_POSITION_PCT)
     MAX_CONCURRENT: int = 0  # 0 = auto-adapt from portfolio size
     MIN_SCORE: int = 78  # only trade signals with score >= this (v2.1: raised from 75)
+    # ML-sourced signals carry score = int(model_confidence * 100), a DIFFERENT
+    # scale than Discord scores (which run well past 100). The model's own
+    # probability threshold is the real entry gate; this floor is only a sanity
+    # check applied by ScoreGate and signal_consumer to ML_SOURCING signals so
+    # they don't fall into the MIN_SCORE dead band (e.g. conf 0.74-0.77 → score
+    # 74-77 < MIN_SCORE 78 would otherwise always be rejected).
+    ML_MIN_SCORE: int = 60
     DAILY_LOSS_LIMIT_PCT: float = 10.0
     DB_PATH: str = "journal/raw_messages.db"
 
@@ -66,8 +73,9 @@ class Settings(BaseSettings):
 
     # Data feed configuration
     DATA_FEED_PROVIDER: str = "yfinance"  # "yfinance", "polygon", "webull"
-    DATA_FEED_POLL_INTERVAL: int = 15  # seconds for polling mode
+    DATA_FEED_POLL_INTERVAL: int = 3  # seconds — Redis WS data is primary, fast exit decisions
     POLYGON_API_KEY: str = ""
+    WEBULL_PRIMARY_QUOTES: bool = False  # Use Webull DataClient as primary option quote source
     # Polygon WS uses 1 concurrent connection per API key. When running multiple
     # owlets against a single API key, flip this off on the non-primary owlets
     # so only one bot holds the WS and the others fall back to REST polling.
@@ -131,6 +139,8 @@ class Settings(BaseSettings):
     ENRG_WIDEN_STOP_PCT: float = 15.0  # only used if ENABLE_ENRG=True
 
     # Momentum confirmation: reject entry if 5m/15m candles show underlying fading
+    # RE-ENABLED (2026-06-05): Was disabled but ML alone missed candle-level signals.
+    # Both directional_regime and momentum_confirm were off, leaving zero candle checks.
     ENABLE_MOMENTUM_CONFIRM: bool = True
 
     # Smart dip-confirm: when premium is fading at entry, check underlying vs
@@ -222,6 +232,20 @@ class Settings(BaseSettings):
     ENABLE_V6_SPREAD_GATE: bool = False
     V6_MAX_SPREAD_PCT: float = 15.0
 
+    # OTM distance gate: reject strikes too far out-of-the-money.
+    # Disabled after backtest showed it blocks $170K+ in profitable trades.
+    # The ML pattern model already captures moneyness — this gate double-filters.
+    ENABLE_OTM_DISTANCE_GATE: bool = True
+    MAX_OTM_DISTANCE_PCT: float = 1.5
+
+    # Delta entry gate: reject options outside the delta sweet spot.
+    # Replaces static premium_cap + otm_distance with a market-derived measure
+    # that adapts to ticker price, IV, and DTE automatically.
+    # Backtested: delta 0.15-0.70 = $+491K, $742/trade, 75% WR over 126 days.
+    ENABLE_DELTA_GATE: bool = False
+    DELTA_ENTRY_MIN: float = 0.15  # reject far OTM (< 15% chance ITM)
+    DELTA_ENTRY_MAX: float = 0.70  # reject deep ITM (overpaying for intrinsic)
+
     # Sideways scalp: detect choppy/range-bound trades and take small profits early.
     # Backtested: +$1,509 improvement over baseline (30 sideways exits, 76% WR).
     # Only fires when trade is profitable AND hasn't trended significantly (peak < 30%).
@@ -244,7 +268,7 @@ class Settings(BaseSettings):
     # Backtested: +$4,120 improvement (23 fires across 6 tickers).
     # Only fires for tickers where backtesting showed positive DCA impact.
     ENABLE_V6_DCA: bool = False
-    V6_DCA_TICKERS: str = "MSFT,IWM,SPY,QQQ,AMZN,NVDA"  # comma-separated whitelist
+    V6_DCA_TICKERS: str = "IWM,SPY,QQQ,AMZN,NVDA"  # comma-separated whitelist
     V6_DCA_MIN_MINUTES: float = 8.0              # earliest DCA can fire (minutes after entry)
     V6_DCA_MAX_MINUTES: float = 20.0             # latest DCA can fire
     V6_DCA_MIN_DIP_PCT: float = 15.0             # minimum dip from entry to trigger
@@ -279,13 +303,21 @@ class Settings(BaseSettings):
     STOP_BACKSTOP_EXTRA_PCT: float = 15.0     # absolute backstop = wide stop% + this = 65% (always fires)
 
     # Ticker blocklist — never trade these (comma-separated, empty = none blocked)
-    # MSFT removed 2026-05-21: 22% WR, -$2,641 P&L across 9 trades, all DCA losses
-    BLOCKED_TICKERS: str = "MSFT"
+    # MSFT: 22% WR, -$2,641 across 9 trades. COIN: 55% WR, -$8,933 across 20 trades.
+    # AVGO: 71% WR but -$3,601 (big avg loss). MU: flat, too few trades.
+    # Backtested 2026-05-30 with concurrent position architecture (60 days).
+    BLOCKED_TICKERS: str = "MSFT,COIN,AVGO,MU"
+
+    # Master PUT kill switch — blocks ALL PUT entries across all agents.
+    # Enabled 2026-06-05: dual-chain scanning feeds PUT chain data to ML (not CALL data).
+    # Safety: PutBearishConfirmGate, PUT_BUDGET_MULTIPLIER=0.50, no DCA, PUT_SCALP_CONFIG.
+    ENABLE_PUT_TRADING: bool = True
 
     # PUT-excluded tickers — these are allowed for CALLs but blocked for PUTs
-    # Backtested (3+ years): PLTR -$48K, AMD -$9K, MSTR +$1.6K, AVGO +$2.3K on PUTs
-    # High-potential PUT tickers: SPY, QQQ, IWM, TSLA, META (index + high-vol movers)
-    PUT_EXCLUDED_TICKERS: str = "PLTR,AMD,MSTR,AVGO"
+    # Backtested (60 days, 2026-03-11 to 2026-06-09):
+    #   AMZN -$10K, GOOGL -$7K, PLTR -$48K, AMD -$9K on PUTs
+    # High-potential PUT tickers: SPY, QQQ, IWM, TSLA, META, AAPL, NVDA
+    PUT_EXCLUDED_TICKERS: str = "PLTR,AMD,MSTR,AVGO,AMZN,GOOGL"
 
     # PUT market direction gate — only enter PUTs when SPY is green (market up)
     # Rationale: cheap PUTs on green days catch intraday reversals; on red days
@@ -296,8 +328,17 @@ class Settings(BaseSettings):
     PUT_BEAR_MODE_THRESHOLD: float = -0.5  # SPY down this % = bear mode (expand PUT tickers)
     PUT_BEAR_EXPANDED_TICKERS: str = "SPY,QQQ,NVDA,TSLA,META,AAPL,AMZN,GOOGL,AMD,MSTR,PLTR,AVGO,IWM"
 
+    # PUT bearish confirmation gate — requires candle confirmation before PUT entry
+    # Checks VWAP breakdown + bearish candle trend + RSI to confirm downtrend
+    ENABLE_PUT_BEARISH_CONFIRM: bool = True
+
+    # PUT position sizing — reduce position size for PUTs (structurally worse odds)
+    PUT_BUDGET_MULTIPLIER: float = 0.50  # 50% of normal CALL budget for PUTs
+
     # Directional regime gate — uses candle data to confirm signal direction
-    # PUTs require bearish regime, CALLs require bullish. Dynamic, not static.
+    # RE-ENABLED (2026-06-05): Was disabled but candle cache didn't compute EMA9/EMA21,
+    # so the gate was handicapped. Now EMAs are computed, giving proper trend confirmation.
+    # Also: with zero candle gates active, PUTs entered on green days with no confirmation.
     ENABLE_DIRECTIONAL_REGIME: bool = True
 
     # Calls-only tickers — fallback when candle data unavailable
@@ -462,10 +503,10 @@ class Settings(BaseSettings):
     ENTRY_MORNING_CUTOFF_HOUR: int = 11  # no new entries after 11:00 AM ET
     ENTRY_MORNING_CUTOFF_MINUTE: int = 0
 
-    # Scalp target gate: take profit at +25% unless confirmed runner
-    # Backtest: +25% scalp turns -$544K into +$1.4M; runner threshold at +40% has 87% hit rate
+    # Scalp target gate: take profit at +35% unless confirmed runner
+    # H9 backtest: 35% scalp → 92.6% WR, +$90K, PF=11.70, MaxDD=5.3% (vs 25% at +$55K)
     ENABLE_SCALP_TARGET: bool = True
-    SCALP_TARGET_PCT: float = 25.0  # take profit at this % gain
+    SCALP_TARGET_PCT: float = 35.0  # take profit at this % gain
     SCALP_RUNNER_CONFIRM_PCT: float = 40.0  # skip scalp if peak gain exceeds this (confirmed runner)
 
     # Correlation cap: max same-direction positions per correlated group
@@ -502,6 +543,42 @@ class Settings(BaseSettings):
     # --- Shared PostgreSQL (cross-agent trades, signals, analytics) ---
     ENABLE_POSTGRES: bool = False  # Phase 1: dual-write to SQLite + Postgres
     DATABASE_URL: str = "postgresql://owl:owl_dev_2026@postgres:5432/options_owl"
+
+    # --- Intraday Regime Detector (spec 06) ---
+    # Rule-based market direction classification using SPY 5m candles.
+    # Gates trade direction, sizing, and stop tightening.
+    ENABLE_REGIME_DETECTOR: bool = True
+    REGIME_CHECK_INTERVAL_MIN: int = 5
+    REGIME_HYSTERESIS_CHECKS: int = 2   # consecutive readings to confirm flip
+    REGIME_MIN_HOLD_MIN: int = 15       # min time before re-evaluation
+    REGIME_HARD_REVERSAL_PCT: float = 0.5  # SPY drop % for immediate BEARISH
+    REGIME_CHOPPY_SIZE_MULT: float = 0.6   # size reduction in CHOPPY regime
+
+    # --- Extended Scan Window (spec 07) ---
+    # Expand ML scanning beyond 9:35-11:00 to midday and afternoon.
+    # Requires ENABLE_REGIME_DETECTOR for midday gating.
+    ENABLE_EXTENDED_SCAN: bool = False
+    MIDDAY_SCALP_TARGET_PCT: float = 25.0
+    LATE_BACKSTOP_PCT: float = 40.0
+
+    # --- Regime-Triggered Stop Tightening (spec 08) ---
+    # Auto-tighten exits when regime flips against open positions.
+    ENABLE_REGIME_STOP_TIGHTEN: bool = False
+    REGIME_TIGHTEN_FACTOR: float = 0.60        # 40% tighter on reversal
+    REGIME_CHOPPY_TIGHTEN_FACTOR: float = 0.80  # 20% tighter in chop
+    REGIME_EMERGENCY_TRAIL_PCT: float = 25.0
+    REGIME_EMERGENCY_BACKSTOP_PCT: float = 40.0
+
+    # --- Conviction-Based Sizing (spec 09) ---
+    # Scale position size by ML confidence, regime alignment, and time of day.
+    ENABLE_CONVICTION_SIZING: bool = False
+
+    # --- Dynamic PUT Expansion (spec 10) ---
+    # Automatically expand PUT trading when regime is BEARISH.
+    ENABLE_DYNAMIC_PUTS: bool = True
+    PUT_SLOTS_BULLISH: int = 2
+    PUT_SLOTS_BEARISH: int = 6
+    PUT_SLOTS_CHOPPY: int = 3
 
     # --- Signal source control ---
     # When False, Discord signals are still logged/parsed but NOT traded.

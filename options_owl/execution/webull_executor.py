@@ -270,7 +270,10 @@ class WebullExecutor:
         except (ValueError, ConnectionError, OSError) as exc:
             if "connection" in str(exc).lower():
                 logger.warning(f"Webull stale connection in get_account_info ({exc}) — reconnecting")
-                self._reconnect()
+                # _reconnect does blocking HTTP token init — run off the event
+                # loop so a slow Webull (the exact reconnect trigger) can't freeze
+                # the monitor's sell path for every other trade.
+                await asyncio.to_thread(self._reconnect)
                 balance_resp = await asyncio.to_thread(
                     self._trade_client.account_v2.get_account_balance,
                     self._account_id,
@@ -324,10 +327,23 @@ class WebullExecutor:
     # Order placement
     # ------------------------------------------------------------------
 
-    def _check_kill_switch(self) -> None:
-        """Raise if kill switch is active."""
+    async def _check_kill_switch(self) -> None:
+        """Raise if kill switch is active (env OR Redis dashboard override)."""
+        # Check env first
         if getattr(self.settings, "WEBULL_KILL_SWITCH", False):
             raise RuntimeError("WEBULL_KILL_SWITCH is active — all orders blocked")
+        # Check Redis dashboard override
+        try:
+            from options_owl.db import redis_client
+            agent_id = getattr(self.settings, "AGENT_ID", "")
+            if agent_id and redis_client.is_connected():
+                override = await redis_client.get_kill_switch(agent_id)
+                if override is True:
+                    raise RuntimeError("Kill switch activated via dashboard — all orders blocked")
+        except RuntimeError:
+            raise
+        except Exception:
+            pass  # Redis failure should never block trading
 
     def _check_safety_limits(
         self, contracts: int, premium: float, action: str,
@@ -495,7 +511,7 @@ class WebullExecutor:
             Limit price per contract
         """
         self._ensure_clients()
-        self._check_kill_switch()
+        await self._check_kill_switch()
         logger.debug(
             f"WEBULL safety check: side={side} contracts={contracts} "
             f"limit=${limit_price:.2f} paper_trade={self.settings.PAPER_TRADE} "
@@ -593,7 +609,8 @@ class WebullExecutor:
                     logger.warning(
                         f"WEBULL stale connection ({conn_exc}) — reconnecting and retrying order"
                     )
-                    self._reconnect()
+                    # Run blocking reconnect off the event loop (see get_account_info).
+                    await asyncio.to_thread(self._reconnect)
                     response = await asyncio.to_thread(
                         self._trade_client.order_v2.place_option,
                         self._account_id,
@@ -630,13 +647,14 @@ class WebullExecutor:
             )
 
             # Poll for fill status — options orders usually fill within seconds.
-            # SELL orders use a shorter timeout (10s) because 0DTE premiums
-            # crash fast — waiting 45s causes massive slippage on retries.
-            # BUY orders use 10s — if not filled, the caller retries with
-            # a fresh ask price (smart entry retry in paper_trader).
-            sell_timeout = 10.0
+            # BUY orders get 30s — limit orders need time to work through the
+            # book, and cancelling too early means missed trades (NVDA/AMZN
+            # were being cancelled at 10s when they would have filled at 15-20s).
+            # SELL orders get 10s — 0DTE premiums crash fast, so we want to
+            # retry quickly with a fresh price if the first attempt doesn't fill.
+            timeout = 30.0 if side == "BUY" else 10.0
             fill_status = await self._wait_for_fill(
-                client_order_id, timeout_seconds=sell_timeout, poll_interval=2.0,
+                client_order_id, timeout_seconds=timeout, poll_interval=2.0,
             )
 
             if fill_status == "FILLED":
@@ -683,7 +701,7 @@ class WebullExecutor:
                     success=False,
                     order_id=str(order_id),
                     client_order_id=client_order_id,
-                    error=f"Order not filled after {sell_timeout:.0f}s (status={fill_status}), cancelled",
+                    error=f"Order not filled after {timeout:.0f}s (status={fill_status}), cancelled",
                     fill_status=fill_status or "SUBMITTED",
                 )
 
@@ -852,7 +870,8 @@ class WebullExecutor:
             except (ValueError, ConnectionError, OSError) as exc:
                 if attempt == 0 and "connection" in str(exc).lower():
                     logger.warning(f"Webull stale connection in get_account_balance ({exc}) — reconnecting")
-                    self._reconnect()
+                    # Run blocking reconnect off the event loop (see get_account_info).
+                    await asyncio.to_thread(self._reconnect)
                     continue
                 logger.warning(f"Failed to get account balance: {exc}")
             except Exception as exc:

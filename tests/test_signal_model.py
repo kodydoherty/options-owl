@@ -8,10 +8,8 @@ Covers:
 
 from __future__ import annotations
 
-import json
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
@@ -371,6 +369,56 @@ class TestPredictEntryConfidence:
 # ---------------------------------------------------------------------------
 
 
+class _FakeSnap:
+    """Minimal stand-in for harvester_options.OptionSnapshot."""
+
+    def __init__(self, midpoint=2.50, bid=2.45, ask=2.55, iv=0.30, delta=0.50,
+                 theta=-0.05, vega=0.10, volume=1000, underlying_price=550.0,
+                 strike=550.0, bid_size=120, ask_size=80):
+        self.midpoint = midpoint
+        self.bid = bid
+        self.ask = ask
+        self.bid_size = bid_size
+        self.ask_size = ask_size
+        self.iv = iv
+        self.delta = delta
+        self.theta = theta
+        self.vega = vega
+        self.volume = volume
+        self.underlying_price = underlying_price
+        self.strike = strike
+
+
+class _FakeHist:
+    """Minimal stand-in for harvester_options.OptionHistory."""
+
+    def __init__(self, snapshots):
+        self.snapshots = snapshots
+
+    @property
+    def premium_history(self):
+        return [s.midpoint for s in self.snapshots if s.midpoint > 0]
+
+    @property
+    def volume_history(self):
+        return [s.volume for s in self.snapshots]
+
+    @property
+    def underlying_history(self):
+        return [s.underlying_price for s in self.snapshots if s.underlying_price > 0]
+
+
+def _fake_option_data():
+    """Snapshot + history pair mimicking harvester data."""
+    snaps = [
+        _FakeSnap(midpoint=2.0 + i * 0.05, bid=1.95 + i * 0.05, ask=2.05 + i * 0.05,
+                  iv=0.30 + i * 0.001, volume=500 + i * 50,
+                  underlying_price=549.0 + i * 0.1)
+        for i in range(10)
+    ]
+    return snaps[-1], _FakeHist(snaps)
+
+
 class TestScannerMLGate:
     """Test the ML gate integration in scan_ticker."""
 
@@ -412,6 +460,9 @@ class TestScannerMLGate:
         from options_owl.sourcing.scanner import _run_ml_gate
 
         ctx = self._make_ctx()
+        snap, hist = _fake_option_data()
+        ctx._option_snapshot = snap
+        ctx._option_history = hist
 
         mock_booster = MagicMock()
         mock_booster.predict.return_value = np.array([0.70])
@@ -432,6 +483,9 @@ class TestScannerMLGate:
         from options_owl.sourcing.scanner import _run_ml_gate
 
         ctx = self._make_ctx()
+        snap, hist = _fake_option_data()
+        ctx._option_snapshot = snap
+        ctx._option_history = hist
         _model_cache.clear()
 
         with patch("options_owl.sourcing.scoring.ml_gates.signal_model.MODELS_DIR",
@@ -440,6 +494,32 @@ class TestScannerMLGate:
             result = _run_ml_gate(ctx)
 
         assert result["model_source"] == "none"
+
+    def test_run_ml_gate_declines_without_harvester_data(self):
+        """No harvester option data → DECLINE to score (model_source=none).
+
+        The old candle fallback fabricated delta=0.50/theta=-0.05/vega=0.10
+        and used candle low/high as bid/ask — garbage in, garbage out for a
+        model whose #1 feature is delta.
+        """
+        from options_owl.sourcing.scanner import _run_ml_gate
+
+        ctx = self._make_ctx()  # has candles, but NO _option_snapshot
+
+        mock_booster = MagicMock()
+        mock_booster.predict.return_value = np.array([0.99])
+        meta = {
+            "features": ["premium", "delta"],
+            "optimal_threshold": 0.5,
+            "ticker": "SPY",
+        }
+        _model_cache.clear()
+        _model_cache["SPY"] = (mock_booster, meta)
+
+        result = _run_ml_gate(ctx)
+        assert result["model_source"] == "none"
+        assert result["is_signal"] is False
+        mock_booster.predict.assert_not_called()  # never scored on garbage
 
     def test_run_ml_gate_no_candles(self):
         from options_owl.sourcing.scanner import _run_ml_gate
@@ -485,10 +565,15 @@ class TestScannerMLGate:
             {"open": 550, "high": 552, "low": 549, "close": 551, "volume": 5000}
             for _ in range(20)
         ]
+        snap, hist = _fake_option_data()
 
         with patch("options_owl.sourcing.scanner.fetch_candles", return_value=candles), \
              patch("options_owl.sourcing.scanner.compute_indicators") as mock_ind, \
-             patch("options_owl.sourcing.scanner.compute_score") as mock_score:
+             patch("options_owl.sourcing.scanner.compute_score") as mock_score, \
+             patch("options_owl.sourcing.data.harvester_options.fetch_atm_option_snapshot",
+                   new=AsyncMock(return_value=snap)), \
+             patch("options_owl.sourcing.data.harvester_options.fetch_option_history",
+                   new=AsyncMock(return_value=hist)):
 
             mock_ind.return_value = MagicMock(
                 ema_cross_strength=0.1, macd_line=0.5, vwap=550.0,
@@ -532,13 +617,18 @@ class TestScannerMLGate:
             {"open": 550, "high": 552, "low": 549, "close": 551, "volume": 5000}
             for _ in range(20)
         ]
+        snap, hist = _fake_option_data()
 
         with patch("options_owl.sourcing.scanner.fetch_candles", return_value=candles), \
              patch("options_owl.sourcing.scanner.compute_indicators") as mock_ind, \
              patch("options_owl.sourcing.scanner.compute_score") as mock_score, \
              patch("options_owl.sourcing.scanner.check_quality_gate", return_value=True), \
              patch("options_owl.sourcing.scanner.check_penalty_veto", return_value=False), \
-             patch("options_owl.sourcing.scanner.run_veto_gates", return_value=(False, "")):
+             patch("options_owl.sourcing.scanner.run_veto_gates", return_value=(False, "")), \
+             patch("options_owl.sourcing.data.harvester_options.fetch_atm_option_snapshot",
+                   new=AsyncMock(return_value=snap)), \
+             patch("options_owl.sourcing.data.harvester_options.fetch_option_history",
+                   new=AsyncMock(return_value=hist)):
 
             mock_ind.return_value = MagicMock(
                 ema_cross_strength=0.1, macd_line=0.5, vwap=550.0,

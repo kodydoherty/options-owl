@@ -272,23 +272,104 @@ class PutMarketDirectionGate(EntryGate):
 
         spy_change = ctx.get("spy_change_from_open")
         if spy_change is None:
-            # No SPY data — allow (fail-open)
-            return GateOutcome(self.name, GateResult.PASS,
-                               "No SPY data available — allowing PUT")
+            # No SPY data — block PUTs (fail-closed, safer default)
+            return GateOutcome(self.name, GateResult.FAIL,
+                               "No SPY data available — blocking PUT (fail-closed)")
 
-        min_pct = getattr(settings, "PUT_MARKET_UP_MIN_PCT", 0.0)
-        if spy_change >= min_pct:
-            return GateOutcome(self.name, GateResult.PASS,
-                               f"SPY {spy_change:+.2f}% (green) — PUT allowed")
-
-        # Bear mode override — if SPY is deeply red, PUTs should still fire
+        # PUTs are always allowed — slot allocation handles sizing:
+        # Normal: 1-2 PUT slots. Bear mode (SPY ≤ -0.5%): 4 PUT slots.
+        # The old logic blocked PUTs when SPY was slightly red (-0.5% to 0%),
+        # which is exactly when selloffs start — the worst time to block.
         bear_threshold = getattr(settings, "PUT_BEAR_MODE_THRESHOLD", -0.5)
         if spy_change <= bear_threshold:
             return GateOutcome(self.name, GateResult.PASS,
-                               f"Bear mode (SPY {spy_change:+.2f}%) — PUT allowed")
+                               f"Bear mode (SPY {spy_change:+.2f}%) — PUT allowed, expanded slots")
 
-        return GateOutcome(self.name, GateResult.FAIL,
-                           f"SPY {spy_change:+.2f}% (red but not bear mode) — PUTs blocked")
+        return GateOutcome(self.name, GateResult.PASS,
+                           f"SPY {spy_change:+.2f}% — PUT allowed (slots handle sizing)")
+
+
+class PutBearishConfirmGate(EntryGate):
+    """Gate 0d: Candle-based bearish confirmation for PUT entries.
+
+    Requires 2 of 3 confirmations before allowing a PUT:
+    1. Price below VWAP (selling pressure)
+    2. RSI < 45 on 5m timeframe (bearish momentum)
+    3. Majority of recent 5m candles are bearish (4+ of last 6)
+
+    This prevents PUTs from entering when the underlying is still trending up
+    despite a momentary dip. Without this, the ML model can trigger PUT signals
+    on stocks that are above VWAP with bullish candle structure.
+    """
+
+    name = "put_bearish_confirm"
+
+    async def evaluate(self, ctx: dict[str, Any]) -> GateOutcome:
+        signal = ctx["signal"]
+        settings = ctx["settings"]
+        from options_owl.models.signals import Direction
+
+        if getattr(signal, "direction", None) != Direction.PUT:
+            return GateOutcome(self.name, GateResult.PASS, "Not a PUT trade")
+
+        if not getattr(settings, "ENABLE_PUT_BEARISH_CONFIRM", True):
+            return GateOutcome(self.name, GateResult.SKIP, "PUT bearish confirm disabled")
+
+        candle_cache = ctx.get("candle_cache")
+        if candle_cache is None:
+            return GateOutcome(self.name, GateResult.FAIL,
+                               "No candle cache — blocking PUT (fail-closed)")
+
+        try:
+            data = await asyncio.wait_for(
+                candle_cache.get_candle_data(signal.ticker), timeout=15,
+            )
+        except (asyncio.TimeoutError, Exception) as exc:
+            return GateOutcome(self.name, GateResult.FAIL,
+                               f"Candle fetch failed — blocking PUT: {exc}")
+
+        confirmations = []
+        bars_5m = data.get("5m", [])
+        indicators = data.get("indicators", {})
+        tf_5m = indicators.get("5m", {})
+
+        # Check 1: Price below VWAP (selling pressure confirmed)
+        if bars_5m:
+            last_bar = bars_5m[-1]
+            if last_bar.vwap > 0 and last_bar.close < last_bar.vwap:
+                confirmations.append(f"below VWAP ({last_bar.close:.2f}<{last_bar.vwap:.2f})")
+
+        # Check 2: RSI < 45 on 5m (bearish momentum)
+        rsi_5m = tf_5m.get("rsi")
+        if rsi_5m is not None and rsi_5m < 45:
+            confirmations.append(f"RSI={rsi_5m:.0f}<45")
+
+        # Check 3: Majority bearish candles (4+ of last 6)
+        if len(bars_5m) >= 6:
+            bearish = sum(1 for b in bars_5m[-6:] if b.close < b.open)
+            if bearish >= 4:
+                confirmations.append(f"{bearish}/6 bearish candles")
+
+        if len(confirmations) >= 2:
+            return GateOutcome(self.name, GateResult.PASS,
+                               f"PUT bearish confirmed: {'; '.join(confirmations)}")
+
+        detail_parts = []
+        if bars_5m:
+            last = bars_5m[-1]
+            vwap_str = f"price={last.close:.2f} vwap={last.vwap:.2f}" if last.vwap > 0 else "no vwap"
+            detail_parts.append(vwap_str)
+        if rsi_5m is not None:
+            detail_parts.append(f"RSI={rsi_5m:.0f}")
+        if len(bars_5m) >= 6:
+            bearish = sum(1 for b in bars_5m[-6:] if b.close < b.open)
+            detail_parts.append(f"{bearish}/6 bearish")
+
+        return GateOutcome(
+            self.name, GateResult.FAIL,
+            f"PUT blocked — insufficient bearish confirmation ({len(confirmations)}/2 needed): "
+            f"{'; '.join(detail_parts)}"
+        )
 
 
 class DirectionalRegimeGate(EntryGate):
@@ -438,20 +519,41 @@ class DirectionalRegimeGate(EntryGate):
         return GateOutcome(self.name, GateResult.PASS, "PUT allowed (no candle data, not on blocklist)")
 
 
+def _is_ml_sourced(signal: Any) -> bool:
+    """True if the signal came from the ML sourcing pipeline.
+
+    ML signals carry score = int(model_confidence * 100) — a different scale
+    than Discord scores. Several score-tiered gates must treat them differently.
+    """
+    return getattr(getattr(signal, "bot_source", None), "value", "") == "ml_sourcing"
+
+
 class ScoreGate(EntryGate):
-    """Gate 1: Minimum signal score."""
+    """Gate 1: Minimum signal score.
+
+    Discord signals use MIN_SCORE. ML-sourced signals use ML_MIN_SCORE: their
+    score is int(model_confidence * 100) and the model's probability threshold
+    (applied upstream in the sourcing pipeline) is the real gate — applying
+    MIN_SCORE here created a dead band where confidences between the model
+    threshold and MIN_SCORE/100 were emitted but always rejected.
+    """
 
     name = "score"
 
     async def evaluate(self, ctx: dict[str, Any]) -> GateOutcome:
         signal = ctx["signal"]
         settings = ctx["settings"]
-        min_score = settings.MIN_SCORE
+        if _is_ml_sourced(signal):
+            min_score = getattr(settings, "ML_MIN_SCORE", 60)
+            label = "ML min"
+        else:
+            min_score = settings.MIN_SCORE
+            label = "min"
         if signal.score < min_score:
             return GateOutcome(self.name, GateResult.FAIL,
-                               f"Score {signal.score} < min {min_score}")
+                               f"Score {signal.score} < {label} {min_score}")
         return GateOutcome(self.name, GateResult.PASS,
-                           f"Score {signal.score} >= {min_score}")
+                           f"Score {signal.score} >= {label} {min_score}")
 
 
 class PremiumGate(EntryGate):
@@ -507,8 +609,14 @@ class PremiumCapGate(EntryGate):
         mid_cap = getattr(settings, "V6_PREMIUM_CAP_MID", 7.0)
         high_cap = getattr(settings, "V6_PREMIUM_CAP_HIGH", 9.0)
 
-        # Tiered cap based on signal score
-        if score >= 150:
+        # Tiered cap based on signal score.
+        # ML-sourced signals always use the base cap: their scores are
+        # confidence*100 (hard-capped at 100) so the 120/150 Discord-score
+        # tiers are unreachable by construction — made explicit here rather
+        # than rescaling ML confidence onto the Discord score range.
+        if _is_ml_sourced(signal):
+            cap = base_cap
+        elif score >= 150:
             cap = high_cap
         elif score >= 120:
             cap = mid_cap
@@ -573,6 +681,134 @@ class SpreadCostGate(EntryGate):
                            f"Spread {spread_pct:.1f}% <= {max_spread_pct}% max")
 
 
+class OTMDistanceGate(EntryGate):
+    """Gate 2d: Reject entries where the strike is too far out-of-the-money.
+
+    V2: Per-ticker dollar-based thresholds using strike grid intervals from
+    ThetaData research (6.7M rows, 14 tickers, 124 trading days).
+
+    Strike spacing varies 7.6x across tickers:
+      - Fine grid (SPY $1, NVDA $0.50): allow 3 strikes OTM
+      - Standard grid (META $2.50, TSLA $2.50): allow 2 strikes OTM
+      - Wide grid (AMZN $2.50, AAPL $2.50): allow 1 strike OTM
+
+    Falls back to percentage-based threshold (MAX_OTM_DISTANCE_PCT) for
+    unknown tickers or when per-ticker data is unavailable.
+    """
+
+    name = "otm_distance"
+
+    async def evaluate(self, ctx: dict[str, Any]) -> GateOutcome:
+        settings = ctx.get("settings")
+        if not getattr(settings, "ENABLE_OTM_DISTANCE_GATE", True):
+            return GateOutcome(self.name, GateResult.SKIP, "OTM distance gate disabled")
+
+        signal = ctx["signal"]
+        strike = signal.strike or 0
+        underlying = signal.entry_price or 0
+
+        if strike <= 0 or underlying <= 0:
+            return GateOutcome(self.name, GateResult.SKIP,
+                               "No strike or underlying price — skipping OTM check")
+
+        from options_owl.models.signals import Direction
+        from options_owl.risk.exit_v5.config import get_max_otm_distance
+        direction = signal.direction
+        ticker = signal.ticker or ""
+
+        # Per-ticker dollar-based threshold (V2)
+        max_otm_dollars = get_max_otm_distance(ticker)
+
+        if direction == Direction.CALL:
+            otm_dollars = strike - underlying
+            otm_pct = otm_dollars / underlying * 100
+            if otm_dollars > max_otm_dollars:
+                return GateOutcome(
+                    self.name, GateResult.FAIL,
+                    f"CALL strike ${strike:.1f} is ${otm_dollars:.2f} "
+                    f"({otm_pct:.2f}%) above underlying ${underlying:.2f} "
+                    f"(max ${max_otm_dollars:.1f} for {ticker})"
+                )
+        elif direction == Direction.PUT:
+            otm_dollars = underlying - strike
+            otm_pct = otm_dollars / underlying * 100
+            if otm_dollars > max_otm_dollars:
+                return GateOutcome(
+                    self.name, GateResult.FAIL,
+                    f"PUT strike ${strike:.1f} is ${otm_dollars:.2f} "
+                    f"({otm_pct:.2f}%) below underlying ${underlying:.2f} "
+                    f"(max ${max_otm_dollars:.1f} for {ticker})"
+                )
+            otm_pct = -otm_pct  # for logging: negative means ITM for puts
+            otm_dollars = -otm_dollars
+        else:
+            otm_pct = 0
+            otm_dollars = 0
+
+        label = "ITM" if otm_pct < 0 else "OTM"
+        return GateOutcome(
+            self.name, GateResult.PASS,
+            f"Strike ${strike:.1f} is ${abs(otm_dollars):.2f} "
+            f"({abs(otm_pct):.2f}%) {label} "
+            f"(underlying ${underlying:.2f}, max ${max_otm_dollars:.1f} for {ticker})"
+        )
+
+
+class DeltaEntryGate(EntryGate):
+    """Gate: Reject entries where option delta is outside the sweet spot.
+
+    Delta < min (default 0.15) = far OTM lottery ticket, high theta decay.
+    Delta > max (default 0.70) = deep ITM, overpaying for intrinsic value.
+
+    Replaces static premium_cap and otm_distance gates with a single
+    market-derived measure that adapts to ticker price, IV, and DTE.
+
+    Backtested: delta 0.15-0.70 = $+491K, $742/trade, 75% WR over 126 days.
+    """
+
+    name = "delta_entry"
+
+    async def evaluate(self, ctx: dict[str, Any]) -> GateOutcome:
+        settings = ctx.get("settings")
+        if not getattr(settings, "ENABLE_DELTA_GATE", False):
+            return GateOutcome(self.name, GateResult.SKIP, "delta gate disabled")
+
+        delta = ctx.get("entry_delta")
+        if delta is None or delta == 0:
+            return GateOutcome(
+                self.name, GateResult.SKIP, "No delta data — skipping"
+            )
+
+        abs_delta = abs(float(delta))
+
+        # Validate range — delta from Redis is untrusted external data
+        if abs_delta > 1.0:
+            return GateOutcome(
+                self.name, GateResult.SKIP,
+                f"Delta {abs_delta:.3f} out of valid range — skipping",
+            )
+
+        min_delta = getattr(settings, "DELTA_ENTRY_MIN", 0.15)
+        max_delta = getattr(settings, "DELTA_ENTRY_MAX", 0.70)
+
+        if abs_delta < min_delta:
+            return GateOutcome(
+                self.name, GateResult.FAIL,
+                f"Delta {abs_delta:.3f} < {min_delta} — far OTM lottery ticket",
+            )
+
+        if abs_delta > max_delta:
+            return GateOutcome(
+                self.name, GateResult.FAIL,
+                f"Delta {abs_delta:.3f} > {max_delta} — deep ITM, limited leverage",
+            )
+
+        return GateOutcome(
+            self.name, GateResult.PASS,
+            f"Delta {abs_delta:.3f} in range [{min_delta}, {max_delta}]",
+        )
+
+
 class StopPriceGate(EntryGate):
     """Gate 3: Signal must have a stop price defined."""
 
@@ -600,7 +836,6 @@ class DailyLossGate(EntryGate):
     name = "daily_loss_limit"
 
     async def evaluate(self, ctx: dict[str, Any]) -> GateOutcome:
-        import asyncio
 
         settings = ctx["settings"]
         portfolio = ctx.get("portfolio")
@@ -663,6 +898,55 @@ class ConcurrentPositionsGate(EntryGate):
                            f"{open_count} open < max {max_concurrent}")
 
 
+class DirectionSlotGate(EntryGate):
+    """Gate 5b: Per-direction slot limit based on regime detector.
+
+    When ENABLE_DYNAMIC_PUTS is on, the regime detector determines how many
+    CALL vs PUT slots are available. This throttles CALLs on bear days and
+    PUTs on bull days without hard-blocking either direction.
+    """
+
+    name = "direction_slot"
+
+    async def evaluate(self, ctx: dict[str, Any]) -> GateOutcome:
+        settings = ctx["settings"]
+        if not getattr(settings, "ENABLE_DYNAMIC_PUTS", False):
+            return GateOutcome(self.name, GateResult.PASS, "dynamic puts disabled")
+
+        signal = ctx["signal"]
+        direction = signal.direction.value.lower()  # "call" or "put"
+        open_calls = ctx.get("open_calls", 0)
+        open_puts = ctx.get("open_puts", 0)
+
+        # Get regime state from context (set by bot_runner)
+        regime_state = ctx.get("regime_state")
+        if regime_state is None:
+            return GateOutcome(self.name, GateResult.PASS, "no regime data")
+
+        from options_owl.risk.regime_detector import get_direction_slots
+        max_concurrent = getattr(settings, "MAX_CONCURRENT", 8)
+        slots = get_direction_slots(
+            regime_state,
+            max_concurrent=max_concurrent,
+            dynamic_puts_enabled=True,
+        )
+
+        max_for_dir = slots.get(direction, max_concurrent)
+        current = open_calls if direction == "call" else open_puts
+
+        if current >= max_for_dir:
+            return GateOutcome(
+                self.name, GateResult.FAIL,
+                f"{direction.upper()} slots full: {current} open >= {max_for_dir} max "
+                f"(regime={regime_state.value}, slots={slots})"
+            )
+        return GateOutcome(
+            self.name, GateResult.PASS,
+            f"{direction.upper()} {current}/{max_for_dir} slots "
+            f"(regime={regime_state.value})"
+        )
+
+
 class DuplicateTickerGate(EntryGate):
     """Gate 6: No duplicate open positions on the same ticker.
 
@@ -706,9 +990,10 @@ class CorrelationCapGate(EntryGate):
 
     # Ticker groups that tend to move together
     CORRELATION_GROUPS = {
-        "index_megacap": {"SPY", "QQQ", "AAPL", "MSFT", "GOOGL", "AMZN", "META"},
-        "semis": {"NVDA", "AMD", "AVGO"},
-        "tech_runners": {"TSLA", "MSTR", "PLTR"},
+        "index_megacap": {"SPY", "QQQ", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NFLX"},
+        "semis": {"NVDA", "AMD", "AVGO", "MU", "SMCI"},
+        "tech_runners": {"TSLA", "MSTR", "PLTR", "COIN"},
+        "tradfi": {"JPM", "BA"},
     }
 
     @classmethod
@@ -1015,10 +1300,16 @@ class AntiChaseGate(EntryGate):
         if current_price is None:
             return GateOutcome(self.name, GateResult.SKIP, "No current price available")
 
-        # Tiered anti-chase: high-score signals get more room
+        # Tiered anti-chase: high-score signals get more room.
+        # ML-sourced signals always use the base move: their scores are
+        # confidence*100 (capped at 100) so the 120/150 Discord-score tiers
+        # are unreachable by construction — made explicit here rather than
+        # rescaling ML confidence onto the Discord score range.
         score = getattr(signal, "score", 0) or 0
         base_move = settings.ANTI_CHASE_MAX_MOVE_PCT
-        if score >= 150:
+        if _is_ml_sourced(signal):
+            max_move = base_move
+        elif score >= 150:
             max_move = max(base_move, 0.75)
         elif score >= 120:
             max_move = max(base_move, 0.5)
@@ -1098,7 +1389,7 @@ class MomentumConfirmGate(EntryGate):
 
         # 3 of last 3 candles against direction = fading
         if against_count >= 3:
-            reasons.append(f"Last 3 5m candles all against direction")
+            reasons.append("Last 3 5m candles all against direction")
 
         # Bearish candle pattern on 5m
         pattern_5m = tf_5m.get("pattern")
@@ -1162,9 +1453,12 @@ class TimeOfDayGate(EntryGate):
                 f"(theta crush makes late entries unprofitable)",
             )
 
-        # Morning cutoff: block ALL entries after 11:00 AM ET
-        # Backtest: 9:30-10:30 AM ET = +$62K, after 1:30 PM = -$231K
-        if getattr(settings, "ENABLE_MORNING_CUTOFF", False):
+        # Morning cutoff: block CALL entries after 11:00 AM ET
+        # Backtest: 9:30-10:30 AM ET = +$62K, after 1:30 PM = -$231K (CALLs)
+        # PUTs are exempt — selloffs happen anytime, PUT scan window is 5-360min
+        from options_owl.models.signals import Direction
+        is_put = getattr(signal, "direction", None) == Direction.PUT
+        if getattr(settings, "ENABLE_MORNING_CUTOFF", False) and not is_put:
             morning_h = getattr(settings, "ENTRY_MORNING_CUTOFF_HOUR", 11)
             morning_m = getattr(settings, "ENTRY_MORNING_CUTOFF_MINUTE", 0)
             morning_cutoff = now.replace(hour=morning_h, minute=morning_m,
@@ -1172,7 +1466,7 @@ class TimeOfDayGate(EntryGate):
             if now >= morning_cutoff:
                 return GateOutcome(
                     self.name, GateResult.FAIL,
-                    f"Morning cutoff: no new entries after {morning_h}:{morning_m:02d} ET "
+                    f"Morning cutoff: no new CALL entries after {morning_h}:{morning_m:02d} ET "
                     f"(backtest shows only pre-{morning_h}:{morning_m:02d} ET entries are profitable)",
                 )
 
@@ -1189,13 +1483,14 @@ class TimeOfDayGate(EntryGate):
                 f"score {signal.score} < {settings.TOD_EARLY_MIN_SCORE} required",
             )
 
-        # Late afternoon: after TOD_LATE_CUTOFF, need higher score
+        # Late afternoon: after TOD_LATE_CUTOFF, need higher score (CALLs only)
+        # PUTs exempt — afternoon selloffs with gamma acceleration are prime PUT setups
         late_cutoff = now.replace(
             hour=settings.TOD_LATE_CUTOFF_HOUR,
             minute=settings.TOD_LATE_CUTOFF_MINUTE,
             second=0, microsecond=0,
         )
-        if now >= late_cutoff and signal.score < settings.TOD_LATE_MIN_SCORE:
+        if now >= late_cutoff and signal.score < settings.TOD_LATE_MIN_SCORE and not is_put:
             return GateOutcome(
                 self.name, GateResult.FAIL,
                 f"After {settings.TOD_LATE_CUTOFF_HOUR}:{settings.TOD_LATE_CUTOFF_MINUTE:02d} — "
@@ -2460,7 +2755,6 @@ class DecelExitGate(ExitGate):
                 pass
 
         # Check minimum gain was reached at some point
-        gain_pct = (exit_premium - entry_premium) / entry_premium * 100
         min_gain = getattr(settings, "DECEL_MIN_GAIN_PCT", 5.0)
         mfe_premium = trade.get("mfe_premium")
         peak_gain_pct = 0.0
@@ -3478,11 +3772,14 @@ DEFAULT_ENTRY_GATES: list[type[EntryGate]] = [
     BlockedTickerGate,   # 0. Blocked tickers (historically unprofitable)
     PutTickerExclusionGate,  # 0a. Block PUTs on losing tickers (PLTR, AMD, MSTR, AVGO)
     PutMarketDirectionGate,  # 0c. PUTs only when SPY is green (or bear mode)
+    PutBearishConfirmGate,  # 0d. PUTs require VWAP breakdown + bearish candles + RSI < 45
     DirectionalRegimeGate,  # 0b. Confirm direction matches market regime (candle-based)
     ScoreGate,           # 1. Minimum score
     PremiumGate,         # 2. Valid premium
     PremiumCapGate,      # 2b. V6: reject non-index > $5 premium (skip when disabled)
     SpreadCostGate,      # 2c. V6: reject wide bid-ask spreads (skip when disabled)
+    OTMDistanceGate,     # 2d. Reject strikes too far OTM (>0.5% from underlying)
+    DeltaEntryGate,      # 2e. Delta gate: reject far OTM + deep ITM (skip when disabled)
     StopPriceGate,       # 3. Stop price exists
     AntiChaseGate,       # 4. Anti-chase (Vinny: reject if price moved >0.3%)
     MomentumConfirmGate, # 4b. Candle momentum confirmation (reject if underlying fading)
@@ -3490,6 +3787,7 @@ DEFAULT_ENTRY_GATES: list[type[EntryGate]] = [
     ConsecutiveLoserGate,  # 6. Consecutive loser pause (Vinny)
     DailyLossGate,       # 7. Daily loss limit
     ConcurrentPositionsGate,  # 8. Max concurrent
+    DirectionSlotGate,    # 8b. Per-direction slot limit (regime-aware)
     DuplicateTickerGate,  # 9. No duplicate ticker
     CorrelationCapGate,  # 10. Correlation cap (max 3 same-direction per group)
     CircuitBreakerGate,  # 11. Circuit breakers (time buffers, streaks, drawdown)

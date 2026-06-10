@@ -43,14 +43,20 @@ UW_DB_PATH = PROJECT_DIR / "journal" / "uw_historical.db"
 TICKERS = [
     "SPY", "QQQ", "NVDA", "TSLA", "META", "AAPL", "AMZN",
     "GOOGL", "MSFT", "AMD", "MSTR", "PLTR", "AVGO", "IWM",
+    # New tickers (added 2026-05-29) — diversification beyond tech
+    "COIN", "NFLX", "JPM", "BA", "MU", "SMCI",
 ]
 
-# Tickers excluded from sourcing (net losers in backtest)
-EXCLUDED_TICKERS = {"MSFT"}
+# Tickers excluded from sourcing (net losers in concurrent backtest, 2026-05-30)
+# MSFT: 22% WR. COIN: 55% WR, -$8.9K. AVGO: 71% WR but -$3.6K avg loss. MU: flat.
+EXCLUDED_TICKERS = {"MSFT", "COIN", "AVGO", "MU"}
 
 # Default thresholds (overridable via settings)
-DEFAULT_PATTERN_THRESHOLD = 0.85
-DEFAULT_ENTRY_THRESHOLD = 0.70
+# DEFAULT_PATTERN_THRESHOLD is only the last-resort fallback — the runtime
+# threshold comes from pattern_entry_meta.json "best_threshold" (the model's
+# validated optimal operating point) unless ML_PATTERN_THRESHOLD is set in env.
+DEFAULT_PATTERN_THRESHOLD = 0.74
+DEFAULT_ENTRY_THRESHOLD = 0.80
 DEFAULT_REGIME_THRESHOLD = 0.19
 DEFAULT_SCAN_START_MIN = 5
 DEFAULT_SCAN_END_MIN = 90
@@ -71,8 +77,11 @@ class MLPipelineSettings:
     """Configuration for the ML pipeline. Loaded from environment."""
 
     ENABLE_ML_PIPELINE: bool = False
-    ML_PATTERN_THRESHOLD: float = DEFAULT_PATTERN_THRESHOLD
+    # 0.0 = use the model's own best_threshold from pattern_entry_meta.json.
+    # Set explicitly (env ML_PATTERN_THRESHOLD) only to override the model.
+    ML_PATTERN_THRESHOLD: float = 0.0
     ML_ENTRY_THRESHOLD: float = DEFAULT_ENTRY_THRESHOLD
+    PUT_ENTRY_TIMING_THRESHOLD: float = 0.0  # disabled — model is net destructive for PUTs (blocks $53K profit to avoid $12K losses)
     ML_REGIME_THRESHOLD: float = DEFAULT_REGIME_THRESHOLD
     ML_SCAN_START_MIN: int = DEFAULT_SCAN_START_MIN
     ML_SCAN_END_MIN: int = DEFAULT_SCAN_END_MIN
@@ -102,8 +111,9 @@ def load_settings_from_env() -> MLPipelineSettings:
 
     return MLPipelineSettings(
         ENABLE_ML_PIPELINE=_bool("ENABLE_ML_PIPELINE", False),
-        ML_PATTERN_THRESHOLD=_float("ML_PATTERN_THRESHOLD", DEFAULT_PATTERN_THRESHOLD),
+        ML_PATTERN_THRESHOLD=_float("ML_PATTERN_THRESHOLD", 0.0),  # 0 = model meta best_threshold
         ML_ENTRY_THRESHOLD=_float("ML_ENTRY_THRESHOLD", DEFAULT_ENTRY_THRESHOLD),
+        PUT_ENTRY_TIMING_THRESHOLD=_float("PUT_ENTRY_TIMING_THRESHOLD", 0.0),
         ML_REGIME_THRESHOLD=_float("ML_REGIME_THRESHOLD", DEFAULT_REGIME_THRESHOLD),
         ML_SCAN_START_MIN=_int("ML_SCAN_START_MIN", DEFAULT_SCAN_START_MIN),
         ML_SCAN_END_MIN=_int("ML_SCAN_END_MIN", DEFAULT_SCAN_END_MIN),
@@ -132,6 +142,7 @@ class MinuteBar:
     low: float
     close: float
     volume: float
+    vwap: float = 0.0  # Polygon AM-bar vwap (0 if not provided by the source)
 
 
 class CandleBuffer:
@@ -255,7 +266,7 @@ class CandleBuffer:
         Each tuple: (timestamp_ms, open, high, low, close, volume, vwap).
         """
         ticker = ticker.upper()
-        for ts_ms, o, h, low, c, v, _vw in bars:
+        for ts_ms, o, h, low, c, v, vw in bars:
             try:
                 bar_time = datetime.fromtimestamp(ts_ms / 1000.0, tz=ET).replace(
                     second=0, microsecond=0
@@ -266,7 +277,12 @@ class CandleBuffer:
             if c <= 0:
                 continue
 
-            bar = MinuteBar(timestamp=bar_time, open=o, high=h, low=low, close=c, volume=v)
+            # Capture vwap (previously discarded) — needed if models are
+            # retrained on real session VWAP instead of trailing-window mean.
+            bar = MinuteBar(
+                timestamp=bar_time, open=o, high=h, low=low, close=c,
+                volume=v, vwap=float(vw or 0),
+            )
             if ticker not in self._bars:
                 self._bars[ticker] = deque(maxlen=self._max_bars)
             self._bars[ticker].append(bar)
@@ -297,9 +313,45 @@ class MLModels:
     signal_model: Any = None
     signal_features: list[str] = field(default_factory=list)
 
+    # Dedicated PUT pattern model (trained on PUT chain data)
+    put_pattern_model: Any = None
+    put_pattern_features: list[str] = field(default_factory=list)
+    put_pattern_meta: dict = field(default_factory=dict)
+    put_pattern_threshold: float = 0.40
+
+    # Dedicated PUT entry timing model (trained on PUT chain data)
+    put_entry_model: Any = None
+    put_entry_features: list[str] = field(default_factory=list)
+    put_entry_threshold: float = 0.80
+
     # V2 direction-specific models (per-ticker PUT/CALL)
     put_models: dict = field(default_factory=dict)  # {ticker: (model, features, threshold)}
     call_models: dict = field(default_factory=dict)  # {ticker: (model, features, threshold)}
+
+
+def _check_feature_contract(name: str, model, meta_features: list, required: bool = False) -> bool:
+    """Assert meta['features'] == booster.feature_name(). Fail loudly on mismatch.
+
+    A mismatch silently corrupts every prediction (wrong column order/content).
+    For required models this raises; for optional models it returns False so
+    the caller can disable the model.
+    """
+    try:
+        booster_features = list(model.feature_name())
+    except Exception:
+        return True  # cannot introspect — skip validation
+    if list(meta_features) != booster_features:
+        msg = (
+            f"ML_PIPELINE: FEATURE CONTRACT MISMATCH for {name} — "
+            f"meta has {len(meta_features)} features, booster has {len(booster_features)}. "
+            f"meta_only={sorted(set(meta_features) - set(booster_features))} "
+            f"booster_only={sorted(set(booster_features) - set(meta_features))}"
+        )
+        if required:
+            raise ValueError(msg)
+        logger.error(f"{msg} — model DISABLED")
+        return False
+    return True
 
 
 def load_models() -> MLModels:
@@ -322,6 +374,8 @@ def load_models() -> MLModels:
     with open(pattern_meta_path) as f:
         models.pattern_meta = json.load(f)
     models.pattern_features = models.pattern_meta["features"]
+    _check_feature_contract("pattern_entry", models.pattern_model,
+                            models.pattern_features, required=True)
     logger.info(f"ML_PIPELINE: Loaded pattern_entry (AUC={models.pattern_meta['auc']:.4f})")
 
     # Entry timing (optional but recommended)
@@ -364,6 +418,56 @@ def load_models() -> MLModels:
             f"ML_PIPELINE: Loaded signal_quality ({len(models.signal_features)} features)"
         )
 
+    # Dedicated PUT pattern model (optional — uses CALL model as fallback)
+    put_pattern_path = MODEL_DIR / "put_pattern_v1.lgb"
+    put_pattern_meta_path = MODEL_DIR / "put_pattern_v1_meta.json"
+    if put_pattern_path.exists() and put_pattern_meta_path.exists():
+        models.put_pattern_model = lgb.Booster(model_file=str(put_pattern_path))
+        with open(put_pattern_meta_path) as f:
+            models.put_pattern_meta = json.load(f)
+        models.put_pattern_features = models.put_pattern_meta.get("features", [])
+        if not models.put_pattern_features:
+            logger.error("ML_PIPELINE: PUT pattern meta missing 'features' — disabling PUT model")
+            models.put_pattern_model = None
+        elif not _check_feature_contract("put_pattern_v1", models.put_pattern_model,
+                                         models.put_pattern_features):
+            models.put_pattern_model = None
+        else:
+            models.put_pattern_threshold = models.put_pattern_meta.get("best_threshold", 0.40)
+            logger.info(
+                f"ML_PIPELINE: Loaded put_pattern_v1 "
+                f"(AUC={models.put_pattern_meta.get('auc', 0):.4f}, "
+                f"threshold={models.put_pattern_threshold:.2f})"
+            )
+    else:
+        logger.warning("ML_PIPELINE: No PUT pattern model — using CALL model for PUT signals")
+
+    # Dedicated PUT entry timing model (optional — PUTs skip entry timing if missing)
+    put_entry_path = MODEL_DIR / "put_entry_timing.txt"
+    put_entry_meta_path = MODEL_DIR / "put_entry_timing_meta.json"
+    if put_entry_path.exists() and put_entry_meta_path.exists():
+        models.put_entry_model = lgb.Booster(model_file=str(put_entry_path))
+        with open(put_entry_meta_path) as f:
+            put_entry_meta = json.load(f)
+        models.put_entry_features = put_entry_meta.get("features", [])
+        if not models.put_entry_features:
+            logger.error("ML_PIPELINE: PUT entry timing meta missing 'features' — disabling")
+            models.put_entry_model = None
+        elif not _check_feature_contract("put_entry_timing", models.put_entry_model,
+                                         models.put_entry_features):
+            models.put_entry_model = None
+        else:
+            meta_threshold = put_entry_meta.get("best_threshold", 0.80)
+            models.put_entry_threshold = meta_threshold
+            logger.info(
+                f"ML_PIPELINE: Loaded put_entry_timing "
+                f"(AUC={put_entry_meta.get('auc', 0):.4f}, "
+                f"meta_threshold={meta_threshold:.2f}) "
+                f"— runtime threshold from PUT_ENTRY_TIMING_THRESHOLD setting"
+            )
+    else:
+        logger.info("ML_PIPELINE: No PUT entry timing model — PUTs skip entry timing")
+
     # V2 direction-specific models (per-ticker PUT signal models)
     v2_dir = PROJECT_DIR / "journal" / "models" / "signal_ml_v2"
     if v2_dir.exists():
@@ -377,6 +481,10 @@ def load_models() -> MLModels:
                         with open(meta_path) as mf:
                             meta = json.load(mf)
                         features = meta.get("features", m.feature_name())
+                        if not _check_feature_contract(
+                            f"signal_{ticker}_{direction}", m, features
+                        ):
+                            continue
                         threshold = meta.get("optimal_threshold", 0.5)
                         target = models.put_models if direction == "PUT" else models.call_models
                         target[ticker] = (m, features, threshold)
@@ -499,6 +607,203 @@ def compute_pattern_features(
     f["theta"] = float(thetas[idx]) if idx < len(thetas) and not np.isnan(thetas[idx]) else 0
     f["minutes_since_open"] = idx
     f["premium"] = float(current)
+
+    return f
+
+
+def compute_put_pattern_features(
+    closes: np.ndarray,
+    volumes: np.ndarray,
+    ivs: np.ndarray,
+    deltas: np.ndarray,
+    thetas: np.ndarray,
+    underlyings: np.ndarray,
+    bids: np.ndarray,
+    asks: np.ndarray,
+    idx: int,
+    opening_price: float,
+    vegas: np.ndarray | None = None,
+    bid_sizes: np.ndarray | None = None,
+    ask_sizes: np.ndarray | None = None,
+    call_ivs: np.ndarray | None = None,
+    call_volumes: np.ndarray | None = None,
+) -> dict | None:
+    """Compute 27 features for PUT pattern model V2 at position idx.
+
+    EXACT copy of compute_put_features() from scripts/train_put_pattern.py.
+    """
+    if idx < 5:
+        return None
+
+    w5_start = max(0, idx - 5)
+    w10_start = max(0, idx - 10)
+    w15_start = max(0, idx - 15)
+
+    pre5 = closes[w5_start:idx]
+    pre10 = closes[w10_start:idx]
+    pre5_v = volumes[w5_start:idx]
+    pre5_iv = ivs[w5_start:idx]
+    pre5_u = underlyings[w5_start:idx]
+
+    valid5 = pre5[~np.isnan(pre5)]
+    valid10 = pre10[~np.isnan(pre10)]
+    valid5_v = pre5_v[~np.isnan(pre5_v)]
+    valid5_iv = pre5_iv[~np.isnan(pre5_iv)]
+    valid5_u = pre5_u[~np.isnan(pre5_u)]
+
+    if len(valid5) < 3 or valid5[0] <= 0:
+        return None
+
+    current = closes[idx]
+    if np.isnan(current) or current <= 0:
+        return None
+
+    f: dict[str, float] = {}
+
+    # Premium trajectory
+    f["prem_slope_5"] = (valid5[-1] / valid5[0] - 1) * 100
+    f["prem_slope_10"] = (
+        (valid10[-1] / valid10[0] - 1) * 100
+        if len(valid10) >= 5 and valid10[0] > 0
+        else f["prem_slope_5"]
+    )
+
+    if len(valid5) >= 4:
+        mid = len(valid5) // 2
+        first_rate = (valid5[mid] / valid5[0] - 1) * 100 if valid5[0] > 0 else 0
+        second_rate = (valid5[-1] / valid5[mid] - 1) * 100 if valid5[mid] > 0 else 0
+        f["prem_accel"] = second_rate - first_rate
+    else:
+        f["prem_accel"] = 0
+
+    last3 = valid5[-3:] if len(valid5) >= 3 else valid5
+    f["prem_stabilizing"] = (
+        (max(last3) - min(last3)) / max(last3) * 100 if max(last3) > 0 else 0
+    )
+
+    if len(valid5) >= 3 and all(c > 0 for c in valid5[:-1]):
+        returns = np.diff(valid5) / valid5[:-1]
+        f["prem_volatility"] = float(np.std(returns) * 100)
+    else:
+        f["prem_volatility"] = 0
+
+    # Volume
+    f["volume_avg_5"] = float(np.mean(valid5_v)) if len(valid5_v) > 0 else 0
+    w20_start = max(0, idx - 20)
+    vol20 = volumes[w20_start:idx]
+    vol20_valid = vol20[~np.isnan(vol20)]
+    avg20 = float(np.mean(vol20_valid)) if len(vol20_valid) > 0 else 1
+    f["volume_ratio"] = f["volume_avg_5"] / max(avg20, 1)
+
+    if len(valid5_v) >= 3:
+        f["volume_trend"] = float(valid5_v[-1] / max(valid5_v[0], 1))
+    else:
+        f["volume_trend"] = 1.0
+
+    # IV
+    if len(valid5_iv) >= 2:
+        f["iv_change_5"] = float(valid5_iv[-1] - valid5_iv[0])
+        f["iv_level"] = float(valid5_iv[-1])
+    else:
+        f["iv_change_5"] = 0
+        f["iv_level"] = 0
+
+    # IV acceleration
+    if len(valid5_iv) >= 4:
+        mid_iv = len(valid5_iv) // 2
+        first_iv_rate = valid5_iv[mid_iv] - valid5_iv[0]
+        second_iv_rate = valid5_iv[-1] - valid5_iv[mid_iv]
+        f["iv_accel"] = float(second_iv_rate - first_iv_rate)
+    else:
+        f["iv_accel"] = 0.0
+
+    # Underlying slopes (5, 10, 15 candles)
+    if len(valid5_u) >= 2 and valid5_u[0] > 0:
+        f["und_slope_5"] = (valid5_u[-1] / valid5_u[0] - 1) * 100
+    else:
+        f["und_slope_5"] = 0
+
+    pre10_u = underlyings[w10_start:idx]
+    pre15_u = underlyings[w15_start:idx]
+    valid10_u = pre10_u[~np.isnan(pre10_u)]
+    valid15_u = pre15_u[~np.isnan(pre15_u)]
+    f["und_slope_10"] = (
+        (valid10_u[-1] / valid10_u[0] - 1) * 100
+        if len(valid10_u) >= 5 and valid10_u[0] > 0
+        else f["und_slope_5"]
+    )
+    f["und_slope_15"] = (
+        (valid15_u[-1] / valid15_u[0] - 1) * 100
+        if len(valid15_u) >= 5 and valid15_u[0] > 0
+        else f["und_slope_10"]
+    )
+
+    # Underlying momentum (RSI-like: ratio of down vs total moves)
+    if len(valid5_u) >= 3:
+        diffs = np.diff(valid5_u)
+        up_sum = float(np.sum(diffs[diffs > 0]))
+        down_sum = float(-np.sum(diffs[diffs < 0]))
+        f["und_momentum"] = down_sum / max(up_sum + down_sum, 1e-8) * 100
+    else:
+        f["und_momentum"] = 50.0
+
+    # Consecutive underlying down candles
+    if len(valid5_u) >= 3 and valid5_u[0] > 0:
+        down_count = 0
+        for i in range(len(valid5_u) - 1, 0, -1):
+            if valid5_u[i] < valid5_u[i - 1]:
+                down_count += 1
+            else:
+                break
+        f["consec_underlying_down"] = down_count
+    else:
+        f["consec_underlying_down"] = 0
+
+    f["drop_from_open"] = (current / opening_price - 1) * 100 if opening_price > 0 else 0
+
+    bid = bids[idx] if idx < len(bids) else 0
+    ask = asks[idx] if idx < len(asks) else 0
+    f["spread_pct"] = (ask - bid) / ask * 100 if ask > 0 and bid >= 0 else 0
+    f["delta"] = float(deltas[idx]) if idx < len(deltas) and not np.isnan(deltas[idx]) else 0
+    f["theta"] = float(thetas[idx]) if idx < len(thetas) and not np.isnan(thetas[idx]) else 0
+
+    # Vega
+    if vegas is not None and idx < len(vegas) and not np.isnan(vegas[idx]):
+        f["vega"] = float(vegas[idx])
+    else:
+        f["vega"] = 0.0
+
+    f["minutes_since_open"] = idx
+    f["premium"] = float(current)
+
+    # Candle range (intrabar volatility — approximated from close spread)
+    # In production we don't have per-candle high/low, so use bid-ask range
+    f["candle_range_pct"] = (ask - bid) / max(current, 0.01) * 100 if bid >= 0 else 0.0
+
+    # Bid/ask size imbalance
+    if bid_sizes is not None and ask_sizes is not None and idx < len(bid_sizes):
+        bs = bid_sizes[idx] if not np.isnan(bid_sizes[idx]) else 0
+        as_ = ask_sizes[idx] if not np.isnan(ask_sizes[idx]) else 0
+        total = bs + as_
+        f["bid_size_ratio"] = bs / max(total, 1)
+    else:
+        f["bid_size_ratio"] = 0.5
+
+    # IV skew (PUT IV / CALL IV)
+    if call_ivs is not None and idx < len(call_ivs):
+        put_iv = valid5_iv[-1] if len(valid5_iv) > 0 else 0
+        call_iv = call_ivs[idx] if not np.isnan(call_ivs[idx]) else 0
+        f["iv_skew"] = put_iv / call_iv if call_iv > 0 else 1.0
+    else:
+        f["iv_skew"] = 1.0
+
+    # PUT volume / CALL volume
+    if call_volumes is not None and idx < len(call_volumes):
+        call_vol = call_volumes[idx] if not np.isnan(call_volumes[idx]) else 0
+        put_vol = volumes[idx] if not np.isnan(volumes[idx]) else 0
+        f["put_call_volume_ratio"] = put_vol / max(call_vol, 1)
+    else:
+        f["put_call_volume_ratio"] = 1.0
 
     return f
 
@@ -723,7 +1028,11 @@ def compute_entry_timing_features(
     else:
         f["decline_deceleration"] = 0
 
-    # Return only features the model expects
+    # Return only features the model expects (warn once if any are missing
+    # from the computed dict instead of silently zero-filling)
+    from options_owl.sourcing.scoring.ml_gates.signal_model import _warn_missing_features
+
+    _warn_missing_features("entry_timing_features", entry_features, f)
     return {k: f.get(k, 0) for k in entry_features}
 
 
@@ -818,6 +1127,9 @@ def compute_regime_features(
         ]:
             f[k] = 0
 
+    from options_owl.sourcing.scoring.ml_gates.signal_model import _warn_missing_features
+
+    _warn_missing_features("regime_classifier", regime_features, f)
     return {k: f.get(k, 0) for k in regime_features}
 
 
@@ -829,11 +1141,19 @@ def _build_v2_signal_features(
 ) -> dict | None:
     """Build V2 signal model features from TickerScanState data.
 
-    Maps the live scan state data to the V2 feature set (trained by
-    train_option_signals_v2.py). Returns dict of feature values or None.
+    Thin adapter: slices the accumulated per-minute arrays into the history
+    windows expected by the SHARED feature builder
+    (signal_model.compute_option_features_from_live) — the single source of
+    truth that matches train_option_signals_v2.py exactly. Do NOT reimplement
+    feature math here.
     """
     if idx < 5:
         return None
+
+    from options_owl.sourcing.scoring.ml_gates.signal_model import (
+        _warn_missing_features,
+        compute_option_features_from_live,
+    )
 
     arrays = state.to_numpy()
     closes = arrays["closes"]
@@ -845,70 +1165,64 @@ def _build_v2_signal_features(
     underlyings = arrays["underlyings"]
     bids = arrays["bids"]
     asks = arrays["asks"]
+    bid_sizes = arrays["bid_sizes"]
+    ask_sizes = arrays["ask_sizes"]
 
-    f: dict[str, float] = {}
+    if idx >= len(closes) or closes[idx] <= 0:
+        return None
 
-    # Time features
-    minutes = idx  # approximate minutes since market open
-    f["minutes_since_open"] = float(minutes)
-    f["hour_bucket"] = int(minutes / 60)
-    f["is_first_30min"] = 1.0 if minutes <= 30 else 0.0
-    f["is_last_hour"] = 1.0 if minutes >= 330 else 0.0
+    lookback = 15
+    start = max(0, idx - lookback)
 
-    # Premium features
-    c = closes[idx] if closes[idx] > 0 else 0
-    f["premium"] = float(c)
-    f["premium_change_5m"] = float((c / closes[max(0, idx - 5)] - 1) * 100) if idx >= 5 and closes[max(0, idx - 5)] > 0 else 0
-    f["premium_change_10m"] = float((c / closes[max(0, idx - 10)] - 1) * 100) if idx >= 10 and closes[max(0, idx - 10)] > 0 else 0
-    f["premium_change_15m"] = float((c / closes[max(0, idx - 15)] - 1) * 100) if idx >= 15 and closes[max(0, idx - 15)] > 0 else 0
-    window = closes[max(0, idx - 10):idx + 1]
-    valid = window[window > 0]
-    f["premium_volatility"] = float(np.std(valid) / np.mean(valid) * 100) if len(valid) > 1 else 0
+    # Current snapshot values
+    premium = float(closes[idx])
+    bid = float(bids[idx]) if idx < len(bids) else 0.0
+    ask = float(asks[idx]) if idx < len(asks) else 0.0
+    iv = float(ivs[idx]) if idx < len(ivs) else 0.0
+    delta = float(deltas[idx]) if idx < len(deltas) else 0.0
+    theta = float(thetas[idx]) if idx < len(thetas) else 0.0
+    vega = float(vegas[idx]) if idx < len(vegas) else 0.0
+    volume = int(volumes[idx]) if idx < len(volumes) else 0
+    underlying_price = float(underlyings[idx]) if idx < len(underlyings) else 0.0
+    bid_size = float(bid_sizes[idx]) if idx < len(bid_sizes) else 0.0
+    ask_size = float(ask_sizes[idx]) if idx < len(ask_sizes) else 0.0
 
-    # Volume
-    f["current_volume"] = float(volumes[idx]) if idx < len(volumes) else 0
-    avg_vol = np.mean(volumes[max(0, idx - 10):idx]) if idx > 0 else 1
-    f["volume_ratio"] = float(volumes[idx] / max(avg_vol, 1)) if idx < len(volumes) else 0
-    f["volume_trend"] = float(np.mean(volumes[max(0, idx - 3):idx + 1]) - np.mean(volumes[max(0, idx - 10):max(0, idx - 3)])) if idx > 3 else 0
-    f["volume_zscore"] = 0  # simplified
+    # Trailing histories (see compute_option_features_from_live docstring for
+    # inclusion conventions): premium/volume EXCLUDE current; spread/IV/
+    # underlying INCLUDE current as last element.
+    premium_history = [float(v) for v in closes[start:idx] if v > 0]
+    volume_history = [int(v) for v in volumes[start:idx]]
+    underlying_history = [float(v) for v in underlyings[start:idx + 1] if v > 0]
+    spread_history = [
+        float(a - b)
+        for a, b in zip(asks[start:idx + 1], bids[start:idx + 1])
+        if a > 0 and b > 0 and a >= b
+    ]
+    iv_history = [float(v) for v in ivs[start:idx + 1] if v > 0]
 
-    # Bid/ask
-    bid = float(bids[idx]) if idx < len(bids) else 0
-    ask = float(asks[idx]) if idx < len(asks) else 0
-    f["spread"] = ask - bid if ask > 0 and bid > 0 else 0
-    f["spread_pct"] = f["spread"] / ask * 100 if ask > 0 else 0
-    f["spread_tightening"] = 0
-    f["bid_size"] = float(arrays.get("bid_sizes", np.zeros(1))[min(idx, len(arrays.get("bid_sizes", np.zeros(1))) - 1)])
-    f["ask_size"] = float(arrays.get("ask_sizes", np.zeros(1))[min(idx, len(arrays.get("ask_sizes", np.zeros(1))) - 1)])
-    total_size = f["bid_size"] + f["ask_size"]
-    f["size_imbalance"] = (f["bid_size"] - f["ask_size"]) / total_size if total_size > 0 else 0
+    f = compute_option_features_from_live(
+        ticker="",  # ticker not used in feature math
+        premium=premium,
+        bid=bid,
+        ask=ask,
+        iv=iv,
+        delta=delta,
+        theta=theta,
+        vega=vega,
+        volume=volume,
+        underlying_price=underlying_price,
+        minutes_since_open=idx,  # state accumulates one entry per minute
+        is_call=direction == "CALL",
+        premium_history=premium_history,
+        volume_history=volume_history,
+        underlying_history=underlying_history,
+        bid_size=bid_size,
+        ask_size=ask_size,
+        spread_history=spread_history,
+        iv_history=iv_history,
+    )
 
-    # Greeks
-    f["iv"] = float(ivs[idx]) if idx < len(ivs) else 0
-    f["delta"] = float(deltas[idx]) if idx < len(deltas) else 0
-    f["theta"] = float(thetas[idx]) if idx < len(thetas) else 0
-    f["vega"] = float(vegas[idx]) if idx < len(vegas) else 0
-    f["iv_change_5m"] = float(ivs[idx] - ivs[max(0, idx - 5)]) if idx >= 5 and idx < len(ivs) else 0
-    f["iv_change_15m"] = float(ivs[idx] - ivs[max(0, idx - 15)]) if idx >= 15 and idx < len(ivs) else 0
-    iv_window = ivs[max(0, idx - 10):idx + 1]
-    valid_iv = iv_window[iv_window > 0]
-    f["iv_trend"] = float(np.polyfit(range(len(valid_iv)), valid_iv, 1)[0]) if len(valid_iv) > 2 else 0
-
-    # Underlying
-    u = float(underlyings[idx]) if idx < len(underlyings) else 0
-    f["underlying_price"] = u
-    f["underlying_change_5m"] = float((u / underlyings[max(0, idx - 5)] - 1) * 100) if idx >= 5 and underlyings[max(0, idx - 5)] > 0 else 0
-    f["underlying_change_15m"] = float((u / underlyings[max(0, idx - 15)] - 1) * 100) if idx >= 15 and underlyings[max(0, idx - 15)] > 0 else 0
-    u_window = underlyings[max(0, idx - 10):idx + 1]
-    valid_u = u_window[u_window > 0]
-    f["underlying_volatility"] = float(np.std(valid_u) / np.mean(valid_u) * 100) if len(valid_u) > 1 else 0
-    f["vwap_deviation"] = 0
-    f["coiled_spring"] = 0
-    f["iv_expanding"] = 1 if f["iv_change_5m"] > 0.01 else 0
-
-    # Direction feature
-    f["is_call"] = 1.0 if direction == "CALL" else 0.0
-
+    _warn_missing_features("v2_signal_pipeline", v2_features, f)
     return {k: f.get(k, 0) for k in v2_features}
 
 
@@ -942,7 +1256,22 @@ async def fetch_live_option_chain(
 
 
 async def fetch_live_underlying_price(api_key: str, ticker: str) -> float | None:
-    """Fetch current underlying price via Polygon REST."""
+    """Fetch current underlying price — tries Redis first, falls back to Polygon REST."""
+    # Try Redis first (harvester publishes prices every minute bar)
+    try:
+        from options_owl.db import redis_client
+        if redis_client.is_connected():
+            result = await redis_client.get_price(ticker, max_age=90)
+            if result is not None:
+                price, age = result
+                logger.debug(
+                    f"ML_PIPELINE: {ticker} price from Redis: ${price:.2f} ({age:.0f}s old)"
+                )
+                return price
+    except Exception:
+        pass
+
+    # Fallback: Polygon REST snapshot
     try:
         import httpx
 
@@ -1188,19 +1517,52 @@ class TickerScanState:
     opening_price: float = 0.0
     entry_emitted: bool = False  # prevent duplicate entries for same ticker/day
     last_append_minute: int = -1  # prevent duplicate minute entries
+    strike_resolved_price: float = 0.0  # underlying price when strike was resolved
+
+    data_changed: bool = False  # set True when snapshot data is new or updated
 
     def append_snapshot(self, snap: dict, minute: int) -> None:
-        """Append a single minute's option + underlying snapshot."""
-        if minute <= self.last_append_minute:
-            return  # already appended this minute
-        self.last_append_minute = minute
+        """Append or update a single minute's option + underlying snapshot.
 
-        self.closes.append(snap.get("mid", 0) or snap.get("close", 0))
-        self.volumes.append(snap.get("volume", 0))
-        self.ivs.append(snap.get("iv", 0))
-        self.deltas.append(abs(snap.get("delta", 0)))
-        self.thetas.append(snap.get("theta", 0))
-        self.vegas.append(snap.get("vega", 0))
+        If called again for the same minute (e.g. 15s scan interval within a
+        1-minute window), OVERWRITES the last entry with fresh Redis data so
+        all bots evaluate the latest snapshot regardless of scan phase offset.
+        """
+        mid = snap.get("mid", 0) or snap.get("close", 0)
+
+        if minute == self.last_append_minute and self.closes:
+            # Same minute — overwrite last entry with fresher data
+            old_mid = self.closes[-1]
+            self.closes[-1] = mid
+            self.volumes[-1] = snap.get("volume") or 0
+            self.ivs[-1] = snap.get("iv") or 0
+            self.deltas[-1] = abs(snap.get("delta") or 0)
+            self.thetas[-1] = snap.get("theta") or 0
+            self.vegas[-1] = snap.get("vega") or 0
+            self.underlyings[-1] = snap.get("underlying_price", 0)
+            self.bids[-1] = snap.get("bid", 0)
+            self.asks[-1] = snap.get("ask", 0)
+            self.bid_sizes[-1] = snap.get("bid_size", 0)
+            self.ask_sizes[-1] = snap.get("ask_size", 0)
+            self.stock_closes[-1] = snap.get("underlying_price", 0)
+            self.stock_highs[-1] = snap.get("underlying_high", snap.get("underlying_price", 0))
+            self.stock_lows[-1] = snap.get("underlying_low", snap.get("underlying_price", 0))
+            # Mark changed only if the mid price actually moved
+            self.data_changed = abs(mid - old_mid) > 1e-6
+            return
+
+        if minute < self.last_append_minute:
+            return  # stale minute — skip
+
+        self.last_append_minute = minute
+        self.data_changed = True
+
+        self.closes.append(mid)
+        self.volumes.append(snap.get("volume") or 0)
+        self.ivs.append(snap.get("iv") or 0)
+        self.deltas.append(abs(snap.get("delta") or 0))
+        self.thetas.append(snap.get("theta") or 0)
+        self.vegas.append(snap.get("vega") or 0)
         self.underlyings.append(snap.get("underlying_price", 0))
         self.bids.append(snap.get("bid", 0))
         self.asks.append(snap.get("ask", 0))
@@ -1251,6 +1613,7 @@ async def emit_signal_to_pg(
     stop_pct: float | None,
     signal_quality: float | None,
     extra: dict | None = None,
+    threshold: float = DEFAULT_PATTERN_THRESHOLD,
 ) -> None:
     """Fire-and-forget: emit an ML signal to PostgreSQL for trading bots.
 
@@ -1266,9 +1629,14 @@ async def emit_signal_to_pg(
         signal_data = {
             "ticker": ticker,
             "direction": direction,
-            "score": int(pattern_conf * 100),  # map 0-1 confidence to 0-100 score
+            # Map 0-1 confidence to 0-100 score. NOTE: ML scores live on a
+            # different scale than Discord scores (capped at 100). Downstream,
+            # ScoreGate applies settings.ML_MIN_SCORE (not MIN_SCORE) to
+            # ML_SOURCING signals — the model threshold above is the real gate,
+            # so there is no dead band between threshold*100 and MIN_SCORE.
+            "score": int(pattern_conf * 100),
             "ml_confidence": pattern_conf,
-            "ml_threshold": DEFAULT_PATTERN_THRESHOLD,
+            "ml_threshold": threshold,
             "ml_model_source": "ml_v3_pipeline",
             "ml_runner_score": signal_quality,
             "premium": premium,
@@ -1291,9 +1659,10 @@ async def emit_signal_to_pg(
             pg.emit_ml_signal(signal_data), timeout=10
         )
         if signal_id:
+            _entry_str = f"{entry_conf:.3f}" if entry_conf is not None else "N/A"
             logger.info(
                 f"ML_PIPELINE: SIGNAL EMITTED #{signal_id} {ticker} {direction} "
-                f"pattern={pattern_conf:.3f} entry={entry_conf:.3f if entry_conf else 'N/A'} "
+                f"pattern={pattern_conf:.3f} entry={_entry_str} "
                 f"premium=${premium:.2f} strike=${strike:.0f}"
             )
     except asyncio.TimeoutError:
@@ -1433,6 +1802,14 @@ async def _compute_regime_score_for_ticker(
     return float(models.regime_model.predict(X)[0])
 
 
+def resolve_pattern_threshold(settings: MLPipelineSettings, models: MLModels) -> float:
+    """Runtime pattern threshold: explicit env override, else the model's own
+    validated best_threshold from its meta, else the legacy default."""
+    if settings.ML_PATTERN_THRESHOLD > 0:
+        return settings.ML_PATTERN_THRESHOLD
+    return float(models.pattern_meta.get("best_threshold", DEFAULT_PATTERN_THRESHOLD))
+
+
 async def scan_ticker_minute(
     ticker: str,
     minute: int,
@@ -1469,17 +1846,21 @@ async def scan_ticker_minute(
     if feat is None:
         return False
 
+    from options_owl.sourcing.scoring.ml_gates.signal_model import _warn_missing_features
+
+    _warn_missing_features("pattern_entry", models.pattern_features, feat)
     X_pattern = np.array(
         [[feat.get(f, 0) for f in models.pattern_features]], dtype=np.float32
     )
     pattern_conf = float(models.pattern_model.predict(X_pattern)[0])
 
-    if pattern_conf < settings.ML_PATTERN_THRESHOLD:
+    pattern_threshold = resolve_pattern_threshold(settings, models)
+    if pattern_conf < pattern_threshold:
         return False
 
     logger.info(
         f"ML_PIPELINE: {ticker} min={minute} PATTERN PASS "
-        f"conf={pattern_conf:.3f} >= {settings.ML_PATTERN_THRESHOLD}"
+        f"conf={pattern_conf:.3f} >= {pattern_threshold}"
     )
 
     # Step 2: Entry timing model (quality gate)
@@ -1632,6 +2013,7 @@ async def scan_ticker_minute(
             expiry=state.expiry,
             stop_pct=stop_pct,
             signal_quality=signal_quality,
+            threshold=pattern_threshold,
         )
     )
     return True
@@ -1784,14 +2166,16 @@ async def run_ml_pipeline(settings: MLPipelineSettings | None = None) -> None:
     if settings is None:
         settings = load_settings_from_env()
 
+    # Load models
+    models = load_models()
+
+    pattern_threshold = resolve_pattern_threshold(settings, models)
+    threshold_source = "env" if settings.ML_PATTERN_THRESHOLD > 0 else "model_meta"
     logger.info(
-        f"ML_PIPELINE: Starting | pattern_t={settings.ML_PATTERN_THRESHOLD} "
+        f"ML_PIPELINE: Starting | pattern_t={pattern_threshold} ({threshold_source}) "
         f"entry_t={settings.ML_ENTRY_THRESHOLD} regime_t={settings.ML_REGIME_THRESHOLD} "
         f"scan={settings.ML_SCAN_START_MIN}-{settings.ML_SCAN_END_MIN}min"
     )
-
-    # Load models
-    models = load_models()
 
     # Initialize PG connection pool
     try:
