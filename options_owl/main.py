@@ -153,13 +153,17 @@ def check_polygon_realtime_entitlement(settings: Settings) -> None:
         return
 
     lq = (results[0].get("last_quote") or {})
+    lt = (results[0].get("last_trade") or {})
     last_updated_ns = lq.get("last_updated")
+    last_trade_ns = lt.get("sip_timestamp")
     contract = (results[0].get("details") or {}).get("ticker", "?")
-    if not last_updated_ns:
-        logger.warning("Polygon snapshot missing last_quote.last_updated; cannot verify freshness.")
+    if not last_updated_ns and not last_trade_ns:
+        logger.warning("Polygon snapshot missing last_quote.last_updated and last_trade.sip_timestamp; cannot verify freshness.")
         return
 
-    age_sec = time.time() - (last_updated_ns / 1e9)
+    # Use the freshest timestamp between quote and trade
+    best_ts_ns = max(filter(None, [last_updated_ns, last_trade_ns]))
+    age_sec = time.time() - (best_ts_ns / 1e9)
     # Pre-market (before 9:30 ET / 13:30 UTC) options quotes can be 15-30 min
     # stale since the regular session hasn't started.  Use a relaxed threshold
     # so bots can boot during pre-market without crash-looping.

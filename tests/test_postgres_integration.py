@@ -5,7 +5,7 @@ Uses mocks — does not require a running Postgres instance.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

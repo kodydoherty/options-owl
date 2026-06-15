@@ -554,8 +554,10 @@ def check_anti_chase(
 # ML confidence 0.70-0.80 is the sweet spot (71.9% WR) → full allocation.
 # 0.80-0.90 is weakest qualifying bucket (63.3% WR) → reduced.
 # 0.90+ has big runners (65.6% WR) → near-full.
-# Score floor still applies — trades below 78 are rejected.
-_SCORE_FLOOR = 78  # below this, trade is rejected
+# Score floor ALIGNED with ML_PATTERN_THRESHOLD=0.62 (2026-06-15 fix): the old 75 floor (≈pattern
+# 0.75) was silently overriding the 0.62 gate — signals 0.62-0.75 were found, passed all 28 gates,
+# then rejected here, so the deployed 0.62 delivered NONE of its backtested volume. Score≈pattern×100.
+_SCORE_FLOOR = 62  # below this, trade is rejected — matches the 0.62 pattern gate
 _FALLBACK_MULT = 0.85  # when no ML confidence available
 
 # (threshold, multiplier) — checked top-down, first match wins
@@ -564,22 +566,72 @@ _CONFIDENCE_TIERS: list[tuple[float, float]] = [
     (0.80, 0.60),   # 60% budget — weakest bucket (58% WR, negative P&L)
     (0.70, 1.00),   # 100% budget — sweet spot (76% WR, best P&L)
 ]
-_MIN_ML_CONFIDENCE = 0.70  # below this, ML signal is too weak
+_MIN_ML_CONFIDENCE = 0.62  # CALLs — aligned with ML_PATTERN_THRESHOLD=0.62 (was 0.70, over-gating)
+_MIN_ML_CONFIDENCE_PUT = 0.65  # PUT model validated at 0.65 threshold (AUC 0.8038) — unchanged
 
 
-def _ml_confidence_to_mult(ml_confidence: float | None) -> tuple[float, str]:
+def _ml_confidence_to_mult(
+    ml_confidence: float | None, is_put: bool = False,
+) -> tuple[float, str]:
     """Map ML confidence to budget multiplier.
 
     Returns (multiplier, description).
+    PUT signals use 0.65 floor (PUT model threshold); CALLs use 0.70.
     """
     if ml_confidence is None:
         return _FALLBACK_MULT, "no_ml"
-    if ml_confidence < _MIN_ML_CONFIDENCE:
-        return 0.0, f"ml_conf={ml_confidence:.2f}<{_MIN_ML_CONFIDENCE}"
+    min_conf = _MIN_ML_CONFIDENCE_PUT if is_put else _MIN_ML_CONFIDENCE
+    if ml_confidence < min_conf:
+        return 0.0, f"ml_conf={ml_confidence:.2f}<{min_conf}"
     for threshold, mult in _CONFIDENCE_TIERS:
         if ml_confidence >= threshold:
             return mult, f"ml_conf={ml_confidence:.2f}≥{threshold}"
-    return _CONFIDENCE_TIERS[-1][1], f"ml_conf={ml_confidence:.2f}≥{_CONFIDENCE_TIERS[-1][0]}"
+    # Below lowest tier but above min_conf — use lowest tier's multiplier
+    return _CONFIDENCE_TIERS[-1][1], f"ml_conf={ml_confidence:.2f}≥{min_conf}"
+
+
+# ---------------------------------------------------------------------------
+# Stage D — UW flow conviction sizing (validated 2026-06-13: +72% P&L, PF 1.36→1.64, lower DD)
+# ---------------------------------------------------------------------------
+# Multipliers come straight from the validated backtest (stage_d_conviction_sizing_backtest.py):
+#   cluster: single=loser, conviction scales with count
+#   premium: single-stock $1M+ = conviction (PF 2.56); INDEX $1M+ = HEDGE (PF 0.53) → inverted
+#   ask_frac: ≥0.85 dominant
+#   P(runner): optional extra factor from runner_v1 deciles (best-effort; None until serve-time wired)
+def flow_conviction_mult(
+    cluster_count: int | None,
+    total_premium: float | None,
+    ask_frac: float | None,
+    is_index: bool,
+    p_runner: float | None = None,
+    is_put: bool = False,
+    tide_bias: float | None = None,
+    tide_misaligned_put_mult: float = 0.30,
+) -> tuple[float, str]:
+    """Return (multiplier, description) for a UW-flow trade. Clamped; MAX_POSITION_PCT still caps."""
+    cc = cluster_count or 1
+    prem = total_premium or 0.0
+    af = ask_frac or 0.0
+    cm = 0.5 if cc <= 1 else (1.5 if cc >= 4 else 1.0)
+    if is_index:
+        pm = 0.4 if prem >= 1e6 else (1.2 if prem < 5e5 else 0.9)  # big index sweeps = hedges
+    else:
+        pm = 1.4 if prem >= 1e6 else (0.9 if prem < 5e5 else 1.1)
+    am = 1.1 if af >= 0.85 else 0.7
+    mult = cm * pm * am
+    # B2: a PUT against a BULLISH tide (bias>0 = misaligned) is a net loser (PF 0.56) → size down.
+    tide_note = ""
+    if tide_bias is not None and is_put and tide_bias > 0:
+        mult *= tide_misaligned_put_mult
+        tide_note = f" tide-misaligned-put×{tide_misaligned_put_mult:.2f}"
+    base = float(min(2.5, max(0.25, mult)))  # validated clamp (no P(runner))
+    if p_runner is None:
+        return base, f"cluster={cc} prem=${prem/1e3:.0f}k ask={af:.2f} idx={is_index}{tide_note} mult={base:.2f}"
+    # fold in P(runner) per validated decile lift, then a wider safety clamp
+    rm = (1.75 if p_runner >= 0.71 else 1.5 if p_runner >= 0.63 else 1.3 if p_runner >= 0.51
+          else 1.1 if p_runner >= 0.38 else 0.9 if p_runner >= 0.29 else 0.6)
+    final = float(min(3.0, max(0.2, base * rm)))
+    return final, f"cluster={cc} prem=${prem/1e3:.0f}k ask={af:.2f} idx={is_index} pRun={p_runner:.2f} mult={final:.2f}"
 
 
 def score_to_contracts(
@@ -590,24 +642,31 @@ def score_to_contracts(
     max_concurrent: int = 4,
     max_portfolio_risk_pct: float = 75.0,
     ml_confidence: float | None = None,
+    conviction_mult: float = 1.0,
+    is_put: bool = False,
+    put_budget_multiplier: float = 0.50,
+    max_position_dollars: float = 0.0,
 ) -> int:
     """Confidence-weighted sizing — allocate more capital where ML edge is strongest.
 
-    1. Score floor: < 78 = rejected (0 contracts)
-    2. ML confidence floor: < 0.70 = rejected (signal too weak)
+    1. Score floor: < 75 = rejected (0 contracts)
+    2. ML confidence floor: CALLs < 0.70, PUTs < 0.65 = rejected
     3. Dollar target: balance × risk_cap / max_concurrent = slot budget
-    4. Confidence multiplier: 100% (0.70-0.80), 75% (0.80-0.90), 90% (0.90+)
+    4. Confidence multiplier: 100% (0.70-0.80), 60% (0.80-0.90), 95% (0.90+)
     5. Final = min(scaled_target, position_cap)
 
     The 0.70-0.80 confidence bucket has the highest win rate (71.9%) and P&L,
     so it gets full allocation. Higher confidence doesn't always mean better
     outcomes — 0.80-0.90 is actually the weakest qualifying bucket.
+
+    PUT signals use 0.65 floor (PUT model validated threshold, AUC 0.8038).
+    PUT conf 0.65-0.70 gets lowest-tier allocation × PUT_BUDGET_MULTIPLIER.
     """
     if score < _SCORE_FLOOR:
         logger.info(f"SIZING: score {score} < {_SCORE_FLOOR} → 0 contracts (rejected)")
         return 0
 
-    score_mult, mult_desc = _ml_confidence_to_mult(ml_confidence)
+    score_mult, mult_desc = _ml_confidence_to_mult(ml_confidence, is_put=is_put)
 
     if score_mult <= 0:
         logger.info(
@@ -620,12 +679,16 @@ def score_to_contracts(
         total_deployable = balance * (max_portfolio_risk_pct / 100)
         target_per_trade = total_deployable / max(1, max_concurrent)
 
-        # Confidence-weighted budget scaling
-        scaled_target = target_per_trade * score_mult
+        # Confidence-weighted budget scaling + conviction multiplier (spec 09)
+        # PUTs get reduced allocation (structurally worse odds)
+        direction_mult = put_budget_multiplier if is_put else 1.0
+        scaled_target = target_per_trade * score_mult * conviction_mult * direction_mult
         raw_contracts = int(scaled_target / cost_per_contract)
 
-        # Hard cap: never exceed position cap
+        # Hard cap: never exceed position cap — AND an absolute $ liquidity cap (0DTE fill realism).
         max_spend = balance * (max_position_pct / 100)
+        if max_position_dollars and max_position_dollars > 0:
+            max_spend = min(max_spend, max_position_dollars)
         max_by_position = int(max_spend / cost_per_contract)
 
         # Apply position % cap
@@ -642,11 +705,12 @@ def score_to_contracts(
         # Floor: at least 1 contract if within risk limits
         final_contracts = max(1, final_contracts)
 
+        put_note = f" PUT_MULT={put_budget_multiplier:.0%}" if is_put else ""
         logger.info(
             f"SIZING: score={score} balance=${balance:.2f} cost/contract=${cost_per_contract:.2f} "
             f"| risk_cap={max_portfolio_risk_pct}% deployable=${total_deployable:.2f} "
             f"| max_concurrent={max_concurrent} target/slot=${target_per_trade:.2f} "
-            f"| {mult_desc} mult={score_mult:.0%} scaled=${scaled_target:.2f} raw={raw_contracts} "
+            f"| {mult_desc} mult={score_mult:.0%}{put_note} scaled=${scaled_target:.2f} raw={raw_contracts} "
             f"| pos_cap({max_position_pct}%=${max_spend:.2f})={max_by_position} "
             f"→ {final_contracts} contracts "
             f"(total=${final_contracts * cost_per_contract:.2f})"

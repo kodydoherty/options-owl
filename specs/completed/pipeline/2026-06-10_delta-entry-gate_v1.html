@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Delta-Based Entry Gate</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-light: #dbeafe;
+            --danger: #dc2626;
+            --warning: #f59e0b;
+            --success: #16a34a;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-600: #4b5563;
+            --gray-800: #1f2937;
+            --gray-900: #111827;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: var(--gray-800); line-height: 1.6; max-width: 960px; margin: 0 auto; padding: 2rem; background: #fff; }
+        header { border-bottom: 3px solid var(--primary); padding-bottom: 1.5rem; margin-bottom: 2rem; }
+        header h1 { font-size: 1.75rem; color: var(--gray-900); }
+        .meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.5rem 2rem; margin-top: 1rem; font-size: 0.875rem; color: var(--gray-600); }
+        .meta dt { font-weight: 600; display: inline; }
+        .meta dd { display: inline; margin-left: 0.25rem; }
+        .status-badge { display: inline-block; padding: 0.125rem 0.625rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+        .status-todo { background: var(--gray-200); color: var(--gray-600); }
+        section { margin-bottom: 2rem; }
+        section > h2 { font-size: 1.25rem; color: var(--primary); border-bottom: 1px solid var(--gray-200); padding-bottom: 0.5rem; margin-bottom: 1rem; }
+        section > h3 { font-size: 1rem; margin: 1rem 0 0.5rem; color: var(--gray-900); }
+        ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+        li { margin-bottom: 0.25rem; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 1rem; font-size: 0.875rem; }
+        th, td { text-align: left; padding: 0.5rem 0.75rem; border: 1px solid var(--gray-200); }
+        th { background: var(--gray-50); font-weight: 600; }
+        pre { background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 0.375rem; padding: 1rem; overflow-x: auto; font-size: 0.8125rem; line-height: 1.5; margin-bottom: 1rem; }
+        code { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: 0.8125rem; }
+        .callout { padding: 0.75rem 1rem; border-left: 4px solid var(--primary); background: var(--primary-light); border-radius: 0 0.375rem 0.375rem 0; margin-bottom: 1rem; font-size: 0.875rem; }
+        .callout.warning { border-left-color: var(--warning); background: #fffbeb; }
+        .callout.danger { border-left-color: var(--danger); background: #fef2f2; }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Delta-Based Entry Gate</h1>
+    <div class="meta">
+        <div><dt>Spec ID:</dt><dd>delta-entry-gate</dd></div>
+        <div><dt>Status:</dt><dd><span class="status-badge status-todo">Todo</span></dd></div>
+        <div><dt>Project:</dt><dd>OptionsOwl</dd></div>
+        <div><dt>Category:</dt><dd>features</dd></div>
+        <div><dt>Created:</dt><dd>2026-06-10</dd></div>
+        <div><dt>Updated:</dt><dd>2026-06-10</dd></div>
+        <div><dt>Version:</dt><dd>v1</dd></div>
+        <div><dt>Author:</dt><dd>Kody + Claude</dd></div>
+    </div>
+</header>
+
+<section>
+    <h2>1. Overview</h2>
+    <p>Replace the static premium_cap ($6) and per-ticker OTM distance gates with a single
+    delta-based entry filter. Delta is a market-derived measure that automatically adapts to
+    each ticker's price, IV, and time-to-expiry — eliminating the overfitting risk of
+    hand-tuned dollar thresholds.</p>
+</section>
+
+<section>
+    <h2>2. Problem Statement</h2>
+    <p>The old price gates (premium_cap and otm_distance) were blocking $184,976 in profitable
+    trades over 126 days. Backtest analysis showed:</p>
+    <ul>
+        <li><strong>premium_cap ($6)</strong>: Backtested to find the "optimal" dollar amount — classic curve-fitting. A $6 META option is cheap; a $6 SPY option is expensive. No universal threshold works.</li>
+        <li><strong>otm_distance (per-ticker strikes)</strong>: The 1/2/3 strike multipliers were hand-tuned. The ML pattern model already captures moneyness — this gate double-filters.</li>
+        <li>Both gates reject trades the ML model already approved, second-guessing it with crude heuristics.</li>
+    </ul>
+    <p>Current state: premium_cap and otm_distance are DISABLED in production (deployed 2026-06-10).
+    Spread gate and min_premium are still active (principled market-microstructure filters).</p>
+</section>
+
+<section>
+    <h2>3. Backtest Evidence</h2>
+    <table>
+        <thead>
+            <tr><th>Config</th><th>Trades</th><th>Total P&amp;L</th><th>WR%</th><th>Hard Stops</th><th>P&amp;L/Trade</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>Old price gates (was prod)</td><td>474</td><td>$+279,587</td><td>77%</td><td>12</td><td>$+590</td></tr>
+            <tr><td>No price gates (deployed now)</td><td>754</td><td>$+464,563</td><td>68%</td><td>91</td><td>$+616</td></tr>
+            <tr style="background:#dcfce7;"><td><strong>Delta 0.15-0.70 (target)</strong></td><td><strong>662</strong></td><td><strong>$+491,155</strong></td><td><strong>75%</strong></td><td><strong>17</strong></td><td><strong>$+742</strong></td></tr>
+            <tr><td>Delta 0.20-0.60 (too tight)</td><td>634</td><td>$+434,491</td><td>75%</td><td>15</td><td>$+685</td></tr>
+        </tbody>
+    </table>
+    <p>Delta 0.15-0.70 is the best config: highest total P&amp;L ($+491K), highest P&amp;L/trade ($742),
+    75% win rate, and only 17 hard stops (vs 91 without any gates).</p>
+</section>
+
+<section>
+    <h2>4. Business Logic</h2>
+
+    <h3>4.1 Delta Gate Rules</h3>
+    <ul>
+        <li><strong>CALL entries</strong>: Reject if delta &lt; 0.15 (far OTM lottery ticket) or delta &gt; 0.70 (deep ITM, overpaying for intrinsic value)</li>
+        <li><strong>PUT entries</strong>: Same thresholds on |delta| (PUT delta is negative, so use abs value)</li>
+        <li><strong>Missing delta</strong>: SKIP gate (don't block — delta may not be available for all sources)</li>
+        <li><strong>Zero delta</strong>: SKIP gate (data quality issue, don't block on bad data)</li>
+    </ul>
+
+    <h3>4.2 Why Delta Works</h3>
+    <ul>
+        <li>Delta is the probability-weighted measure of an option finishing ITM</li>
+        <li>Delta &lt; 0.15 = &lt;15% chance of expiring ITM — high theta decay, needs large underlying move</li>
+        <li>Delta &gt; 0.70 = deep ITM — premium is mostly intrinsic value, limited leverage</li>
+        <li>Unlike a $6 cap, delta automatically adapts to ticker price, IV environment, and DTE</li>
+        <li>A $6 NVDA option may have delta 0.45 (great entry), while a $6 SPY option may have delta 0.80 (overpaying)</li>
+    </ul>
+
+    <h3>4.3 Data Source for Delta</h3>
+    <ul>
+        <li><strong>Production (entry pipeline)</strong>: Read delta from Redis option snapshot (published by harvester with full greeks)</li>
+        <li><strong>Fallback</strong>: Polygon REST option quote includes greeks</li>
+        <li><strong>Backtest</strong>: Delta available in ThetaData option_greeks table (already loaded by gold standard backtest)</li>
+    </ul>
+
+    <div class="callout warning">
+        <strong>Dependency:</strong> The delta gate requires real-time delta data from the harvester via Redis.
+        The harvester already publishes full option snapshots including delta to Redis every 60s.
+        For sub-second delta, the real-time data streaming spec (separate) must be completed first.
+        However, the 60s harvester cycle is sufficient for entry gating — we only need delta at the
+        moment of entry, not continuously.
+    </div>
+
+    <h3>4.4 Settings</h3>
+    <table>
+        <thead><tr><th>Setting</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+            <tr><td><code>ENABLE_DELTA_GATE</code></td><td><code>false</code></td><td>Enable delta-based entry filtering</td></tr>
+            <tr><td><code>DELTA_ENTRY_MIN</code></td><td><code>0.15</code></td><td>Minimum |delta| — reject far OTM</td></tr>
+            <tr><td><code>DELTA_ENTRY_MAX</code></td><td><code>0.70</code></td><td>Maximum |delta| — reject deep ITM</td></tr>
+        </tbody>
+    </table>
+</section>
+
+<section>
+    <h2>5. Implementation Plan</h2>
+    <table>
+        <thead><tr><th>#</th><th>Task</th><th>File(s)</th><th>Status</th></tr></thead>
+        <tbody>
+            <tr><td>1</td><td>Add ENABLE_DELTA_GATE, DELTA_ENTRY_MIN, DELTA_ENTRY_MAX to Settings</td><td><code>options_owl/config/settings.py</code></td><td>Todo</td></tr>
+            <tr><td>2</td><td>Create DeltaEntryGate class in pipeline.py</td><td><code>options_owl/risk/pipeline.py</code></td><td>Todo</td></tr>
+            <tr><td>3</td><td>Read delta from Redis snapshot in gate (via redis_client.get_option_snapshot)</td><td><code>options_owl/risk/pipeline.py</code></td><td>Todo</td></tr>
+            <tr><td>4</td><td>Add DeltaEntryGate to ENTRY_GATES list (after SpreadCostGate, replacing OTMDistanceGate position)</td><td><code>options_owl/risk/pipeline.py</code></td><td>Todo</td></tr>
+            <tr><td>5</td><td>Pass delta into pipeline context from paper_trader.py (read from Redis snapshot)</td><td><code>options_owl/execution/paper_trader.py</code></td><td>Todo</td></tr>
+            <tr><td>6</td><td>Enable in docker-compose.yml for all bots</td><td><code>docker-compose.yml</code></td><td>Todo</td></tr>
+            <tr><td>7</td><td>Write unit tests for DeltaEntryGate</td><td><code>tests/test_delta_gate.py</code></td><td>Todo</td></tr>
+            <tr><td>8</td><td>Write integration test: gate blocks far OTM, allows ATM, skips when no delta</td><td><code>tests/test_delta_gate.py</code></td><td>Todo</td></tr>
+            <tr><td>9</td><td>Run full backtest with delta gate to confirm P&amp;L matches expectation</td><td><code>scripts/backtest_gold_standard.py</code></td><td>Todo</td></tr>
+            <tr><td>10</td><td>Deploy and verify via logs</td><td><code>scripts/rebuild.sh</code></td><td>Todo</td></tr>
+        </tbody>
+    </table>
+</section>
+
+<section>
+    <h2>6. Code Changes</h2>
+
+    <h3>6.1 DeltaEntryGate (pipeline.py)</h3>
+    <pre><code>class DeltaEntryGate(EntryGate):
+    """Gate: Reject entries where option delta is outside the sweet spot.
+
+    Delta &lt; min (default 0.15) = far OTM lottery ticket, high theta decay.
+    Delta &gt; max (default 0.70) = deep ITM, overpaying for intrinsic value.
+
+    Replaces static premium_cap and otm_distance gates with a single
+    market-derived measure that adapts to ticker price, IV, and DTE.
+
+    Backtested: delta 0.15-0.70 = $+491K, $742/trade, 75% WR over 126 days.
+    """
+    name = "delta_entry"
+
+    async def evaluate(self, ctx: dict[str, Any]) -&gt; GateOutcome:
+        settings = ctx.get("settings")
+        if not getattr(settings, "ENABLE_DELTA_GATE", False):
+            return GateOutcome(self.name, GateResult.SKIP, "delta gate disabled")
+
+        delta = ctx.get("entry_delta")
+        if delta is None or delta == 0:
+            return GateOutcome(self.name, GateResult.SKIP,
+                               "No delta data — skipping")
+
+        abs_delta = abs(delta)
+        min_delta = getattr(settings, "DELTA_ENTRY_MIN", 0.15)
+        max_delta = getattr(settings, "DELTA_ENTRY_MAX", 0.70)
+
+        if abs_delta &lt; min_delta:
+            return GateOutcome(self.name, GateResult.FAIL,
+                f"Delta {abs_delta:.3f} &lt; {min_delta} — far OTM lottery ticket")
+
+        if abs_delta &gt; max_delta:
+            return GateOutcome(self.name, GateResult.FAIL,
+                f"Delta {abs_delta:.3f} &gt; {max_delta} — deep ITM, limited leverage")
+
+        return GateOutcome(self.name, GateResult.PASS,
+            f"Delta {abs_delta:.3f} in range [{min_delta}, {max_delta}]")</code></pre>
+
+    <h3>6.2 Reading Delta for Pipeline Context (paper_trader.py)</h3>
+    <pre><code># In _process_signal(), after smart entry resolves strike/expiry:
+entry_delta = None
+try:
+    from options_owl.db import redis_client
+    if redis_client.is_connected():
+        contract_key = f"{ticker}:{direction}:{strike}:{expiry}"
+        snapshot = await redis_client.get_option_snapshot(contract_key)
+        if snapshot and snapshot.get("delta"):
+            entry_delta = snapshot["delta"]
+except Exception:
+    pass
+
+ctx = {
+    ...
+    "entry_delta": entry_delta,
+    ...
+}</code></pre>
+</section>
+
+<section>
+    <h2>7. Testing Plan</h2>
+    <ul>
+        <li><strong>Unit tests</strong>: DeltaEntryGate with delta=0.10 (FAIL), 0.40 (PASS), 0.80 (FAIL), None (SKIP), 0 (SKIP)</li>
+        <li><strong>Unit tests</strong>: Gate disabled returns SKIP</li>
+        <li><strong>Integration test</strong>: Full pipeline run with delta in context, verify gate fires</li>
+        <li><strong>Backtest verification</strong>: Run gold standard with --delta-gate, confirm ~662 trades / $+491K</li>
+        <li><strong>Production verification</strong>: grep logs for "delta_entry" gate outcomes after deploy</li>
+    </ul>
+</section>
+
+<section>
+    <h2>8. Security Considerations</h2>
+    <ul>
+        <li>Delta read from Redis is untrusted external data — validate numeric range (0-1)</li>
+        <li>Gate SKIPs (not blocks) on missing/zero delta — fail-open design prevents data issues from blocking all trades</li>
+        <li>No user input involved — all values from Redis/Polygon API</li>
+    </ul>
+</section>
+
+<section>
+    <h2>9. Rollback Plan</h2>
+    <p>Set <code>ENABLE_DELTA_GATE=false</code> in docker-compose.yml and redeploy. Gate returns SKIP when disabled.
+    The old premium_cap and otm_distance gates still exist in code (just disabled) and can be re-enabled independently.</p>
+</section>
+
+</body>
+</html>

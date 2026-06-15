@@ -13,18 +13,15 @@ that prevented ALL sells. These tests verify:
 
 from __future__ import annotations
 
-import asyncio
 import inspect
-import textwrap
-from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import datetime
+from unittest.mock import MagicMock
 
 import aiosqlite
 import pytest
 
 from options_owl.execution.paper_trader import (
     PaperTrader,
-    init_paper_db,
     log_trade_event,
 )
 
@@ -312,7 +309,7 @@ class TestCloseTradeUnchanged:
         trader = PaperTrader(settings)
         await trader.init()
 
-        result = await trader.close_trade(trade_id, 175.0, 3.80, "soft_trail")
+        await trader.close_trade(trade_id, 175.0, 3.80, "soft_trail")
 
         async with aiosqlite.connect(tmp_db) as conn:
             conn.row_factory = aiosqlite.Row

@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Data Reliability: WS-First Architecture</title>
+    <style>
+        :root { --primary: #2563eb; --primary-light: #dbeafe; --danger: #dc2626; --warning: #f59e0b; --success: #16a34a; --gray-50: #f9fafb; --gray-100: #f3f4f6; --gray-200: #e5e7eb; --gray-600: #4b5563; --gray-800: #1f2937; --gray-900: #111827; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: var(--gray-800); line-height: 1.6; max-width: 960px; margin: 0 auto; padding: 2rem; background: #fff; }
+        header { border-bottom: 3px solid var(--primary); padding-bottom: 1.5rem; margin-bottom: 2rem; }
+        header h1 { font-size: 1.75rem; color: var(--gray-900); }
+        .meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.5rem 2rem; margin-top: 1rem; font-size: 0.875rem; color: var(--gray-600); }
+        .meta dt { font-weight: 600; display: inline; }
+        .meta dd { display: inline; margin-left: 0.25rem; }
+        .status-badge { display: inline-block; padding: 0.125rem 0.625rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+        .status-todo { background: var(--gray-200); color: var(--gray-600); }
+        section { margin-bottom: 2rem; }
+        section > h2 { font-size: 1.25rem; color: var(--primary); border-bottom: 1px solid var(--gray-200); padding-bottom: 0.5rem; margin-bottom: 1rem; }
+        section > h3 { font-size: 1rem; margin: 1rem 0 0.5rem; color: var(--gray-900); }
+        ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+        li { margin-bottom: 0.25rem; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 1rem; font-size: 0.875rem; }
+        th, td { text-align: left; padding: 0.5rem 0.75rem; border: 1px solid var(--gray-200); }
+        th { background: var(--gray-50); font-weight: 600; }
+        pre { background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 0.375rem; padding: 1rem; overflow-x: auto; font-size: 0.8125rem; line-height: 1.5; margin-bottom: 1rem; }
+        code { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: 0.8125rem; }
+        .callout { padding: 0.75rem 1rem; border-left: 4px solid var(--primary); background: var(--primary-light); border-radius: 0 0.375rem 0.375rem 0; margin-bottom: 1rem; font-size: 0.875rem; }
+        .callout.warning { border-left-color: var(--warning); background: #fffbeb; }
+        .callout.danger { border-left-color: var(--danger); background: #fef2f2; }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Real-Time Data Reliability: WS-First Architecture</h1>
+    <div class="meta">
+        <div><dt>Spec ID:</dt><dd>realtime-data-reliability</dd></div>
+        <div><dt>Status:</dt><dd><span class="status-badge status-todo">Todo</span></dd></div>
+        <div><dt>Project:</dt><dd>OptionsOwl</dd></div>
+        <div><dt>Category:</dt><dd>infrastructure</dd></div>
+        <div><dt>Created:</dt><dd>2026-06-10</dd></div>
+        <div><dt>Updated:</dt><dd>2026-06-10</dd></div>
+        <div><dt>Version:</dt><dd>v1</dd></div>
+        <div><dt>Author:</dt><dd>Kody + Claude</dd></div>
+        <div><dt>Priority:</dt><dd>P0 — CRITICAL</dd></div>
+    </div>
+</header>
+
+<section>
+    <h2>1. Overview</h2>
+    <p>Eliminate ALL polling-based data paths during market hours. Every agent should receive
+    stock prices and option premiums via WebSocket push through Redis, with sub-second latency.
+    The current architecture has a mix of WS, REST polling, and yfinance fallbacks that creates
+    unpredictable 2-120 second delays.</p>
+</section>
+
+<section>
+    <h2>2. Problem Statement</h2>
+    <div class="callout danger">
+        <strong>Critical Issue:</strong> All agents see data up to 2 minutes delayed. This means
+        exit decisions (stop losses, trailing stops) fire late, costing real money on every trade.
+        A 2-minute delay on a 0DTE option losing $0.50/minute = $100 per contract in avoidable loss.
+    </div>
+
+    <h3>2.1 Current Data Flow (before hotfix)</h3>
+    <table>
+        <thead><tr><th>Data</th><th>Source</th><th>Method</th><th>Latency</th><th>Status</th></tr></thead>
+        <tbody>
+            <tr><td>Stock prices</td><td>Polygon /stocks WS</td><td>AM.* minute bars via candle_collector</td><td>~1s</td><td>Working</td></tr>
+            <tr><td>Option quotes (bid/ask)</td><td>Polygon /options WS</td><td>Q.O:* via flow_collector</td><td>~1s to Redis</td><td>Working but bots weren't reading it</td></tr>
+            <tr><td>Option chain snapshots</td><td>Polygon REST</td><td>60s poll in harvester</td><td>60-120s</td><td>BOTTLENECK (now 15s)</td></tr>
+            <tr><td>Position monitor premium</td><td>Polygon REST</td><td>Per-trade HTTP call</td><td>1-2s per trade</td><td>FIXED: now reads Redis first</td></tr>
+        </tbody>
+    </table>
+
+    <h3>2.2 Hotfix Applied (2026-06-10)</h3>
+    <ul>
+        <li>Position monitor now checks Redis snapshots FIRST (sub-second) before falling back to REST</li>
+        <li>Harvester poll interval reduced from 60s to 15s (for open_interest/new strike discovery only)</li>
+        <li>Verified: Redis snapshots are 2s old during market hours (flow WS is connected)</li>
+    </ul>
+
+    <h3>2.3 Remaining Issues</h3>
+    <ul>
+        <li><strong>REST poll still runs every 15s</strong> — should only run for discovery (new strikes, open_interest), not for premium data</li>
+        <li><strong>No WS health watchdog</strong> — if flow WS drops mid-day, no alarm, no auto-recovery notification to agents</li>
+        <li><strong>Boot race condition</strong> — if bot starts before WS connects, it gets stale/empty Redis data. Should retry until WS data flows</li>
+        <li><strong>No end-to-end latency monitoring</strong> — we can't see "how old is the data the bot is actually trading on"</li>
+        <li><strong>yfinance fallback still exists</strong> — slow, rate-limited, adds 3-5s when it fires. Should be removed for live bots</li>
+    </ul>
+</section>
+
+<section>
+    <h2>3. Target Architecture</h2>
+    <pre><code>Polygon /stocks WS ──→ candle_collector ──→ Redis prices     ──→ All bots (instant)
+Polygon /options WS ─→ flow_collector ───→ Redis snapshots   ──→ All bots (instant)
+                                          Redis premiums     ──→ Position monitor (instant)
+
+Polygon REST (15s) ──→ harvester ────────→ SQLite (bulk)     ──→ Backtest/analytics only
+                                          Redis (discovery)  ──→ New strikes, open_interest</code></pre>
+
+    <h3>3.1 Principles</h3>
+    <ul>
+        <li><strong>WS is the primary data source.</strong> REST polling is ONLY for discovery (new strikes, OI). Never for premium/price data during market hours.</li>
+        <li><strong>Redis is the distribution bus.</strong> Harvester writes, all bots read. One source of truth.</li>
+        <li><strong>Every WS connection has a health monitor.</strong> If no messages for 30s during market hours, alert + force reconnect.</li>
+        <li><strong>Boot-time resilience.</strong> Bots retry Redis reads every 5s until data is fresh. Don't crash, don't trade on stale data.</li>
+        <li><strong>Latency is observable.</strong> Every premium read logs its source and age. Dashboard shows real-time data freshness.</li>
+    </ul>
+</section>
+
+<section>
+    <h2>4. Implementation Plan</h2>
+    <table>
+        <thead><tr><th>#</th><th>Task</th><th>File(s)</th><th>Priority</th><th>Status</th></tr></thead>
+        <tbody>
+            <tr><td>1</td><td><strong>WS Health Watchdog:</strong> Background task in harvester that checks candle_ws and flow_ws every 30s. If either is disconnected during market hours, log CRITICAL + publish alert to Redis + send Discord DM</td><td><code>options_owl/harvester.py</code></td><td>P0</td><td>Todo</td></tr>
+            <tr><td>2</td><td><strong>WS Auto-Recovery:</strong> If flow_collector WS disconnects, immediately trigger reconnect (don't wait for next iteration). Add jitter to prevent thundering herd on reconnect</td><td><code>options_owl/collectors/flow_collector.py</code></td><td>P0</td><td>Done (existing retry logic)</td></tr>
+            <tr><td>3</td><td><strong>Boot-Time Data Wait:</strong> On bot startup, poll Redis for fresh snapshots before entering the main scan/monitor loop. Retry every 5s for up to 5 minutes. Log progress. Don't crash — just wait.</td><td><code>options_owl/main.py</code>, <code>options_owl/bot_runner.py</code></td><td>P0</td><td>Todo</td></tr>
+            <tr><td>4</td><td><strong>Redis Snapshot Freshness Check:</strong> In position monitor, log the data source + age for every premium read. Add metrics: redis_hits, redis_stale, rest_fallbacks per cycle</td><td><code>options_owl/execution/position_monitor.py</code></td><td>P1</td><td>Partial (hotfix added Redis-first)</td></tr>
+            <tr><td>5</td><td><strong>Remove yfinance from hot path:</strong> For LIVE bots, never use yfinance for premium lookups (too slow, rate-limited). Only keep as last-resort for paper bots.</td><td><code>options_owl/execution/position_monitor.py</code></td><td>P1</td><td>Todo</td></tr>
+            <tr><td>6</td><td><strong>Decouple REST poll from premium delivery:</strong> Harvester REST poll writes to SQLite only (for backtest/analytics). Redis premium data comes exclusively from flow_collector WS.</td><td><code>options_owl/harvester.py</code></td><td>P1</td><td>Todo</td></tr>
+            <tr><td>7</td><td><strong>End-to-end latency dashboard:</strong> Add /api/data-health endpoint showing per-ticker last-update timestamps, WS connection status, and staleness alerts</td><td><code>options_owl/dashboard/</code></td><td>P2</td><td>Todo</td></tr>
+            <tr><td>8</td><td><strong>WS Connection Smoke Test:</strong> On harvester start, verify both WS connections deliver data within 30s. If not, log error + retry with backoff. Don't proceed to poll loop until at least one WS is live.</td><td><code>options_owl/harvester.py</code></td><td>P0</td><td>Todo</td></tr>
+            <tr><td>9</td><td><strong>Integration tests for full WS flow:</strong> Mock WS + Redis, verify: quote → flow_collector → Redis → position_monitor reads it &lt; 2s. Test reconnect behavior. Test boot-time wait.</td><td><code>tests/test_ws_data_flow.py</code></td><td>P0</td><td>Todo</td></tr>
+            <tr><td>10</td><td><strong>Babysitter WS health check:</strong> Add "check Redis snapshot ages" to babysitter script. Alert if any priority ticker's snapshot is &gt; 30s old during market hours.</td><td><code>scripts/monitor-prompt.md</code></td><td>P1</td><td>Todo</td></tr>
+        </tbody>
+    </table>
+</section>
+
+<section>
+    <h2>5. WS Health Watchdog Design</h2>
+    <pre><code># In harvester.py, as a background task alongside the poll loop:
+async def _ws_health_watchdog(candle_collector, flow_collector):
+    """Check WS health every 30s during market hours."""
+    while True:
+        await asyncio.sleep(30)
+        if not _is_market_hours():
+            continue
+
+        issues = []
+        if not candle_collector.ws_connected:
+            issues.append("candle_ws DISCONNECTED")
+        elif candle_collector.last_msg_age > 60:
+            issues.append(f"candle_ws stale ({candle_collector.last_msg_age:.0f}s)")
+
+        if flow_collector and not flow_collector.ws_connected:
+            issues.append("flow_ws DISCONNECTED")
+        elif flow_collector and flow_collector.last_msg_age > 60:
+            issues.append(f"flow_ws stale ({flow_collector.last_msg_age:.0f}s)")
+
+        if issues:
+            logger.critical(f"WS HEALTH ALERT: {', '.join(issues)}")
+            # Publish to Redis so all bots know
+            await redis_client.set("owl:ws_health", json.dumps({
+                "healthy": False, "issues": issues, "t": time.time()
+            }), ex=120)
+            # TODO: Send Discord DM alert
+        else:
+            await redis_client.set("owl:ws_health", json.dumps({
+                "healthy": True, "t": time.time()
+            }), ex=120)</code></pre>
+</section>
+
+<section>
+    <h2>6. Boot-Time Data Wait Design</h2>
+    <pre><code># In bot_runner.py, before entering scan/monitor loop:
+async def _wait_for_fresh_data(max_wait=300, check_interval=5):
+    """Wait until Redis has fresh option snapshots before trading."""
+    start = time.time()
+    while time.time() - start < max_wait:
+        try:
+            snap = await redis_client.get_option_snapshot("SPY:call:*")
+            if snap and snap.get("t") and (time.time() - snap["t"]) < 30:
+                logger.info(f"Fresh data available (SPY snapshot age={time.time()-snap['t']:.0f}s)")
+                return True
+        except Exception:
+            pass
+        elapsed = time.time() - start
+        logger.info(f"Waiting for fresh Redis data... ({elapsed:.0f}s / {max_wait}s)")
+        await asyncio.sleep(check_interval)
+
+    logger.warning(f"No fresh data after {max_wait}s — proceeding with caution")
+    return False</code></pre>
+</section>
+
+<section>
+    <h2>7. Testing Plan</h2>
+    <ul>
+        <li><strong>Unit: WS health watchdog</strong> — test alerts fire when connection is stale, don't fire when healthy</li>
+        <li><strong>Unit: Boot-time wait</strong> — test it waits correctly, test timeout behavior, test it proceeds on fresh data</li>
+        <li><strong>Integration: Full data flow</strong> — mock Polygon WS → flow_collector → Redis → position_monitor premium read. Verify &lt; 2s end-to-end</li>
+        <li><strong>Integration: WS reconnect</strong> — simulate WS disconnect, verify reconnect + data resumes within 30s</li>
+        <li><strong>Integration: Stale data rejection</strong> — verify position monitor rejects Redis data older than 30s, falls back to REST</li>
+        <li><strong>E2E: Deploy and monitor</strong> — grep logs for premium sources, verify redis_snapshot is primary during market hours</li>
+    </ul>
+</section>
+
+<section>
+    <h2>8. Security Considerations</h2>
+    <ul>
+        <li>Redis data is untrusted — validate all numeric values before using for trade decisions</li>
+        <li>WS reconnect with backoff prevents thundering herd and Polygon rate limit bans</li>
+        <li>Health watchdog runs in harvester only (single writer), not in bots (avoids N×M alert storms)</li>
+    </ul>
+</section>
+
+<section>
+    <h2>9. Rollback Plan</h2>
+    <p>Each component has independent fallbacks:</p>
+    <ul>
+        <li>If Redis is empty/stale, position monitor falls back to Polygon REST (existing behavior)</li>
+        <li>If flow WS is down, harvester REST poll (now 15s) still publishes to Redis</li>
+        <li>Boot-time wait has a 5-minute timeout — bots always start eventually</li>
+    </ul>
+</section>
+
+</body>
+</html>

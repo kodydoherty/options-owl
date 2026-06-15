@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart ATM Strike Resolution and OTM Entry Gate</title>
+    <style>
+        :root {
+            --primary: #7c3aed;
+            --primary-light: #ede9fe;
+            --danger: #dc2626;
+            --warning: #f59e0b;
+            --success: #16a34a;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-600: #4b5563;
+            --gray-800: #1f2937;
+            --gray-900: #111827;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            color: var(--gray-800);
+            line-height: 1.6;
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 2rem;
+            background: #fff;
+        }
+        header {
+            border-bottom: 3px solid var(--primary);
+            padding-bottom: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        header h1 { font-size: 1.75rem; color: var(--gray-900); }
+        .meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.5rem 2rem;
+            margin-top: 1rem;
+            font-size: 0.875rem;
+            color: var(--gray-600);
+        }
+        .meta dt { font-weight: 600; display: inline; }
+        .meta dd { display: inline; margin-left: 0.25rem; }
+        .status-badge {
+            display: inline-block;
+            padding: 0.125rem 0.625rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .status-todo { background: var(--gray-200); color: var(--gray-600); }
+        .status-active { background: var(--primary-light); color: var(--primary); }
+        .status-completed { background: #dcfce7; color: var(--success); }
+        .status-rejected { background: #fef2f2; color: var(--danger); }
+        .experiment-type {
+            display: inline-block;
+            padding: 0.125rem 0.625rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            background: var(--primary-light);
+            color: var(--primary);
+        }
+        section { margin-bottom: 2rem; }
+        section > h2 {
+            font-size: 1.25rem;
+            color: var(--primary);
+            border-bottom: 1px solid var(--gray-200);
+            padding-bottom: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        section > h3 { font-size: 1rem; margin: 1rem 0 0.5rem; color: var(--gray-900); }
+        ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+        li { margin-bottom: 0.25rem; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1rem;
+            font-size: 0.875rem;
+        }
+        th, td {
+            text-align: left;
+            padding: 0.5rem 0.75rem;
+            border: 1px solid var(--gray-200);
+        }
+        th { background: var(--gray-50); font-weight: 600; }
+        td.positive { color: var(--success); font-weight: 600; }
+        td.negative { color: var(--danger); font-weight: 600; }
+        pre {
+            background: var(--gray-50);
+            border: 1px solid var(--gray-200);
+            border-radius: 0.375rem;
+            padding: 1rem;
+            overflow-x: auto;
+            font-size: 0.8125rem;
+            line-height: 1.5;
+            margin-bottom: 1rem;
+        }
+        code { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: 0.8125rem; }
+        .callout {
+            padding: 0.75rem 1rem;
+            border-left: 4px solid var(--primary);
+            background: var(--primary-light);
+            border-radius: 0 0.375rem 0.375rem 0;
+            margin-bottom: 1rem;
+            font-size: 0.875rem;
+        }
+        .callout.warning { border-left-color: var(--warning); background: #fffbeb; }
+        .callout.danger { border-left-color: var(--danger); background: #fef2f2; }
+        .callout.success { border-left-color: var(--success); background: #dcfce7; }
+        .verdict {
+            padding: 1rem;
+            border: 2px solid var(--gray-200);
+            border-radius: 0.5rem;
+            margin-top: 1rem;
+            font-size: 1rem;
+        }
+        .verdict.adopted { border-color: var(--success); background: #f0fdf4; }
+        .verdict.rejected { border-color: var(--danger); background: #fef2f2; }
+        .verdict.modified { border-color: var(--warning); background: #fffbeb; }
+        .changelog { font-size: 0.875rem; }
+        .changelog dt { font-weight: 600; margin-top: 0.5rem; }
+        .changelog dd { margin-left: 1rem; color: var(--gray-600); }
+        footer {
+            margin-top: 3rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--gray-200);
+            font-size: 0.75rem;
+            color: var(--gray-600);
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Smart ATM Strike Resolution and OTM Entry Gate</h1>
+    <div class="meta">
+        <div><dt>Spec ID:</dt><dd>smart-atm-strike-resolution-otm-gate</dd></div>
+        <div><dt>Type:</dt><dd><span class="experiment-type">Experiment</span></dd></div>
+        <div><dt>Status:</dt><dd><span class="status-badge status-todo">Todo</span></dd></div>
+        <div><dt>Project:</dt><dd>OptionsOwl</dd></div>
+        <div><dt>Category:</dt><dd>experiments</dd></div>
+        <div><dt>Created:</dt><dd>2026-06-09</dd></div>
+        <div><dt>Updated:</dt><dd>2026-06-09</dd></div>
+        <div><dt>Version:</dt><dd>v1</dd></div>
+        <div><dt>Author:</dt><dd>Kody + Claude</dd></div>
+    </div>
+</header>
+
+<section>
+    <h2>1. Hypothesis</h2>
+    <p>
+        The current ML scan pipeline resolves the ATM strike <strong>once per day</strong> and never updates it,
+        even when the underlying moves significantly. This causes the bot to trade stale, increasingly OTM options
+        that bleed to zero via theta. By (A) dynamically re-resolving the ATM strike when the underlying drifts,
+        and (B) adding a per-ticker OTM distance gate calibrated to each ticker's strike grid, we can eliminate
+        bad OTM entries while preserving all valid ATM/near-ATM trades.
+    </p>
+    <div class="callout">
+        <strong>Expected outcome:</strong> Eliminate -60% to -90% OTM losers (like AMZN #249 on 2026-06-09: -$414)
+        while preserving 95%+ of profitable trades. Net improvement: +$2K-5K per 100 trades by cutting deep OTM entries.
+    </div>
+</section>
+
+<section>
+    <h2>2. Background &amp; Motivation</h2>
+
+    <h3>2.1 The Incident (AMZN #249, 2026-06-09)</h3>
+    <ul>
+        <li>AMZN strike $250 resolved when underlying was near $250 at market open</li>
+        <li>By minute 18 (9:48 ET), AMZN had dropped to $248.92 &mdash; strike was 0.43% OTM</li>
+        <li>DCA doubled down at $1.46 when premium was already fading</li>
+        <li>AMZN kept falling to $245 &mdash; $250 CALL went from $1.73 to $0.63 (-61%)</li>
+        <li>Grace backstop fired at -61%, total loss: <strong>-$414</strong></li>
+    </ul>
+
+    <h3>2.2 Root Cause</h3>
+    <ul>
+        <li><code>_resolve_atm_from_redis()</code> and <code>find_atm_strike()</code> in <code>bot_runner.py</code>
+            pick the nearest strike to underlying &mdash; but only on the <strong>first scan</strong></li>
+        <li>The strike is locked in <code>TickerScanState.strike</code> for the entire day
+            (<code>if call_state.strike &lt;= 0:</code> guard)</li>
+        <li>No pipeline gate checks if the strike is OTM at entry time</li>
+        <li>The <code>PremiumGate</code> only rejects penny premiums (&lt;$0.20), not OTM distance</li>
+    </ul>
+
+    <h3>2.3 Strike Grid Research (from ThetaData DB, 6.7M rows)</h3>
+    <table>
+        <thead>
+            <tr><th>Ticker</th><th>Strike Gap</th><th>Avg Price</th><th>Gap as % of Price</th><th>Category</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>SPY</td><td>$1.00</td><td>$694.70</td><td>0.14%</td><td>Fine Grid</td></tr>
+            <tr><td>QQQ</td><td>$1.00</td><td>$633.95</td><td>0.16%</td><td>Fine Grid</td></tr>
+            <tr><td>IWM</td><td>$0.50</td><td>$263.66</td><td>0.19%</td><td>Fine Grid</td></tr>
+            <tr><td>NVDA</td><td>$0.50</td><td>$191.85</td><td>0.26%</td><td>Fine Grid</td></tr>
+            <tr><td>MSTR</td><td>$0.50</td><td>$152.02</td><td>0.33%</td><td>Fine Grid</td></tr>
+            <tr><td>META</td><td>$2.50</td><td>$638.04</td><td>0.39%</td><td>Standard</td></tr>
+            <tr><td>MSFT</td><td>$2.50</td><td>$425.10</td><td>0.59%</td><td>Standard</td></tr>
+            <tr><td>TSLA</td><td>$2.50</td><td>$415.04</td><td>0.60%</td><td>Standard</td></tr>
+            <tr><td>PLTR</td><td>$1.00</td><td>$153.11</td><td>0.65%</td><td>Standard</td></tr>
+            <tr><td>AVGO</td><td>$2.50</td><td>$361.97</td><td>0.69%</td><td>Standard</td></tr>
+            <tr><td>GOOGL</td><td>$2.50</td><td>$330.45</td><td>0.76%</td><td>Wide Grid</td></tr>
+            <tr><td>AAPL</td><td>$2.50</td><td>$270.57</td><td>0.92%</td><td>Wide Grid</td></tr>
+            <tr><td>AMD</td><td>$2.50</td><td>$270.86</td><td>0.92%</td><td>Wide Grid</td></tr>
+            <tr><td>AMZN</td><td>$2.50</td><td>$234.05</td><td>1.07%</td><td>Wide Grid</td></tr>
+        </tbody>
+    </table>
+
+    <div class="callout danger">
+        <strong>Key insight:</strong> Strike spacing varies <strong>7.6x</strong> across tickers (SPY 0.14% vs AMZN 1.07%).
+        A static OTM % threshold is fundamentally wrong &mdash; it's either too tight for wide-grid tickers
+        (blocking valid ATM trades) or too loose for fine-grid tickers (allowing deep OTM entries).
+    </div>
+
+    <h3>2.4 OTM Distance vs P&amp;L (Historical Evidence)</h3>
+    <table>
+        <thead>
+            <tr><th>OTM Bucket</th><th>Trades</th><th>Win Rate</th><th>Avg P&amp;L %</th><th>Total P&amp;L</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>0&ndash;0.1%</td><td>63</td><td class="positive">69.8%</td><td class="positive">+14.1%</td><td class="positive">+$4,842</td></tr>
+            <tr><td>0.1&ndash;0.25%</td><td>54</td><td>57.4%</td><td class="positive">+4.9%</td><td class="positive">+$1,016</td></tr>
+            <tr><td>0.25&ndash;0.5%</td><td>33</td><td>45.5%</td><td class="positive">+10.7%</td><td class="positive">+$444</td></tr>
+            <tr><td>0.5&ndash;1.0%</td><td>7</td><td>71.4%</td><td class="negative">-5.6%</td><td class="negative">-$144</td></tr>
+        </tbody>
+    </table>
+    <p>
+        Trades within 0.1% of ATM generate <strong>77% of all profit</strong>. Beyond 0.5% OTM, total P&amp;L turns negative.
+        But 0.5% is less than one strike for AMZN/AAPL/AMD &mdash; so the threshold must be expressed in
+        <strong>strike intervals</strong>, not raw percentages.
+    </p>
+</section>
+
+<section>
+    <h2>3. Methodology</h2>
+
+    <h3>3.1 Control (Baseline)</h3>
+    <p>Current production + backtest behavior: single ATM strike per day, no OTM gate.</p>
+    <pre><code># bot_runner.py — strike resolved once, locked for entire day
+if call_state.strike &lt;= 0:
+    atm_snap = await _resolve_atm_from_redis(...)
+    call_state.strike = float(atm_snap.get("strike", 0))
+    # NEVER re-resolved even if underlying moves $5
+
+# pipeline.py — no OTM distance check
+DEFAULT_ENTRY_GATES = [
+    ScoreGate, PremiumGate, PremiumCapGate, SpreadCostGate,
+    StopPriceGate, ...  # no OTM gate
+]</code></pre>
+
+    <h3>3.2 Test (Experiment) &mdash; Three-Layer Defense</h3>
+    <p>
+        The solution has three complementary layers that work together:
+    </p>
+
+    <h3>Layer 1: Dynamic ATM Re-Resolution (production only)</h3>
+    <p>
+        Track the underlying price when the strike was resolved. When underlying drifts &gt;1% from that price,
+        re-resolve the ATM strike from Redis and reset the scan state for that ticker. This ensures
+        the bot is always tracking an option near the current underlying price.
+    </p>
+    <pre><code># bot_runner.py — new field in TickerScanState
+strike_resolved_price: float = 0.0  # underlying when strike was resolved
+
+# Re-resolve logic (every scan cycle, ~15s)
+if call_state.strike_resolved_price &gt; 0 and underlying_price &gt; 0:
+    drift_pct = abs(underlying - resolved) / resolved * 100
+    if drift_pct &gt;= 1.0:
+        logger.info(f"ML_SCAN: {ticker} CALL drifted {drift_pct:.1f}%, re-resolving")
+        call_state.strike = 0.0  # triggers re-resolution
+        call_state.closes.clear()  # reset scan data for new strike
+        ...</code></pre>
+
+    <h3>Layer 2: Per-Ticker OTM Gate (production + backtest)</h3>
+    <p>
+        <strong>Instead of a static % threshold, express the max OTM distance as a number of strike intervals.</strong>
+        Each ticker gets a threshold calibrated to its strike grid. The gate computes: is the current
+        underlying more than N strikes away from the trade strike?
+    </p>
+    <pre><code># Per-ticker strike intervals (from ThetaData research)
+STRIKE_INTERVALS = {
+    "SPY": 1.0, "QQQ": 1.0, "IWM": 0.5, "NVDA": 0.5, "MSTR": 0.5,
+    "META": 2.5, "MSFT": 2.5, "TSLA": 2.5, "PLTR": 1.0, "AVGO": 2.5,
+    "GOOGL": 2.5, "AAPL": 2.5, "AMD": 2.5, "AMZN": 2.5,
+}
+
+# Max strikes OTM per category
+MAX_OTM_STRIKES = {
+    "fine_grid":  3,   # SPY/QQQ/IWM/NVDA/MSTR: 3 strikes = 0.4-1.0%
+    "standard":   2,   # META/MSFT/TSLA/PLTR/AVGO: 2 strikes = 0.8-1.5%
+    "wide_grid":  1,   # AAPL/AMD/AMZN/GOOGL: 1 strike = 0.76-1.07%
+}
+
+# Gate logic
+def otm_check(ticker, strike, underlying, direction):
+    interval = STRIKE_INTERVALS.get(ticker, 2.5)
+    category = get_strike_category(ticker)
+    max_strikes = MAX_OTM_STRIKES[category]
+    max_distance = interval * max_strikes
+
+    if direction == "CALL":
+        distance = strike - underlying
+    else:  # PUT
+        distance = underlying - strike
+
+    return distance &lt;= max_distance  # True = pass</code></pre>
+
+    <h3>Layer 3: Backtest Strike Re-Resolution (backtest improvement)</h3>
+    <p>
+        The backtest currently picks one ATM strike per ticker per day. For accurate comparison,
+        the backtest should also re-resolve the ATM strike when the underlying drifts, using
+        the multi-strike data available in ThetaData. This is a separate follow-up task.
+    </p>
+
+    <h3>3.3 Data Source &amp; Period</h3>
+    <table>
+        <tr><th>Data Source</th><td>ThetaData options DB (6.7M rows, 14 tickers, 124 trading days)</td></tr>
+        <tr><th>Date Range</th><td>2026-02-01 to 2026-06-06</td></tr>
+        <tr><th>Sample Size</th><td>~247 trades (gold standard baseline)</td></tr>
+        <tr><th>Script/Command</th><td><code>python scripts/backtest_gold_standard.py</code></td></tr>
+    </table>
+
+    <h3>3.4 Metrics</h3>
+    <ul>
+        <li><strong>Primary:</strong> Total P&amp;L and trade count (must preserve 90%+ of baseline trades)</li>
+        <li><strong>Secondary:</strong> Win rate, profit factor, max drawdown, per-ticker P&amp;L changes, OTM trades blocked</li>
+    </ul>
+</section>
+
+<section>
+    <h2>4. Implementation</h2>
+
+    <h3>4.1 Files Changed</h3>
+    <table>
+        <thead>
+            <tr><th>File</th><th>Change</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>options_owl/sourcing/ml_pipeline.py</code></td>
+                <td>Add <code>strike_resolved_price</code> field to <code>TickerScanState</code></td>
+                <td>Done (v1)</td>
+            </tr>
+            <tr>
+                <td><code>options_owl/bot_runner.py</code></td>
+                <td>Dynamic ATM re-resolution when underlying drifts &gt;1% for CALL and PUT</td>
+                <td>Done (v1)</td>
+            </tr>
+            <tr>
+                <td><code>options_owl/risk/pipeline.py</code></td>
+                <td>Add <code>OTMDistanceGate</code> to entry pipeline (currently static 1% threshold)</td>
+                <td>Done (v1) &mdash; needs upgrade to per-ticker</td>
+            </tr>
+            <tr>
+                <td><code>options_owl/config/settings.py</code></td>
+                <td>Add <code>MAX_OTM_DISTANCE_PCT</code> setting (1.0% default)</td>
+                <td>Done (v1) &mdash; will be replaced by per-ticker logic</td>
+            </tr>
+            <tr>
+                <td><code>scripts/backtest_gold_standard.py</code></td>
+                <td>Add OTM gate + <code>strike</code> field in ticker_data/put_ticker_data dicts</td>
+                <td>Done (v1) &mdash; needs per-ticker upgrade</td>
+            </tr>
+            <tr>
+                <td><code>tests/test_exit_v5/test_v6_features.py</code></td>
+                <td>8 tests for <code>OTMDistanceGate</code></td>
+                <td>Done (v1)</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>4.2 V2 Implementation Plan (Per-Ticker OTM Gate)</h3>
+    <table>
+        <thead>
+            <tr><th>#</th><th>Task</th><th>File</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>1</td>
+                <td>Add <code>STRIKE_INTERVALS</code> dict and <code>get_strike_category()</code> to <code>exit_v5/config.py</code></td>
+                <td><code>options_owl/risk/exit_v5/config.py</code></td>
+                <td>Todo</td>
+            </tr>
+            <tr>
+                <td>2</td>
+                <td>Rewrite <code>OTMDistanceGate</code> to use per-ticker strike intervals instead of static %</td>
+                <td><code>options_owl/risk/pipeline.py</code></td>
+                <td>Todo</td>
+            </tr>
+            <tr>
+                <td>3</td>
+                <td>Update backtest to use per-ticker OTM thresholds (match production logic)</td>
+                <td><code>scripts/backtest_gold_standard.py</code></td>
+                <td>Todo</td>
+            </tr>
+            <tr>
+                <td>4</td>
+                <td>Backtest multi-strike re-resolution: when underlying drifts &gt;1%, switch to closer strike's data</td>
+                <td><code>scripts/backtest_gold_standard.py</code></td>
+                <td>Todo (requires ThetaData multi-strike queries)</td>
+            </tr>
+            <tr>
+                <td>5</td>
+                <td>Update tests for per-ticker logic</td>
+                <td><code>tests/test_exit_v5/test_v6_features.py</code></td>
+                <td>Todo</td>
+            </tr>
+            <tr>
+                <td>6</td>
+                <td>Run backtest sweep: compare static 1% vs per-ticker vs no gate</td>
+                <td><code>scripts/backtest_gold_standard.py</code></td>
+                <td>Todo</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>4.3 Per-Ticker Threshold Configuration</h3>
+    <pre><code># options_owl/risk/exit_v5/config.py (proposed)
+
+STRIKE_INTERVALS: dict[str, float] = {
+    # Fine grid (0.14-0.33% per strike)
+    "SPY": 1.0, "QQQ": 1.0, "IWM": 0.5, "NVDA": 0.5, "MSTR": 0.5,
+    # Standard grid (0.39-0.69% per strike)
+    "META": 2.5, "MSFT": 2.5, "TSLA": 2.5, "PLTR": 1.0, "AVGO": 2.5,
+    # Wide grid (0.76-1.07% per strike)
+    "GOOGL": 2.5, "AAPL": 2.5, "AMD": 2.5, "AMZN": 2.5,
+}
+
+# Default for unknown tickers
+DEFAULT_STRIKE_INTERVAL = 2.5
+
+def get_max_otm_distance(ticker: str) -&gt; float:
+    """Return the maximum allowed OTM distance in dollars for a ticker.
+
+    Fine-grid tickers (SPY, QQQ, IWM, NVDA, MSTR): 3 strikes OTM
+    Standard tickers (META, TSLA, PLTR, etc.): 2 strikes OTM
+    Wide-grid tickers (AAPL, AMD, AMZN, GOOGL): 1 strike OTM
+
+    Returns: max dollar distance from underlying to strike.
+    """
+    interval = STRIKE_INTERVALS.get(ticker, DEFAULT_STRIKE_INTERVAL)
+
+    FINE_GRID = {"SPY", "QQQ", "IWM", "NVDA", "MSTR"}
+    WIDE_GRID = {"AAPL", "AMD", "AMZN", "GOOGL"}
+
+    if ticker in FINE_GRID:
+        return interval * 3   # SPY: $3, QQQ: $3, IWM: $1.5, NVDA: $1.5
+    elif ticker in WIDE_GRID:
+        return interval * 1   # AMZN: $2.5, AAPL: $2.5
+    else:
+        return interval * 2   # META: $5, TSLA: $5, PLTR: $2</code></pre>
+
+    <h3>4.4 Expected Thresholds (Dollar and Percentage)</h3>
+    <table>
+        <thead>
+            <tr><th>Ticker</th><th>Grid</th><th>Max Strikes</th><th>Max $ OTM</th><th>Equiv %</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>SPY ($695)</td><td>Fine</td><td>3</td><td>$3.00</td><td>0.43%</td></tr>
+            <tr><td>QQQ ($634)</td><td>Fine</td><td>3</td><td>$3.00</td><td>0.47%</td></tr>
+            <tr><td>IWM ($264)</td><td>Fine</td><td>3</td><td>$1.50</td><td>0.57%</td></tr>
+            <tr><td>NVDA ($192)</td><td>Fine</td><td>3</td><td>$1.50</td><td>0.78%</td></tr>
+            <tr><td>MSTR ($152)</td><td>Fine</td><td>3</td><td>$1.50</td><td>0.99%</td></tr>
+            <tr><td>META ($638)</td><td>Standard</td><td>2</td><td>$5.00</td><td>0.78%</td></tr>
+            <tr><td>TSLA ($415)</td><td>Standard</td><td>2</td><td>$5.00</td><td>1.20%</td></tr>
+            <tr><td>AVGO ($362)</td><td>Standard</td><td>2</td><td>$5.00</td><td>1.38%</td></tr>
+            <tr><td>PLTR ($153)</td><td>Standard</td><td>2</td><td>$2.00</td><td>1.31%</td></tr>
+            <tr><td>GOOGL ($330)</td><td>Wide</td><td>1</td><td>$2.50</td><td>0.76%</td></tr>
+            <tr><td>AAPL ($271)</td><td>Wide</td><td>1</td><td>$2.50</td><td>0.92%</td></tr>
+            <tr><td>AMD ($271)</td><td>Wide</td><td>1</td><td>$2.50</td><td>0.92%</td></tr>
+            <tr><td>AMZN ($234)</td><td>Wide</td><td>1</td><td>$2.50</td><td>1.07%</td></tr>
+        </tbody>
+    </table>
+
+    <div class="callout success">
+        <strong>Why this works:</strong> For AMZN at $248.92 with a $250 strike (0.43% OTM = $1.08),
+        the per-ticker gate allows up to $2.50 (one strike interval) &mdash; so the AMZN trade passes.
+        But if AMZN drops to $245 ($5 OTM = 2 strikes), the gate blocks. Meanwhile for SPY at $695,
+        the gate is tighter: max $3 OTM (3 strikes), which is only 0.43% &mdash; matching the data
+        showing SPY trades are profitable only when very close to ATM.
+    </div>
+</section>
+
+<section>
+    <h2>5. Results</h2>
+
+    <div class="callout warning">
+        <strong>V1 Backtest Results (static % threshold).</strong> Per-ticker results pending V2 implementation.
+    </div>
+
+    <h3>5.1 V1 Summary (Static Threshold)</h3>
+    <table>
+        <thead>
+            <tr><th>Metric</th><th>No Gate (baseline)</th><th>0.5% Gate</th><th>1.0% Gate</th><th>1.5% Gate</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Total P&amp;L</td>
+                <td>$+244,716</td>
+                <td class="negative">$+73,509 (-70%)</td>
+                <td class="negative">$+109,612 (-55%)</td>
+                <td>$+190,582 (-22%)</td>
+            </tr>
+            <tr>
+                <td>Trades</td>
+                <td>247</td>
+                <td>159 (-36%)</td>
+                <td>205 (-17%)</td>
+                <td>217 (-12%)</td>
+            </tr>
+            <tr>
+                <td>Win Rate</td>
+                <td>80.2%</td>
+                <td>~80%</td>
+                <td>~81%</td>
+                <td>~81%</td>
+            </tr>
+            <tr>
+                <td>Max Drawdown</td>
+                <td>&mdash;</td>
+                <td>7.5%</td>
+                <td>10.3%</td>
+                <td>5.5%</td>
+            </tr>
+            <tr>
+                <td>Gate Blocked</td>
+                <td>247</td>
+                <td>1,096</td>
+                <td>748</td>
+                <td>556</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>5.2 Analysis</h3>
+    <p>
+        Static % thresholds are too aggressive because the <strong>backtest uses a fixed strike per day</strong>
+        while production re-resolves dynamically. The backtest's fixed strike drifts from ATM as the day
+        progresses, causing the OTM gate to block trades that in production would have been on a
+        freshly-resolved near-ATM strike.
+    </p>
+    <p>
+        The per-ticker approach (V2) will fix this by expressing thresholds in strike intervals,
+        which naturally accounts for each ticker's grid &mdash; and additionally the backtest should
+        be upgraded to re-resolve strikes mid-day for true parity.
+    </p>
+
+    <h3>5.3 Unexpected Findings</h3>
+    <ul>
+        <li>Strike spacing varies 7.6x across tickers &mdash; any static % is fundamentally flawed</li>
+        <li>Trades within 0.1% of ATM generate 77% of all profit (from production paper_trades analysis)</li>
+        <li>Beyond 0.5% OTM, total P&amp;L is negative &mdash; but 0.5% is less than one AMZN strike</li>
+        <li>The 1.5% threshold preserves 88% of trades with only 22% P&amp;L reduction &mdash; suggesting
+            most of the blocked trades were marginal, not catastrophic</li>
+    </ul>
+</section>
+
+<section>
+    <h2>6. Conclusion &amp; Decision</h2>
+
+    <div class="verdict modified">
+        <strong>Verdict: Modified &mdash; V1 deployed for production safety, V2 needed for optimal tuning</strong>
+        <p>
+            The dynamic ATM re-resolution (Layer 1) is the primary fix and is deployed now &mdash; it prevents
+            the root cause of tracking stale strikes. The static OTM gate (Layer 2, v1) provides a safety net
+            at 1.0% but needs to be upgraded to per-ticker strike-interval logic for optimal performance.
+            The backtest needs multi-strike re-resolution (Layer 3) for accurate comparison.
+        </p>
+    </div>
+
+    <h3>Follow-up Actions</h3>
+    <ul>
+        <li><strong>V2 (next):</strong> Implement per-ticker OTM gate using strike intervals (Tasks 1-3 above)</li>
+        <li><strong>V2 backtest:</strong> Re-run gold standard backtest with per-ticker thresholds</li>
+        <li><strong>V3 (future):</strong> Backtest multi-strike re-resolution &mdash; when underlying drifts &gt;1%,
+            switch to closest available strike's data from ThetaData</li>
+        <li><strong>Monitor:</strong> Track OTM gate blocks in production logs:
+            <code>grep 'otm_distance' journal/owlet-kody/logs/options_owl_*.log</code></li>
+    </ul>
+</section>
+
+<section>
+    <h2>7. Risks &amp; Lessons Learned</h2>
+    <ul>
+        <li><strong>Risk:</strong> Dynamic re-resolution resets scan state (closes, volumes, etc.), requiring
+            the ML model to re-accumulate 5+ minutes of data on the new strike before it can fire.
+            This creates a brief blind spot after each re-resolve.</li>
+        <li><strong>Risk:</strong> Strike intervals may change over time (exchanges update grid spacing).
+            The config should be verified quarterly against live chain data.</li>
+        <li><strong>Lesson:</strong> Never use a single static number for something that varies 7.6x across tickers.
+            Always check the actual data distribution before picking thresholds.</li>
+        <li><strong>Lesson:</strong> Backtest limitations (fixed strike per day) can make valid production features
+            look harmful. Always consider whether the backtest accurately represents production behavior
+            before rejecting a feature based on backtest results alone.</li>
+        <li><strong>Lesson:</strong> The DCA feature amplified the OTM loss by doubling down on a fading position.
+            Consider adding OTM distance checks to the DCA logic as well &mdash; don't DCA into a position
+            where the strike has drifted significantly OTM.</li>
+    </ul>
+</section>
+
+<section>
+    <h2>8. Changelog</h2>
+    <dl class="changelog">
+        <dt>v1 &mdash; 2026-06-09</dt>
+        <dd>Initial experiment spec. V1 implementation: dynamic ATM re-resolution at 1% drift,
+            static OTM gate at 1.0%, 8 unit tests passing, backtest results at 0.5%/1.0%/1.5% thresholds.
+            Per-ticker V2 design documented with strike interval research data.</dd>
+    </dl>
+</section>
+
+<footer>
+    OptionsOwl &mdash; Experiment Specification | 2026-06-09
+</footer>
+
+</body>
+</html>

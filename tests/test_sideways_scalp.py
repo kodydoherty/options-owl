@@ -20,7 +20,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
-import pytest
 
 from options_owl.risk.exit_v5.config import V5Config, get_ticker_config
 from options_owl.risk.exit_v5.fsm import ExitFSM, TradeState

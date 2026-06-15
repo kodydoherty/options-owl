@@ -9,14 +9,13 @@ Covers bugs found during live trading on 2026-04-14:
 6. MAX_ORDER_CONTRACTS enforcement at entry
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from options_owl.collectors.market_data_stream import MarketDataStream
 from options_owl.execution.webull_executor import (
     MAX_ORDER_CONTRACTS,
-    MAX_ORDER_VALUE,
     WebullExecutor,
 )
 
@@ -33,6 +32,7 @@ def _make_settings(**overrides):
         "DATA_FEED_PROVIDER": "polygon",
         "DATA_FEED_POLL_INTERVAL": 15,
         "PORTFOLIO_SIZE": 5000,
+        "ENABLE_PUT_TRADING": True,
     }
     defaults.update(overrides)
     for k, v in defaults.items():
@@ -416,7 +416,6 @@ class TestPortfolioSizingCap:
     @pytest.mark.asyncio
     async def test_effective_balance_caps_at_portfolio_size(self):
         """Even if paper balance is $10k, sizing should use PORTFOLIO_SIZE."""
-        from options_owl.execution.paper_trader import PaperTrader
 
         settings = _make_settings(
             PORTFOLIO_SIZE=400,

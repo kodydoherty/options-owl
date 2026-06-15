@@ -6,7 +6,6 @@ Triggers emergency exit or trail tightening on breaking negative news.
 
 from __future__ import annotations
 
-from options_owl.sourcing.data.news_provider import classify_headline, fetch_news
 
 
 async def check_news_sentinel(ticker: str, direction: str) -> dict | None:

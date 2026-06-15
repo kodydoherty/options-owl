@@ -562,6 +562,16 @@ class OptionsOwlBot(discord.Client):
                     getattr(self.settings, "REDIS_URL", "redis://redis:6379/0")
                 )
                 logger.info("Redis cross-agent coordination enabled")
+                # Seed dashboard controls from env vars (so UI shows correct initial state)
+                agent_id = getattr(self.settings, "AGENT_ID", "")
+                if agent_id:
+                    paper = getattr(self.settings, "PAPER_TRADE", True)
+                    kill = getattr(self.settings, "WEBULL_KILL_SWITCH", False)
+                    # Always sync env vars to Redis on startup — stale Redis values
+                    # from a previous config must not override docker-compose changes.
+                    await redis_client.set_control(agent_id, "paper_mode", paper)
+                    await redis_client.set_control(agent_id, "kill_switch", kill)
+                    logger.info(f"Dashboard controls seeded: paper={paper} kill={kill}")
             except Exception as exc:
                 logger.warning(f"Redis init failed (continuing without coordination): {exc}")
 
@@ -575,6 +585,12 @@ class OptionsOwlBot(discord.Client):
                 logger.info("PostgreSQL shared DB connected — dual-write active")
             except Exception as exc:
                 logger.warning(f"PostgreSQL init failed (continuing with SQLite only): {exc}")
+
+        # Boot-time data wait: ensure Redis has fresh option snapshots
+        # before the position monitor starts making exit decisions.
+        # This prevents trading on stale/empty data during early boot.
+        if getattr(self.settings, "ENABLE_REDIS", False):
+            await self._wait_for_fresh_redis_data()
 
         # Launch background position monitor with the data stream
         from options_owl.execution.position_monitor import run_position_monitor
@@ -599,6 +615,86 @@ class OptionsOwlBot(discord.Client):
             logger.info(f"  Guild: {guild.name} (id={guild.id})")
             for channel in guild.text_channels:
                 logger.info(f"    #{channel.name} (id={channel.id})")
+
+    async def _wait_for_fresh_redis_data(
+        self, max_wait: int = 300, check_interval: int = 5,
+    ) -> bool:
+        """Wait until Redis has fresh option snapshots before trading.
+
+        Checks for any fresh snapshot (< 30s old) for a priority ticker.
+        Retries every check_interval seconds for up to max_wait seconds.
+        Returns True if fresh data found, False on timeout.
+        """
+        import time as _time
+
+        from options_owl.execution.position_monitor import _is_market_hours
+
+        if not _is_market_hours():
+            logger.info(
+                "Boot-time data wait: outside market hours — skipping "
+                "(no fresh data expected)"
+            )
+            return True
+
+        logger.info(
+            f"Boot-time data wait: checking Redis for fresh snapshots "
+            f"(max {max_wait}s)..."
+        )
+        start = _time.time()
+        priority_tickers = ["SPY", "QQQ", "AAPL", "TSLA", "NVDA"]
+
+        while _time.time() - start < max_wait:
+            try:
+                from options_owl.db import redis_client
+                if not redis_client.is_connected():
+                    elapsed = _time.time() - start
+                    logger.info(
+                        f"Boot-time data wait: Redis not connected "
+                        f"({elapsed:.0f}s/{max_wait}s)"
+                    )
+                    await asyncio.sleep(check_interval)
+                    continue
+
+                # Check WS health status from harvester
+                try:
+                    health_raw = await redis_client._redis.get("owl:ws_health")  # type: ignore[union-attr]
+                    if health_raw:
+                        import json
+                        health = json.loads(health_raw)
+                        if health.get("healthy"):
+                            logger.info("Boot-time data wait: harvester WS healthy")
+                except Exception:
+                    pass
+
+                # Check for fresh snapshots from any priority ticker
+                for ticker in priority_tickers:
+                    snapshots = await redis_client.get_option_snapshots_for_ticker(ticker)
+                    for snap in snapshots[:3]:  # check first few
+                        if snap.get("t"):
+                            age = _time.time() - snap["t"]
+                            if age < 30:
+                                logger.info(
+                                    f"Boot-time data wait: FRESH data found — "
+                                    f"{ticker} snapshot age={age:.0f}s "
+                                    f"(waited {_time.time() - start:.0f}s)"
+                                )
+                                return True
+
+            except Exception as exc:
+                logger.debug(f"Boot-time data wait error: {exc}")
+
+            elapsed = _time.time() - start
+            logger.info(
+                f"Boot-time data wait: no fresh data yet "
+                f"({elapsed:.0f}s/{max_wait}s)..."
+            )
+            await asyncio.sleep(check_interval)
+
+        logger.warning(
+            f"Boot-time data wait: no fresh data after {max_wait}s — "
+            f"proceeding anyway (position monitor will fall back to REST)"
+        )
+        return False
 
     async def _heartbeat_loop(self) -> None:
         """Write heartbeat file every 30s so Docker healthcheck can verify liveness."""

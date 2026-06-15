@@ -46,15 +46,23 @@ python scripts/trade-pnl.py --droplet --detail       # verbose per-trade breakdo
 
 ### Agents (docker-compose.yml)
 
-| Container | Purpose | Portfolio | Key Overrides |
+| Container | Purpose | Portfolio | PAPER_TRADE |
 |---|---|---|---|
-| `owlet-kody` | Kody's live trading bot | $23,000 | Own Webull creds, PAPER_TRADE=false |
-| `owlet-adam` | Adam's live trading bot | $2,500 | Own Webull + Polygon creds |
-| `owlet-vinny` | Vinny's live trading bot | $500 | Own Webull + Polygon creds |
-| `owlet-yank` | Yank's live trading bot | $500 | Own Webull + Polygon creds |
-| `owlet-harvester` | Data collection only | N/A | Captures options chain snapshots for ML/backtesting |
+| `owlet-kody` | Kody's LIVE bot | $23,000 | false (LIVE) |
+| `owlet-dennis` | Dennis's LIVE bot | $10,000 | false (LIVE) |
+| `owlet-adam` | Adam's bot | $4,685 | true (paper) |
+| `owlet-vinny` | Vinny's bot | $3,123 | true (paper) |
+| `owlet-yank` | Yank's bot | $3,600 | true (paper) |
+| `owlet-harvester` | Options chain + candle capture → shared PG + Redis (32-ticker universe) | N/A | — |
+| `owlet-flow-shadow` | UW flow-alert logger (observe-only) | N/A | — |
+| `owlet-darkpool-shadow` | UW darkpool forward-collector → journal/darkpool/darkpool.db (B3 research) | N/A | — |
 
-Each trading bot runs the same code with different portfolio sizes and credentials. The `.env` file holds shared config; `docker-compose.yml` overrides per-bot values (PORTFOLIO_SIZE, credentials, PAPER_TRADE=false).
+**ALL 5 trading bots run identical code + strategy config — only `PAPER_TRADE`/`PORTFOLIO_SIZE`/creds differ.**
+Live money = kody + dennis only. `.env` holds shared config; `docker-compose.yml` overrides per-bot.
+
+> **The droplet has the full source at `/root/options-owl` and can edit + redeploy via `scripts/rebuild.sh`.**
+> See the **V7 + UW Flow System** section below for the current (2026-06) deployed strategy — it supersedes
+> older V5/V6-only descriptions where they conflict.
 
 ### Data Flow
 
@@ -119,6 +127,105 @@ sqlite3 journal/owlet-kody/raw_messages.db "SELECT * FROM trade_events WHERE dat
 # From local
 ./scripts/trade-log.sh 2026-04-23
 ```
+
+## V7 + UW Flow System (deployed 2026-06-14) — CURRENT STATE
+
+This is the live strategy. Where it conflicts with older V5/V6-only text, **this wins.** All flag-gated;
+identical across all 5 bots (only PAPER_TRADE differs — live: kody/dennis).
+
+### What changed vs V6
+1. **V7 wide-trail exits** (`ENABLE_V7_WIDE_TRAIL=true`) — no profit ceiling, widened adaptive tiers
+   (moonshot×1.5/runner×1.3/active×1.1), faster CALL stall-cut (theta 60/25), PUTs keep no-hold-limit.
+   Code: `risk/exit_v5/config.py:apply_v7_wide_trail_exits()`, applied in `exit_v5/monitor_bridge.py`.
+2. **Gate-volume fix** (`ML_PATTERN_THRESHOLD=0.62`, was meta ~0.74) — the pattern model was blocking ~95%
+   of candidates; 0.62 ≈1.8× volume (1.7→3.1 ML trades/day), PF holds. Set in settings + docker-compose.
+3. **UW flow signals** (`ENABLE_UW_FLOW_SIGNAL=true`) — a NEW high-conviction SOURCE (like Discord):
+   `collectors/uw_flow_collector.py` connects the UW flow-alerts WS, filters ask-side SWEEPS (≥60% ask,
+   has_sweep, ≥$250k) on whitelists, emits a TradeSignal (BotSource.UW_FLOW) → `paper_trader.evaluate_and_trade`.
+   Whitelists (settings.py): `UW_FLOW_PUT_TICKERS=META,AMZN,AAPL,TSLA,MU`,
+   `UW_FLOW_CALL_TICKERS=META,SPY,AMZN,TSLA,AMD,ORCL,INTC,ARM,GOOG,LRCX`.
+   **Gate-bypass:** flow signals SKIP blocked_ticker + put_ticker_exclusion + put_market_direction +
+   put_bearish_confirm + directional_regime (they have their own validated whitelist); risk gates
+   (spread/delta/premium/EOD/pos-cap) still apply. See `pipeline.py:_is_flow_sourced`.
+4. **Stage D conviction sizing** (`ENABLE_V7_CONVICTION_SIZING=true`) — bet bigger on high-conviction flow.
+   `vinny_strategy.flow_conviction_mult()` (called from `paper_trader` before `score_to_contracts`):
+   - cluster: single sweep ×0.5 (loser), ≥4 in 30min ×1.5; premium: single-stock $1M+ ×1.4 but
+     **INDEX $1M+ ×0.4 (those are hedges, not bets — inverted!)**; ask_frac ≥0.85 ×1.1. Clamp [0.25,2.5].
+   - Cluster count comes from `uw_flow_collector` (rolling `UW_FLOW_CLUSTER_WINDOW_MIN=30` deque) →
+     TradeSignal.flow_cluster_count/flow_total_premium/flow_ask_frac.
+   - Validated: +72% P&L vs flat on equal capital, PF 1.36→1.78, lower DD.
+5. **Liquidity cap** (`MAX_POSITION_DOLLARS=50000`) — absolute per-trade $ ceiling in `score_to_contracts`
+   (on top of MAX_POSITION_PCT). No-op for current account sizes; realism brake at scale.
+6. **P(runner) tilt** (`ENABLE_V7_RUNNER_TILT=false` — OFF, pending live feature validation).
+   `risk/flow_runner.py` builds the serve feature vector via the training source-of-truth
+   (`signal_model.compute_option_features_from_live`) → `predict_entry_confidence` runner_score → folds
+   into the conviction multiplier. Returns None on any missing data (safe no-op). DO NOT enable on kody
+   until validated on a paper bot (FLOW_P_RUNNER logs: iv/delta sane, p_runner spread 0–1, not all 0).
+
+### Flag reference (all in settings.py + docker-compose env)
+| Flag | Default | State |
+|---|---|---|
+| `ENABLE_V7_WIDE_TRAIL` | false | **true all bots** |
+| `ML_PATTERN_THRESHOLD` | 0.0 (=meta ~0.74) | **0.62 all bots** |
+| `ENABLE_UW_FLOW_SIGNAL` | false | **true all bots** (live kody/dennis, paper others) |
+| `ENABLE_V7_CONVICTION_SIZING` | false | **true all bots** |
+| `MAX_POSITION_DOLLARS` | 50000 | active (no-op small accounts) |
+| `ENABLE_V7_RUNNER_TILT` | false | **OFF** — validate before enabling |
+| `ENABLE_FLOW_OTM_STRIKE` | false | **true all bots** — OTM strike for AMD/INTC/META/SPY calls + TSLA puts |
+
+### Flow execution — first live session fixes (2026-06-15) — CURRENT
+The flow book was deployed 2026-06-14 but **never placed a single live trade** until 2026-06-15: a chain of
+gates silently rejected every flow signal. All fixed + live (kody/dennis live, others paper). The flow entry path
+now lives in `bot_runner._on_flow_signal` → `_resolve_flow_strike` → `select_flow_strike` (pure, tested).
+
+1. **stop_price gate blocked 100% of flow** — flow signals carried `stop_price=None`; `StopPriceGate` + a
+   `paper_trader` check hard-reject any signal without a stop. Fix: flow now gets the same 0.5% underlying stop ML
+   uses (`entry×0.995` call / `×1.005` put), assigned in `_on_flow_signal` from the resolved spot. Flow still exits
+   via the V7 FSM. **This was THE reason the `flow` column was 0 every day.**
+2. **Morning cutoff blocked flow CALLs after 11:00 ET** — flow is an all-day source; it now bypasses the morning
+   cutoff (the EOD 3:55 PM hard cutoff still applies). `TimeOfDayGate`.
+3. **nearest-DTE, not the whale's expiry** — `_resolve_flow_strike` IGNORES `fs.expiry` (often far-dated) and walks
+   today→next business days to the nearest tradeable expiry, matching the backtest (`dte0 = min DTE`) + the V7 exits.
+   On resolve failure it SKIPS (never trades the whale's contract). **Multi-day flow was TESTED and is a decisive
+   LOSER** (PF 0.69 vs nearest-DTE 1.39, worse with DTE — `scripts/download_multiday_flow.py` +
+   `backtest_multiday_flow.py`). The thetadata DB only had 0-4 DTE, which is why it was never tested before.
+4. **Selective OTM strike** (`ENABLE_FLOW_OTM_STRIKE`) — validated combos (AMD/INTC/META/SPY calls, TSLA puts) trade
+   a cheaper ~$2 OTM strike (better PF + >=60% months positive); all else ATM. `scripts/backtest_flow_otm_test.py`.
+   `v6_spread_gate` still blocks wide-spread OTM fills. Backtest overstates OTM (no spread modeling) — watch fills.
+5. **SPY added to `UW_FLOW_PUT_TICKERS`** — the gold-standard put universe is `CUR_PUT | {SPY}`; SPY puts were the
+   #2 flow contributor and were missing in prod.
+6. **Redis-first strike resolution** — `_resolve_flow_strike` reads spot + chain from the harvester's Redis
+   (`get_price` + `get_option_snapshots_for_ticker`, ATM±10% via `HARVEST_STRIKE_WINDOW=5`); Polygon only on miss.
+   Keeps flow OFF the Polygon-congestion path. (Webull 429s are separate — per-account order-status polling.)
+7. **GEX DataError** — `regime_features._load_serving_gex` passed a STRING for the `captured_at` timestamptz param →
+   asyncpg `DataError` (mislabeled "table unavailable"); GEX features silently defaulted to 0. Fix: pass a datetime.
+8. **ML scan false timeouts** — `_scan_ticker_safe` outer timeout 15s→25s (a Redis-miss ticker does 2 sequential
+   Polygon snapshot fetches at 10s each, summing past 15s and killing successful fetches).
+
+Gold-standard report mirrors prod: `scripts/flow_gold_standard_report.py` now uses prod's `select_flow_strike`
+(OTM baked in) + a header note (CONVICTION column = the prod account-scaled reference; FLAT $750 = edge measure only).
+
+### Validated results (60-day backtest, 2026-03-16→06-12)
+- Combined edge (fixed $750/trade): **+$113k, PF 1.78, WR 58%, DD −$4.6k**. Flow ≈ 4× ML edge at equal sizing.
+- V7 ML compounding off $20k: $234.7k. Compounding+flow realistic only with the $25-50k liquidity cap.
+- Reports: `journal/v3_eval_results/full_gold_standard_v7_report.md`, `flow_gold_standard_report.md`.
+- Validation scorecard: `specs/active/2026-06-14_prod-candidates-scorecard.md`.
+
+### Key new files
+`collectors/uw_flow_collector.py` (flow source), `risk/flow_runner.py` (P(runner)),
+`risk/vinny_strategy.py:flow_conviction_mult` (sizing), `collectors/polygon_options.py`
+(`polygon_option_snapshot_greeks`, `polygon_intraday_1m`), `scripts/uw_flow_shadow.py` +
+`scripts/uw_darkpool_shadow.py` (shadow collectors), `scripts/e2e_flow_test.py` (gate e2e),
+`scripts/monday_flow_check.sh` (paper-vs-live), `scripts/uw_ticker_discovery.py` + `*_report.py` (backtests).
+
+### Troubleshooting flow trades
+```bash
+grep 'UW_FLOW\|CONVICTION_SIZING\|FLOW_P_RUNNER' journal/owlet-kody/logs/options_owl_$(date +%F).log
+sqlite3 journal/owlet-kody/raw_messages.db "SELECT ticker,option_type,score,status,exit_reason,
+  printf('\$%.0f',pnl_dollars) FROM paper_trades WHERE bot_source='uw_flow' AND date(opened_at)=date('now')"
+bash scripts/monday_flow_check.sh   # live-vs-paper reconciliation
+```
+Rollback any layer: set its flag false + `docker compose up -d` → reverts to validated V7 wide-trail + 0.62 baseline.
 
 ## Code Structure
 
@@ -264,6 +371,72 @@ V5 is fully DTE-aware — 0DTE and multi-day trades get different treatment:
 | Checkpoint cut | Active | Disabled |
 | Scalp trail | Exit if underlying NOT confirming | Exit only if underlying AGAINST |
 | Theta exit | 120min + down 30% | 180min + down 15% |
+
+### PUT Trading — Dedicated ML Model + CALL-Style Trailing
+
+PUTs use a completely separate pipeline from CALLs:
+
+**Entry:** Dedicated LightGBM model (`put_pattern_v1.lgb`, 27 features, AUC 0.8038) with cross-chain features (iv_skew = PUT IV / CALL IV, put_call_volume_ratio). The model was trained on 3.3M PUT snapshots across 14 tickers and 124 trading days. Walk-forward validated: AUC 0.8026 ± 0.007 across 5 monthly folds.
+
+**Scan Window:** PUTs scan all day (5–360min after open) vs CALLs (5–90min). PUTs are driven by underlying decline, which can happen anytime.
+
+**Exit (PUT_SCALP_CONFIG):** No profit target ceiling — trail system locks in gains progressively:
+
+| Gate | PUT Config | CALL Config (default) |
+|---|---|---|
+| Grace period | 3min | 5min (TSLA/QQQ: 8min) |
+| Profit target | **Disabled** (0%) | Index 0DTE: 30% |
+| Hard stop | 50% loss | 15% tight / 30% backstop |
+| Scalp trail | +15% peak, fade <60% | +20% peak, fade <60% |
+| Soft trail | 15–50% band, keep 60% | Same |
+| Adaptive trail | +20%: 35–40% drop | Category-aware tiers |
+| Theta/hold limit | **Disabled** (999min) | 120min (0DTE) / 180min (multi-day) |
+| Breakeven ratchet | +20% → floor = entry | Same |
+| Scaleout | 1/3 at +20% | Same |
+
+**Key insight:** PUTs ride panic drops the same way CALLs ride momentum surges. Removing the profit ceiling increased backtest P&L from $+20K to $+63K over 60 days (PF 1.57, WR 75.6%).
+
+**PUT-specific settings:**
+- `PUT_BUDGET_MULTIPLIER=0.50` — half-size positions (structurally worse odds)
+- `PUT_EXCLUDED_TICKERS=PLTR,AMD,MSTR,AVGO` — net losers excluded
+- `ENABLE_PUT_BEARISH_CONFIRM=true` — requires candle/VWAP/RSI confirmation
+- `ENABLE_PUT_MARKET_DIRECTION_GATE=true` — SPY must confirm bearish
+
+**Debugging PUT trades:**
+```bash
+# Check if PUT model loaded on startup
+grep 'put_pattern_v1' journal/owlet-kody/logs/options_owl_$(date +%Y-%m-%d).log | head -3
+
+# Check PUT ML scans
+grep 'PUT_MODEL\|PUT.*PASS\|PUT.*BLOCKED' journal/owlet-kody/logs/options_owl_$(date +%Y-%m-%d).log
+
+# Check PUT exits (trail system)
+grep 'PUT.*EXIT\|put.*exit\|scalp_trail\|soft_trail\|adaptive_trail' journal/owlet-kody/logs/options_owl_$(date +%Y-%m-%d).log
+
+# Show all PUT trades today
+sqlite3 journal/owlet-kody/raw_messages.db "
+  SELECT id, ticker, option_type, status, exit_reason,
+    printf('\$%.2f', pnl_dollars) as pnl,
+    CASE WHEN webull_order_id IS NOT NULL THEN 'WEBULL' ELSE 'PAPER' END as exec
+  FROM paper_trades WHERE option_type='put' AND date(opened_at) = date('now')
+  ORDER BY id DESC
+" -column -header
+
+# Compare CALL vs PUT performance
+sqlite3 journal/owlet-kody/raw_messages.db "
+  SELECT option_type,
+    COUNT(*) as trades,
+    SUM(CASE WHEN pnl_dollars > 0 THEN 1 ELSE 0 END) as wins,
+    printf('\$%.2f', SUM(pnl_dollars)) as total_pnl
+  FROM paper_trades WHERE status='closed' AND exit_source='ai'
+  GROUP BY option_type
+" -column -header
+```
+
+**Model files (must exist on droplet):**
+- `journal/models/ml_v3/put_pattern_v1.lgb` — LightGBM model (904KB)
+- `journal/models/ml_v3/put_pattern_v1_meta.json` — feature list + thresholds
+- If missing, PUTs fall back to CALL pattern model (less accurate)
 
 ### How to Check What's Protecting a Trade
 
@@ -619,6 +792,9 @@ Step 5:  docker compose ps           ← verify all containers healthy
 - **Dip-confirm entry gate**: Waits up to 60s for premium to stabilize/dip before buying. Checks underlying support (5m candle lows) and VWAP. Typically saves 2-5% on entry. Falls through to immediate buy on timeout.
 - **WAL mode for shared harvester DB**: Harvester writes continuously, 4 bots read concurrently. WAL allows this without blocking. Docker mounts must be `:rw` (not `:ro`) for WAL sidecar files.
 - **asyncio.wait_for on all external I/O in monitor loop**: Every DB read, REST call, and candle fetch in the critical path has a 15s hard timeout. Prevents event loop freezes that block sells.
+- **Dedicated PUT ML model (2026-06-05)**: PUT pattern model trained on 3.3M PUT snapshots with 27 features (including cross-chain iv_skew, put_call_volume_ratio). AUC 0.8038, walk-forward validated. Falls back to CALL model if missing.
+- **PUT no-ceiling trailing (2026-06-05)**: Backtested 6 PUT exit configs. No profit target + no hold limit + CALL-style trailing ($+63K, PF 1.57) outperformed 30% target ($+20K) and 50% target ($+49K). PUTs ride panic drops; breakeven ratchet at +20% prevents loss.
+- **PUT model files not synced by rebuild.sh**: `journal/models/` is excluded from rsync. After training a new model, manually SCP it: `scp journal/models/ml_v3/put_pattern_v1* root@129.212.138.145:/root/options-owl/journal/models/ml_v3/`
 - **V6 DCA (Dollar Cost Average)**: When premium dips 15-35% from entry, auto-doubles position at lower price. Blends entry price down. One-shot per trade.
 
 ## Known Issues & Historical Bugs
@@ -696,3 +872,82 @@ Step 5:  docker compose ps           ← verify all containers healthy
 5. **Changes to position_monitor.py are HIGH RISK** — this is the sell path. A bug here means trades can't exit, which means unlimited losses.
 6. **All external I/O in the monitor loop MUST have asyncio.wait_for timeout** — DB reads, REST calls, candle fetches. A hung call freezes the entire event loop, preventing ALL sells. Use `asyncio.wait_for(..., timeout=15)` with graceful fallback.
 7. **Never copy large SQLite files for reads** — use WAL mode (`PRAGMA journal_mode = WAL`) with `PRAGMA busy_timeout = 5000` for concurrent access. The harvester DB is 7GB+.
+
+## Automated Monitoring (Babysitter)
+
+The babysitter is a Claude Code instance on the droplet that runs every 10 minutes during market hours to verify owlet-kody is healthy.
+
+### Setup
+```bash
+# On the droplet:
+./scripts/setup-babysit.sh <ANTHROPIC_API_KEY>
+```
+
+### How it works
+- Cron runs `scripts/babysit.sh` every 10 min (Mon-Fri, market hours UTC)
+- Babysit script runs `claude -p` with `scripts/monitor-prompt.md` as the prompt
+- Claude Code checks: containers, logs, signal flow, Redis, disk/memory
+- Takes corrective action if needed (restart containers, etc.)
+- Logs to `journal/babysit.log`
+
+### Monitoring Quick Reference (for the babysitter Claude instance)
+
+```bash
+# Container status
+docker compose ps
+
+# owlet-kody logs (latest)
+TODAY=$(date -u +%Y-%m-%d)
+tail -50 /root/options-owl/journal/owlet-kody/logs/options_owl_${TODAY}.log
+
+# Signals received today
+sqlite3 /root/options-owl/journal/owlet-kody/raw_messages.db \
+  "SELECT COUNT(*) FROM signals WHERE date(created_at) = date('now')"
+
+# Open positions
+sqlite3 /root/options-owl/journal/owlet-kody/raw_messages.db \
+  "SELECT id, ticker, direction, contracts, status FROM paper_trades WHERE status='open'"
+
+# Trades today
+sqlite3 /root/options-owl/journal/owlet-kody/raw_messages.db \
+  "SELECT id, ticker, direction, status, exit_reason, printf('\$%.2f', pnl_dollars) as pnl,
+   CASE WHEN webull_order_id IS NOT NULL THEN 'WEBULL' ELSE 'PAPER' END as exec
+   FROM paper_trades WHERE date(opened_at) = date('now') ORDER BY id DESC"
+
+# Redis health
+docker exec options-owl-redis redis-cli ping
+
+# PostgreSQL health
+docker exec options-owl-db pg_isready
+
+# Harvester DB size
+ls -lh /root/options-owl/journal/owlet-harvester/options_data.db
+
+# Disk usage
+df -h /root/options-owl/journal/
+
+# Memory
+free -h
+
+# Restart a single bot (safe — uses up -d to apply config)
+docker compose up -d owlet-kody
+
+# Check trade events audit log
+sqlite3 /root/options-owl/journal/owlet-kody/raw_messages.db \
+  "SELECT * FROM trade_events WHERE date(created_at) = date('now') ORDER BY id DESC LIMIT 10"
+```
+
+### Common Issues and Fixes
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| owlet-kody "Restarting" during market hours | Crash loop | Check logs, `docker compose up -d owlet-kody` |
+| owlet-kody "Restarting" outside market hours | Stale Polygon quotes (expected) | Ignore — auto-recovers at market open |
+| "no active connection" in logs | Webull SDK stale | Should auto-reconnect. If persistent: restart |
+| "timed out (15s)" spam | External I/O slow | Occasional = OK. Continuous = check Polygon/DB |
+| "database is locked" | SQLite contention | Should resolve via WAL. If persistent: restart |
+| No signals after 10 AM ET | Discord connection lost | Restart owlet-kody |
+| Trades are PAPER but should be WEBULL | Kill switch on or Webull auth broken | Check env vars, check Webull logs |
+| Redis down | Container crashed | `docker compose up -d options-owl-redis` |
+| Disk > 90% | Log/DB growth | Check large files, consider pruning old logs |
+| Memory < 500MB | Container memory pressure | Check `docker stats`, consider restarting heavy containers |

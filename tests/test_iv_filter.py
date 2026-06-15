@@ -21,6 +21,7 @@ def _make_settings(**overrides) -> Settings:
         "ENABLE_IV_FILTER": True,
         "IV_RANK_MIN": 20.0,
         "IV_RANK_MAX": 80.0,
+        "ENABLE_PUT_TRADING": True,
     }
     defaults.update(overrides)
     return Settings(**defaults)

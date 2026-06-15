@@ -1,8 +1,14 @@
-"""Multi-timeframe candle data from Polygon REST API with caching.
+"""Multi-timeframe candle data with caching.
 
-Fetches OHLCV bars at 5m/15m/30m/1h/4h timeframes for underlying tickers.
-Candles are cached in memory with TTL matching the timeframe so we don't
-hammer Polygon on every 5-second poll cycle.
+Provides OHLCV bars at 5m/15m/30m/1h/4h timeframes for underlying tickers.
+Candles are cached in memory with TTL matching the timeframe.
+
+Data source priority (first success wins):
+1. **Redis** — shared harvester publishes ALL tickers × ALL timeframes every poll.
+   This is the primary source for all trading bots (zero API calls).
+2. **Shared harvester DB** — direct SQLite read (legacy, rarely used).
+3. **WS minute bars** — from MarketDataStream (only on harvester).
+4. **Polygon REST** — last resort, may 429 under per-bot rate limits.
 
 Technical indicators (ATR, RSI, OBV) are computed from the cached bars.
 
@@ -65,9 +71,10 @@ class CandleCache:
     """Async candle fetcher with per-timeframe TTL caching.
 
     Data source priority:
-    1. Shared harvester DB (``shared_db_path``) — zero API calls
-    2. MarketDataStream WS minute bars — zero REST calls
-    3. Polygon REST — direct API call (fallback)
+    1. Redis (shared harvester data — ALL timeframes, ALL tickers, zero API calls)
+    2. Shared harvester DB (``shared_db_path``) — zero API calls
+    3. MarketDataStream WS minute bars — zero REST calls
+    4. Polygon REST — direct API call (last resort)
     """
 
     def __init__(
@@ -87,7 +94,7 @@ class CandleCache:
         ticker: str,
         timeframe: str = "5m",
     ) -> list[CandleBar]:
-        """Get cached candles, fetching from WS buffer or Polygon REST."""
+        """Get cached candles, fetching from Redis → shared DB → WS → Polygon REST."""
         ticker = ticker.upper()
         key = (ticker, timeframe)
 
@@ -103,57 +110,99 @@ class CandleCache:
             if _time.time() - fetched_at < ttl:
                 return bars
 
-        # 1. Try shared harvester DB (zero API calls, works for all agents)
+        # 1. Try Redis (shared harvester data — ALL tickers, ALL timeframes)
+        redis_bars = await self._read_from_redis(ticker, timeframe)
+        if redis_bars:
+            self._cache[key] = (redis_bars, _time.time())
+            return redis_bars
+
+        # 2. Try shared harvester DB (zero API calls, works for all agents)
         if self._shared_db_path:
             db_bars = await self._read_from_shared_db(ticker, timeframe)
             if db_bars:
                 logger.debug(
-                    f"Shared DB candles: {ticker} {timeframe} → {len(db_bars)} bars"
+                    f"Candles {ticker} {timeframe}: {len(db_bars)} bars [shared_db]"
                 )
                 self._cache[key] = (db_bars, _time.time())
                 return db_bars
 
-        # 2. Try building from WS minute bars (free, real-time)
+        # 3. Try building from WS minute bars (free, real-time)
         if self._market_stream is not None:
             ws_bars = self._build_from_ws(ticker, timeframe)
             if ws_bars:
                 self._cache[key] = (ws_bars, _time.time())
                 return ws_bars
 
-        # 3. Fall back to Polygon REST
+        # 4. Fall back to Polygon REST (last resort — may 429)
         bars = await self._fetch_from_polygon(ticker, timeframe)
+        if bars:
+            logger.debug(
+                f"Candles {ticker} {timeframe}: {len(bars)} bars [polygon_rest]"
+            )
         self._cache[key] = (bars, _time.time())
         return bars
+
+    async def _read_from_redis(
+        self, ticker: str, timeframe: str,
+    ) -> list[CandleBar]:
+        """Read pre-aggregated candle bars from Redis (published by harvester).
+
+        The harvester aggregates WS minute bars into 5m/15m/30m/1h/4h and
+        publishes them every poll cycle. This is the primary data source for
+        all trading bots — zero Polygon REST API calls.
+        """
+        try:
+            from options_owl.db import redis_client
+            if not redis_client.is_connected():
+                return []
+            import asyncio as _asyncio
+            bars_json = await _asyncio.wait_for(
+                redis_client.get_candle_bars(ticker, timeframe), timeout=2,
+            )
+            if not bars_json:
+                return []
+            bars = [
+                CandleBar(
+                    timestamp=float(b.get("t", 0)),
+                    open=float(b.get("o", 0)),
+                    high=float(b.get("h", 0)),
+                    low=float(b.get("l", 0)),
+                    close=float(b.get("c", 0)),
+                    volume=float(b.get("v", 0)),
+                    vwap=float(b.get("vw", 0)),
+                )
+                for b in bars_json
+            ]
+            logger.debug(
+                f"Candles {ticker} {timeframe}: {len(bars)} bars [redis]"
+            )
+            return bars
+        except Exception as exc:
+            logger.debug(f"Redis candle read failed for {ticker} {timeframe}: {exc}")
+            return []
 
     async def _read_from_shared_db(
         self, ticker: str, timeframe: str
     ) -> list[CandleBar]:
-        """Read candle bars from the shared harvester DB.
+        """Read candle bars from PostgreSQL (or shared harvester DB fallback).
 
-        The harvester only writes 5m bars. For higher timeframes (15m, 30m,
-        1h, 4h) we read extra 5m bars and aggregate them locally — this
-        avoids Polygon REST calls entirely for candle data.
+        For higher timeframes (15m, 30m, 1h, 4h) we read 5m bars and
+        aggregate them locally.
         """
-        from pathlib import Path
-
-        db_path = Path(self._shared_db_path)  # type: ignore[arg-type]
-        if not db_path.exists():
+        if not self._shared_db_path:
             return []
 
         try:
             from options_owl.collectors.candle_collector import read_candles_from_db
 
             if timeframe == "5m":
-                rows = await read_candles_from_db(db_path, ticker, "5m", limit=50)
+                rows = await read_candles_from_db("", ticker, "5m", limit=50)
             else:
-                # Read enough 5m bars to aggregate into the requested timeframe.
-                # We need ~20 aggregated bars (ATR-14 + RSI-14 + buffer).
-                # e.g. 15m: 20×3=60, 1h: 20×12=240, 4h: 20×48=960
                 mult, span, _ = TIMEFRAMES[timeframe]
                 tf_minutes = mult * 60 if span == "hour" else mult
                 bars_per_candle = tf_minutes // 5
                 rows = await read_candles_from_db(
-                    db_path, ticker, "5m", limit=20 * bars_per_candle
+                    "", ticker, "5m", limit=20 * bars_per_candle
                 )
 
             if not rows:
@@ -175,11 +224,10 @@ class CandleCache:
             if timeframe == "5m":
                 return bars_5m
 
-            # Aggregate 5m bars into the requested timeframe
             return self._aggregate_bars(bars_5m, timeframe)
 
         except Exception as e:
-            logger.debug(f"Shared DB read failed for {ticker} {timeframe}: {e}")
+            logger.debug(f"Candle read failed for {ticker} {timeframe}: {e}")
             return []
 
     @staticmethod
@@ -295,11 +343,14 @@ class CandleCache:
                     "obv": calc_obv(bars),
                     "pattern": detect_candle_pattern(bars),
                     "volume_trend": calc_volume_trend(bars),
+                    "ema9": calc_ema(bars, 9),
+                    "ema21": calc_ema(bars, 21),
                 }
             else:
                 indicators[tf] = {
                     "atr": None, "rsi": None, "obv": None,
                     "pattern": None, "volume_trend": None,
+                    "ema9": None, "ema21": None,
                 }
 
         result["indicators"] = indicators
@@ -462,6 +513,18 @@ def calc_obv(bars: list[CandleBar]) -> float | None:
             obv -= bars[i].volume
         # Equal close → no change
     return obv
+
+
+def calc_ema(bars: list[CandleBar], period: int = 9) -> float | None:
+    """Exponential Moving Average of close prices over `period` bars."""
+    if len(bars) < period:
+        return None
+    closes = [b.close for b in bars]
+    multiplier = 2.0 / (period + 1)
+    ema = sum(closes[:period]) / period  # seed with SMA
+    for price in closes[period:]:
+        ema = (price - ema) * multiplier + ema
+    return ema
 
 
 def calc_volume_trend(bars: list[CandleBar], lookback: int = 5) -> str | None:

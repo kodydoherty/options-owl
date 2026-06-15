@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% block title %}Trade #{{ trade.sqlite_id or trade.id }} {{ trade.ticker }} — OptionsOwl{% endblock %}
+
+{% block content %}
+<a href="/" class="text-sm text-gray-400 hover:text-white mb-4 inline-block">&larr; Back to Dashboard</a>
+
+<!-- Trade Header -->
+<div class="bg-owl-card border border-owl-border rounded-lg p-6 mb-6">
+    <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center gap-4">
+            <span class="text-2xl font-bold text-white">{{ trade.ticker }}</span>
+            <span class="px-3 py-1 rounded text-sm font-medium
+                {% if trade.direction == 'call' or trade.direction == 'CALL' %}bg-green-900 text-green-300{% else %}bg-red-900 text-red-300{% endif %}">
+                {{ trade.direction | upper }}
+            </span>
+            <span class="text-gray-400">${{ "%.0f" | format(trade.strike) }} strike</span>
+            <span class="px-2 py-0.5 rounded text-xs
+                {% if trade.status == 'open' %}bg-blue-900 text-blue-300{% else %}bg-gray-700 text-gray-400{% endif %}">
+                {{ trade.status | upper }}
+            </span>
+        </div>
+        <div class="text-right">
+            <div class="text-sm text-gray-400">Trade #{{ trade.sqlite_id or trade.id }}</div>
+            {% if trade.score %}
+            <div class="text-sm text-gray-400">Score: {{ trade.score }}</div>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div>
+            <div class="text-xs text-gray-500 uppercase">Entry</div>
+            <div class="text-white">${{ "%.2f" | format(trade.premium_per_contract) }}</div>
+            <div class="text-xs text-gray-500">{{ trade.opened_at | fdate }}</div>
+        </div>
+        {% if trade.exit_premium %}
+        <div>
+            <div class="text-xs text-gray-500 uppercase">Exit</div>
+            <div class="text-white">${{ "%.2f" | format(trade.exit_premium) }}</div>
+            <div class="text-xs text-gray-500">{{ trade.closed_at | fdate }}</div>
+        </div>
+        {% endif %}
+        <div>
+            <div class="text-xs text-gray-500 uppercase">Contracts</div>
+            <div class="text-white">{{ trade.contracts }}</div>
+            <div class="text-xs text-gray-500">Cost: ${{ "%.2f" | format(trade.total_cost) }}</div>
+        </div>
+        {% if trade.pnl_dollars is not none %}
+        <div>
+            <div class="text-xs text-gray-500 uppercase">P&L</div>
+            <div class="font-bold {{ trade.pnl_dollars | pnl_class }}">
+                {{ trade.pnl_dollars | money }}
+                <span class="text-sm">({{ trade.pnl_pct | pct }})</span>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    {% if trade.exit_reason or trade.hold_minutes %}
+    <div class="mt-4 pt-4 border-t border-owl-border flex gap-6 text-sm">
+        {% if trade.exit_reason %}
+        <div><span class="text-gray-500">Exit Reason:</span> <span class="text-white">{{ trade.exit_reason }}</span></div>
+        {% endif %}
+        {% if trade.exit_source %}
+        <div><span class="text-gray-500">Exit Source:</span>
+            <span class="{% if trade.exit_source == 'manual' %}text-yellow-400{% else %}text-gray-300{% endif %}">
+                {{ trade.exit_source }}
+            </span>
+        </div>
+        {% endif %}
+        {% if trade.hold_minutes %}
+        <div><span class="text-gray-500">Hold Time:</span> <span class="text-white">{{ "%.0f" | format(trade.hold_minutes) }}m</span></div>
+        {% endif %}
+        {% if trade.peak_gain_pct %}
+        <div><span class="text-gray-500">Peak Gain:</span> <span class="text-green-400">+{{ "%.1f" | format(trade.peak_gain_pct) }}%</span></div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if trade.webull_order_id %}
+    <div class="mt-2 text-xs text-gray-500">
+        Webull Order: {{ trade.webull_order_id }}
+        {% if trade.webull_entry_fill_price %}| Fill: ${{ "%.2f" | format(trade.webull_entry_fill_price) }}{% endif %}
+    </div>
+    {% endif %}
+
+    {% if trade.dca_count and trade.dca_count > 0 %}
+    <div class="mt-2 text-sm text-yellow-400">
+        DCA x{{ trade.dca_count }}
+        {% if trade.original_premium %}
+        | Original: ${{ "%.2f" | format(trade.original_premium) }}
+        | Blended: ${{ "%.2f" | format(trade.premium_per_contract) }}
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+
+<!-- Premium Chart -->
+{% if ticks %}
+<div class="bg-owl-card border border-owl-border rounded-lg p-4 mb-6">
+    <h3 class="text-sm font-semibold text-white mb-3">Premium History ({{ ticks | length }} ticks)</h3>
+    <canvas id="premium-chart" height="200"></canvas>
+</div>
+{% endif %}
+
+<!-- Trade Events Timeline -->
+<div class="mb-6">
+    <h3 class="text-lg font-semibold text-white mb-3">Event Timeline</h3>
+    {% if events %}
+    <div class="space-y-2">
+        {% for ev in events %}
+        <div class="bg-owl-card border border-owl-border rounded-lg p-3">
+            <div class="flex items-center justify-between mb-1">
+                <span class="text-sm font-medium
+                    {% if 'error' in ev.event_type or 'rejected' in ev.event_type %}text-red-400
+                    {% elif 'approved' in ev.event_type or 'filled' in ev.event_type %}text-green-400
+                    {% else %}text-gray-300{% endif %}">
+                    {{ ev.event_type }}
+                </span>
+                <span class="text-xs text-gray-500">{{ ev.created_at | fdate }}</span>
+            </div>
+            {% if ev.details %}
+            <pre class="text-xs text-gray-400 whitespace-pre-wrap break-all mt-1 max-h-32 overflow-y-auto scrollbar-thin">{{ ev.details | tojson(indent=2) }}</pre>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="bg-owl-card border border-owl-border rounded-lg p-8 text-center text-gray-500">
+        No events recorded for this trade
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if ticks %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script>
+    const ticks = {{ ticks | tojson }};
+    const labels = ticks.map(t => {
+        const d = new Date(t.captured_at);
+        return d.toLocaleTimeString('en-US', {hour: '2-digit', minute: '2-digit'});
+    });
+    const premiums = ticks.map(t => t.premium);
+    const entry = {{ trade.premium_per_contract }};
+
+    new Chart(document.getElementById('premium-chart'), {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: 'Premium',
+                    data: premiums,
+                    borderColor: '#6366f1',
+                    backgroundColor: 'rgba(99,102,241,0.1)',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 0,
+                },
+                {
+                    label: 'Entry',
+                    data: Array(labels.length).fill(entry),
+                    borderColor: '#6b7280',
+                    borderDash: [5, 5],
+                    pointRadius: 0,
+                    fill: false,
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            plugins: { legend: { labels: { color: '#9ca3af' } } },
+            scales: {
+                x: { ticks: { color: '#6b7280', maxTicksLimit: 10 }, grid: { color: '#2a2d3a' } },
+                y: { ticks: { color: '#6b7280', callback: v => '$' + v.toFixed(2) }, grid: { color: '#2a2d3a' } }
+            }
+        }
+    });
+</script>
+{% endif %}
+{% endblock %}

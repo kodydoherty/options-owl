@@ -59,7 +59,7 @@ def _get_current_iv(ticker: str) -> float | None:
     """Async-safe wrapper — runs yfinance in a thread."""
     import asyncio
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
         # We're inside an event loop — must use to_thread
         # But this function is called synchronously from _compute_and_cache,
         # so just call the sync version directly (caller handles threading).

@@ -21,6 +21,7 @@ def _make_settings(**overrides):
         "WEBULL_KILL_SWITCH": False,
         "PAPER_TRADE": True,
         "MARGIN_ACCOUNT": False,
+        "ENABLE_PUT_TRADING": True,
     }
     defaults.update(overrides)
     for k, v in defaults.items():
@@ -35,11 +36,12 @@ class TestSafetyRails:
         with pytest.raises(RuntimeError, match="PAPER_TRADE=true"):
             executor._check_safety_limits(1, 2.00, "BUY")
 
-    def test_kill_switch_blocks_orders(self):
+    @pytest.mark.asyncio
+    async def test_kill_switch_blocks_orders(self):
         """Kill switch must block all orders."""
         executor = WebullExecutor(_make_settings(WEBULL_KILL_SWITCH=True))
         with pytest.raises(RuntimeError, match="KILL_SWITCH"):
-            executor._check_kill_switch()
+            await executor._check_kill_switch()
 
     def test_max_contracts_enforced(self):
         """Cannot exceed MAX_ORDER_CONTRACTS."""
@@ -60,9 +62,10 @@ class TestSafetyRails:
         # 3 contracts * $2.00 * 100 = $600 < $5,000 cap
         executor._check_safety_limits(3, 2.00, "BUY")  # should not raise
 
-    def test_kill_switch_off_passes(self):
+    @pytest.mark.asyncio
+    async def test_kill_switch_off_passes(self):
         executor = WebullExecutor(_make_settings(WEBULL_KILL_SWITCH=False))
-        executor._check_kill_switch()  # should not raise
+        await executor._check_kill_switch()  # should not raise
 
 
 class TestMissingCredentials:

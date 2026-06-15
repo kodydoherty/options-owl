@@ -183,33 +183,33 @@ class TestCalcBollinger:
 class TestCalcATR:
     def test_insufficient_data(self):
         h = np.array([101.0, 102.0])
-        l = np.array([99.0, 98.0])
+        lo = np.array([99.0, 98.0])
         c = np.array([100.0, 101.0])
-        atr = calc_atr(h, l, c, 14)
+        atr = calc_atr(h, lo, c, 14)
         assert atr > 0  # falls back to mean(H-L)
 
     def test_flat_market_low_atr(self):
         n = 50
         c = _flat(n)
         h = c + 0.1
-        l = c - 0.1
-        atr = calc_atr(h, l, c, 14)
+        lo = c - 0.1
+        atr = calc_atr(h, lo, c, 14)
         assert atr < 1.0
 
     def test_volatile_market_high_atr(self):
         n = 50
         c = _flat(n)
         h = c + 5.0
-        l = c - 5.0
-        atr = calc_atr(h, l, c, 14)
+        lo = c - 5.0
+        atr = calc_atr(h, lo, c, 14)
         assert atr > 5.0
 
     def test_atr_positive(self):
         rng = np.random.default_rng(42)
         c = 100 + np.cumsum(rng.normal(0, 1, 50))
         h = c + np.abs(rng.normal(0, 0.5, 50))
-        l = c - np.abs(rng.normal(0, 0.5, 50))
-        atr = calc_atr(h, l, c, 14)
+        lo = c - np.abs(rng.normal(0, 0.5, 50))
+        atr = calc_atr(h, lo, c, 14)
         assert atr > 0
 
 
@@ -221,15 +221,15 @@ class TestCalcKeltner:
     def test_upper_above_lower(self):
         c = _trending_up(50)
         h = c + 1.0
-        l = c - 1.0
-        upper, lower = calc_keltner(c, h, l, 20, 1.5)
+        lo = c - 1.0
+        upper, lower = calc_keltner(c, h, lo, 20, 1.5)
         assert upper > lower
 
     def test_insufficient_data(self):
         c = np.array([100.0])
         h = np.array([101.0])
-        l = np.array([99.0])
-        upper, lower = calc_keltner(c, h, l, 20)
+        lo = np.array([99.0])
+        upper, lower = calc_keltner(c, h, lo, 20)
         assert upper == lower == 100.0
 
 
@@ -247,19 +247,19 @@ class TestCalcVWAP:
 
     def test_equal_volume_returns_mean_typical(self):
         h = np.array([102.0, 104.0])
-        l = np.array([98.0, 96.0])
+        lo = np.array([98.0, 96.0])
         c = np.array([100.0, 100.0])
         v = np.array([100.0, 100.0])
-        vwap = calc_vwap(h, l, c, v)
+        vwap = calc_vwap(h, lo, c, v)
         # typical prices: (102+98+100)/3=100, (104+96+100)/3=100
         assert vwap == pytest.approx(100.0)
 
     def test_volume_weighted(self):
         h = np.array([110.0, 210.0])
-        l = np.array([90.0, 190.0])
+        lo = np.array([90.0, 190.0])
         c = np.array([100.0, 200.0])
         v = np.array([1000.0, 1.0])
-        vwap = calc_vwap(h, l, c, v)
+        vwap = calc_vwap(h, lo, c, v)
         # Heavily weighted toward first bar (typical = 100)
         assert vwap < 110
 
@@ -297,16 +297,16 @@ class TestCalcADX:
     def test_trending_market_high_adx(self):
         c = _trending_up(50)
         h = c + 0.5
-        l = c - 0.5
-        adx = calc_adx(h, l, c, 14)
+        lo = c - 0.5
+        adx = calc_adx(h, lo, c, 14)
         assert adx > 0  # trending = nonzero ADX
 
     def test_adx_nonnegative(self):
         rng = np.random.default_rng(42)
         c = 100 + np.cumsum(rng.normal(0, 1, 50))
         h = c + np.abs(rng.normal(0, 0.5, 50))
-        l = c - np.abs(rng.normal(0, 0.5, 50))
-        adx = calc_adx(h, l, c, 14)
+        lo = c - np.abs(rng.normal(0, 0.5, 50))
+        adx = calc_adx(h, lo, c, 14)
         assert adx >= 0
 
 
@@ -383,7 +383,7 @@ class TestComputeIndicators:
         candles = _make_candles(closes, spread=0.02)
         result = compute_indicators(candles)
         # With very tight prices, BB should be inside Keltner
-        assert result.bb_squeeze == True
+        assert result.bb_squeeze  # numpy bool — truthiness, not `is True`
 
     def test_missing_volume_key_defaults_to_zero(self):
         candles = [{"open": 100, "high": 101, "low": 99, "close": 100} for _ in range(10)]

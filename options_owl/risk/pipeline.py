@@ -199,6 +199,11 @@ class BlockedTickerGate(EntryGate):
     async def evaluate(self, ctx: dict[str, Any]) -> GateOutcome:
         signal = ctx["signal"]
         settings = ctx["settings"]
+        # UW flow is a source with its own per-ticker validated whitelist; the general blocklist
+        # was set on general-ML performance and doesn't apply (e.g. MU loses for general-ML but
+        # MU PUT whale-flow is a consistent winner). Risk gates still apply.
+        if _is_flow_sourced(signal):
+            return GateOutcome(self.name, GateResult.SKIP, "UW flow source — bypassed")
         blocked_str = getattr(settings, "BLOCKED_TICKERS", "")
         blocked = {t.strip().upper() for t in blocked_str.split(",") if t.strip()}
         ticker = getattr(signal, "ticker", "").upper()
@@ -222,6 +227,8 @@ class PutTickerExclusionGate(EntryGate):
     async def evaluate(self, ctx: dict[str, Any]) -> GateOutcome:
         signal = ctx["signal"]
         settings = ctx["settings"]
+        if _is_flow_sourced(signal):
+            return GateOutcome(self.name, GateResult.SKIP, "UW flow source — bypassed")
         from options_owl.models.signals import Direction
 
         direction = getattr(signal, "direction", None)
@@ -261,6 +268,8 @@ class PutMarketDirectionGate(EntryGate):
     async def evaluate(self, ctx: dict[str, Any]) -> GateOutcome:
         signal = ctx["signal"]
         settings = ctx["settings"]
+        if _is_flow_sourced(signal):
+            return GateOutcome(self.name, GateResult.SKIP, "UW flow source — bypassed")
         from options_owl.models.signals import Direction
 
         direction = getattr(signal, "direction", None)
@@ -307,6 +316,8 @@ class PutBearishConfirmGate(EntryGate):
     async def evaluate(self, ctx: dict[str, Any]) -> GateOutcome:
         signal = ctx["signal"]
         settings = ctx["settings"]
+        if _is_flow_sourced(signal):
+            return GateOutcome(self.name, GateResult.SKIP, "UW flow source — bypassed")
         from options_owl.models.signals import Direction
 
         if getattr(signal, "direction", None) != Direction.PUT:
@@ -392,6 +403,8 @@ class DirectionalRegimeGate(EntryGate):
             return GateOutcome(self.name, GateResult.SKIP, "Directional regime disabled")
 
         signal = ctx["signal"]
+        if _is_flow_sourced(signal):
+            return GateOutcome(self.name, GateResult.SKIP, "UW flow source — bypassed")
         direction = getattr(signal, "direction", None)
         if direction is None:
             return GateOutcome(self.name, GateResult.SKIP, "No direction on signal")
@@ -526,6 +539,17 @@ def _is_ml_sourced(signal: Any) -> bool:
     than Discord scores. Several score-tiered gates must treat them differently.
     """
     return getattr(getattr(signal, "bot_source", None), "value", "") == "ml_sourcing"
+
+
+def _is_flow_sourced(signal: Any) -> bool:
+    """True if the signal came from the Unusual Whales whale-sweep source (Track 4).
+
+    Flow signals are a curated, high-conviction SOURCE (real-money sweeps on validated
+    whitelists). They bypass the directional/signal-quality gates (put_bearish_confirm,
+    directional_regime, put_market_direction, put_ticker_exclusion) — the whale IS the
+    directional conviction — but still pass the RISK gates (spread/delta/premium/EOD/cap).
+    """
+    return getattr(getattr(signal, "bot_source", None), "value", "") == "uw_flow"
 
 
 class ScoreGate(EntryGate):
@@ -1452,6 +1476,14 @@ class TimeOfDayGate(EntryGate):
                 f"No new entries after {hard_cutoff_h}:{hard_cutoff_m:02d} ET "
                 f"(theta crush makes late entries unprofitable)",
             )
+
+        # Flow signals are an ALL-DAY source (whale sweeps fire any time) — exempt from the
+        # intraday CALL-timing rules below (morning cutoff + early-morning score bump). The
+        # gold-standard flow book traded SPY/TSLA/META calls all day; the morning cutoff is an
+        # ML-CALL rule, not a flow rule. The EOD hard cutoff above STILL applies to flow.
+        if _is_flow_sourced(signal):
+            return GateOutcome(self.name, GateResult.SKIP,
+                               "UW flow source — all-day (EOD hard cutoff still applies)")
 
         # Morning cutoff: block CALL entries after 11:00 AM ET
         # Backtest: 9:30-10:30 AM ET = +$62K, after 1:30 PM = -$231K (CALLs)

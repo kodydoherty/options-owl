@@ -59,6 +59,7 @@ def mock_settings():
     s.ENABLE_POSTGRES = True
     s.AGENT_ID = "owlet-test"
     s.MIN_SCORE = 78
+    s.ML_MIN_SCORE = 78
     return s
 
 
@@ -152,7 +153,7 @@ class TestSignalConsumerRouting:
 
         with patch("options_owl.db.postgres.is_connected", return_value=True), \
              patch("options_owl.db.postgres.get_pending_signals", new_callable=AsyncMock,
-                   return_value=[sample_signal_data]) as mock_get, \
+                   return_value=[sample_signal_data]), \
              patch("options_owl.db.postgres.mark_signal_consumed",
                    new_callable=AsyncMock) as mock_mark:
 
@@ -172,7 +173,7 @@ class TestSignalConsumerRouting:
             assert trade_signal.sentiment == Sentiment.BULLISH
             assert trade_signal.score == 92
             assert trade_signal.bot_source == BotSource.ML_SOURCING
-            assert trade_signal.entry_price == 2.50
+            assert trade_signal.entry_price == 130.0  # underlying price (strike fallback)
             assert trade_signal.strike == 130.0
             assert trade_signal.expiry == "0DTE"
 
@@ -612,7 +613,7 @@ class TestFullPipelineFlow:
         assert trade_signal.direction == Direction.CALL
         assert trade_signal.score == 92
         assert trade_signal.bot_source == BotSource.ML_SOURCING
-        assert trade_signal.entry_price == 2.50
+        assert trade_signal.entry_price == 130.0  # underlying price (strike fallback)
         assert trade_signal.strike == 130.0
 
         # 3. ml_confidence passed through

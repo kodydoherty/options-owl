@@ -192,9 +192,30 @@ CREATE TABLE IF NOT EXISTS option_ticks (
     gamma REAL,
     theta REAL,
     vega REAL,
+    charm REAL,
+    vanna REAL,
     underlying_price REAL,
     captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Per-ticker dealer-positioning aggregate (GEX proxy), one row per ticker
+-- per harvest cycle. net_gamma = SUM(call gamma-exposure) - SUM(put gamma-
+-- exposure) where gamma_exposure = gamma * open_interest * 100 * spot.
+-- See specs/active/2026-06-10_feature-pipeline-expansion_v1.html section 5.4.
+CREATE TABLE IF NOT EXISTS gex_ticks (
+    id          BIGSERIAL PRIMARY KEY,
+    ticker      TEXT NOT NULL,
+    net_gamma   REAL,   -- SUM call gamma-exposure - SUM put gamma-exposure
+    call_gamma  REAL,
+    put_gamma   REAL,
+    net_charm   REAL,
+    net_vanna   REAL,
+    total_oi    BIGINT,
+    spot        REAL,
+    n_contracts INTEGER,
+    captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_gex_ticks_time ON gex_ticks(ticker, captured_at);
 
 -- Market data: stock OHLCV candles (5m aggregates for analysis)
 CREATE TABLE IF NOT EXISTS stock_candles (
@@ -286,6 +307,10 @@ CREATE INDEX IF NOT EXISTS idx_flow_5m_ticker ON option_flow_5m(ticker, bar_time
 -- compute size_imbalance. Old rows remain NULL, which is fine.
 ALTER TABLE option_ticks ADD COLUMN IF NOT EXISTS bid_size INTEGER;
 ALTER TABLE option_ticks ADD COLUMN IF NOT EXISTS ask_size INTEGER;
+-- option_ticks gained charm/vanna so the harvester can persist full
+-- second-order greeks for dealer-positioning (GEX) features. Old rows NULL.
+ALTER TABLE option_ticks ADD COLUMN IF NOT EXISTS charm REAL;
+ALTER TABLE option_ticks ADD COLUMN IF NOT EXISTS vanna REAL;
 """
 
 
@@ -689,6 +714,7 @@ async def write_option_tick(
     delta: float = 0, gamma: float = 0, theta: float = 0, vega: float = 0,
     underlying_price: float = 0,
     bid_size: int | None = None, ask_size: int | None = None,
+    charm: float | None = None, vanna: float | None = None,
 ) -> None:
     """Write an option contract snapshot for future backtesting."""
     if not is_connected():
@@ -699,13 +725,14 @@ async def write_option_tick(
             INSERT INTO option_ticks (
                 ticker, option_type, strike, expiry_date,
                 bid, ask, bid_size, ask_size, mid, last, volume, open_interest,
-                iv, delta, gamma, theta, vega, underlying_price
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+                iv, delta, gamma, theta, vega, charm, vanna, underlying_price
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
             """,
             ticker, option_type, strike, expiry_date,
             bid or None, ask or None, bid_size, ask_size, mid or None, last or None,
             volume or None, open_interest or None,
             iv or None, delta or None, gamma or None, theta or None, vega or None,
+            charm, vanna,
             underlying_price or None,
         )
     except Exception as exc:
@@ -860,8 +887,8 @@ async def write_option_ticks_batch(ticks: list[dict]) -> None:
                 INSERT INTO option_ticks (
                     ticker, option_type, strike, expiry_date,
                     bid, ask, bid_size, ask_size, mid, last, volume, open_interest,
-                    iv, delta, gamma, theta, vega, underlying_price
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+                    iv, delta, gamma, theta, vega, charm, vanna, underlying_price
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
                 """,
                 [
                     (t["ticker"], t["option_type"], t["strike"], t["expiry_date"],
@@ -869,12 +896,74 @@ async def write_option_ticks_batch(ticks: list[dict]) -> None:
                      t.get("mid"), t.get("last"),
                      t.get("volume"), t.get("open_interest"),
                      t.get("iv"), t.get("delta"), t.get("gamma"),
-                     t.get("theta"), t.get("vega"), t.get("underlying_price"))
+                     t.get("theta"), t.get("vega"), t.get("charm"), t.get("vanna"),
+                     t.get("underlying_price"))
                     for t in ticks
                 ],
             )
     except Exception as exc:
         logger.debug(f"PG write_option_ticks_batch failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# GEX (dealer-positioning) aggregate helpers
+# ---------------------------------------------------------------------------
+
+
+async def write_gex_ticks_batch(rows: list[dict]) -> None:
+    """Batch write per-ticker GEX aggregates (one row per ticker per cycle).
+
+    Each row carries the dealer-positioning proxy computed by the harvester:
+    net_gamma = SUM(call gamma*OI*100*spot) - SUM(put gamma*OI*100*spot).
+    """
+    if not is_connected() or not rows:
+        return
+    try:
+        pool = _pool
+        if pool is None:
+            return
+        async with pool.acquire() as conn:
+            await conn.executemany(
+                """
+                INSERT INTO gex_ticks (
+                    ticker, net_gamma, call_gamma, put_gamma,
+                    net_charm, net_vanna, total_oi, spot, n_contracts
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                """,
+                [
+                    (r["ticker"], r.get("net_gamma"), r.get("call_gamma"),
+                     r.get("put_gamma"), r.get("net_charm"), r.get("net_vanna"),
+                     r.get("total_oi"), r.get("spot"), r.get("n_contracts"))
+                    for r in rows
+                ],
+            )
+    except Exception as exc:
+        logger.debug(f"PG write_gex_ticks_batch failed: {exc}")
+
+
+async def fetch_latest_gex(ticker: str) -> dict | None:
+    """Fetch the most recent GEX aggregate row for a ticker, or None.
+
+    Used by the serving-side feature module to read live dealer positioning.
+    """
+    if not is_connected():
+        return None
+    try:
+        row = await fetchrow(
+            """
+            SELECT ticker, net_gamma, call_gamma, put_gamma,
+                   net_charm, net_vanna, total_oi, spot, n_contracts, captured_at
+            FROM gex_ticks
+            WHERE ticker = $1
+            ORDER BY captured_at DESC
+            LIMIT 1
+            """,
+            ticker.upper(),
+        )
+        return dict(row) if row else None
+    except Exception as exc:
+        logger.warning(f"PG fetch_latest_gex failed for {ticker}: {exc}")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -986,6 +1075,11 @@ async def write_option_flow_5m(bars: list[dict]) -> None:
         pool = _pool
         if pool is None:
             return
+        # bar_time arrives as an ISO string from FlowBar5m.to_dict(); asyncpg
+        # needs a datetime for the TIMESTAMPTZ column.
+        for b in bars:
+            if isinstance(b.get("bar_time"), str):
+                b["bar_time"] = datetime.fromisoformat(b["bar_time"])
         async with pool.acquire() as conn:
             await conn.executemany(
                 """

@@ -24,11 +24,8 @@ The critical code path tested:
 
 from __future__ import annotations
 
-import asyncio
-import os
-import tempfile
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import aiosqlite
@@ -171,17 +168,12 @@ class TestMonitorExitPathNoCrash:
     async def test_monitor_evaluates_without_crash_normal_trade(self, db_path):
         """A trade within loss limits should reach the V5 FSM without crashing."""
         await _create_test_db(db_path)
-        trade_id = await _insert_open_trade(
+        await _insert_open_trade(
             db_path, ticker="SPY", premium=2.00, contracts=2, entry_price=500.0,
         )
 
         settings = _make_settings(PORTFOLIO_SIZE=8000.0, MAX_TRADE_LOSS_EXIT_PCT=8.0)
 
-        # Import the actual monitor internals
-        from options_owl.execution.position_monitor import (
-            _now_et,
-            get_open_trades,
-        )
         from options_owl.execution.paper_trader import get_open_trades
 
         trades = await get_open_trades(db_path)
@@ -190,7 +182,6 @@ class TestMonitorExitPathNoCrash:
 
         # Simulate what the monitor loop does (lines 1139-1234)
         exit_premium = 1.50  # down 25% — within 8% portfolio loss cap
-        current_price = 498.0
 
         # This is the EXACT code path from position_monitor.py
         reason = None
@@ -220,12 +211,13 @@ class TestMonitorExitPathNoCrash:
 
         # If we get here without exception, the bug is fixed
         assert reason is None  # trade is within limits, should HOLD
+        assert description == ""  # description must also be defined (original bug)
 
     @pytest.mark.asyncio
     async def test_monitor_evaluates_without_crash_max_loss_triggers(self, db_path):
         """When max_loss_cap triggers, reason should be set and FSM skipped."""
         await _create_test_db(db_path)
-        trade_id = await _insert_open_trade(
+        await _insert_open_trade(
             db_path, ticker="SPY", premium=5.00, contracts=2, entry_price=500.0,
         )
         settings = _make_settings(PORTFOLIO_SIZE=8000.0, MAX_TRADE_LOSS_EXIT_PCT=8.0)
@@ -282,6 +274,7 @@ class TestMonitorExitPathNoCrash:
 
         # reason must still be None — not undefined
         assert reason is None
+        assert description == ""
 
     @pytest.mark.asyncio
     async def test_monitor_evaluates_without_crash_no_max_loss_setting(self, db_path):
@@ -291,7 +284,7 @@ class TestMonitorExitPathNoCrash:
         settings = _make_settings(MAX_TRADE_LOSS_EXIT_PCT=0)
 
         trades = await get_open_trades(db_path)
-        trade = trades[0]
+        assert len(trades) == 1
 
         exit_premium = 0.10  # massive loss, but cap is disabled
 
@@ -302,6 +295,7 @@ class TestMonitorExitPathNoCrash:
             pass  # skipped because max_loss_pct == 0
 
         assert reason is None
+        assert description == ""
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +314,7 @@ class TestMonitorSingleIteration:
     async def test_v5_hold_decision_reaches_log(self, db_path):
         """V5 FSM returning (None, '') should result in HOLD, not a crash."""
         await _create_test_db(db_path)
-        trade_id = await _insert_open_trade(
+        await _insert_open_trade(
             db_path, ticker="AAPL", premium=1.50, contracts=2,
             entry_price=290.0, expiry_date="2026-05-08",
         )
@@ -355,7 +349,7 @@ class TestMonitorSingleIteration:
                 max_loss_dollars = settings.PORTFOLIO_SIZE * (max_loss_pct / 100)
                 if unrealized_pnl < -max_loss_dollars:
                     reason = "max_loss_cap"
-                    description = f"loss cap"
+                    description = "loss cap"
 
             if reason is not None:
                 pass
@@ -371,12 +365,10 @@ class TestMonitorSingleIteration:
     async def test_v5_exit_decision_triggers_close(self, db_path):
         """V5 FSM returning a reason should trigger trade close."""
         await _create_test_db(db_path)
-        trade_id = await _insert_open_trade(
+        await _insert_open_trade(
             db_path, ticker="TSLA", premium=3.00, contracts=1,
             entry_price=410.0, expiry_date="2026-05-08",
         )
-
-        settings = _make_settings(EXIT_ENGINE="v5")
 
         mock_bridge = MagicMock()
         mock_bridge.evaluate.return_value = ("hard_stop", "Backstop: premium -70% >= 65%")
@@ -414,7 +406,7 @@ class TestMonitorSingleIteration:
     async def test_max_loss_cap_overrides_v5(self, db_path):
         """Max loss cap should fire BEFORE V5 FSM and prevent FSM evaluation."""
         await _create_test_db(db_path)
-        trade_id = await _insert_open_trade(
+        await _insert_open_trade(
             db_path, ticker="MSTR", premium=5.00, contracts=2,
             entry_price=180.0, expiry_date="2026-05-08",
         )
@@ -568,7 +560,7 @@ class TestSourceCodeSafety:
             "CRITICAL: 'description = \"\"' not found after 'reason = None'"
         # description should be initialized right after reason (within 2 lines)
         assert desc_init - reason_init <= 2, \
-            f"'description' init should be immediately after 'reason' init"
+            "'description' init should be immediately after 'reason' init"
 
     def test_abandonment_gated_on_position_not_found(self):
         """FIX 1: force-close-as-manual must only happen on POSITION_NOT_FOUND.
@@ -601,7 +593,6 @@ class TestSourceCodeSafety:
     def test_sell_path_sdk_calls_have_timeout(self):
         """FIX 2: the sell round-trip must be wrapped in asyncio.wait_for."""
         import inspect
-        from options_owl.execution.paper_trader import PaperTrader
 
         src = inspect.getsource(PaperTrader.close_webull_position)
         assert "asyncio.wait_for(" in src

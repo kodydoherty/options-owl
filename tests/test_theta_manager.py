@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from options_owl.config.settings import Settings
 from options_owl.risk.theta_manager import _now_et, calc_time_to_expiry_days, should_theta_exit
@@ -15,6 +15,7 @@ def _make_settings(**overrides) -> Settings:
         "THETA_EXIT_DTE_THRESHOLD": 1,
         "THETA_EXIT_LOSS_PCT": 50.0,
         "THETA_EXIT_TIME_MINUTES": 60,
+        "ENABLE_PUT_TRADING": True,
     }
     defaults.update(overrides)
     return Settings(**defaults)

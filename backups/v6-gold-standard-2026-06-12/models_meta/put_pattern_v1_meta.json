@@ -1,0 +1,250 @@
+{
+  "features": [
+    "prem_slope_5",
+    "prem_slope_10",
+    "prem_accel",
+    "prem_stabilizing",
+    "prem_volatility",
+    "volume_avg_5",
+    "volume_ratio",
+    "volume_trend",
+    "iv_change_5",
+    "iv_level",
+    "iv_accel",
+    "und_slope_5",
+    "und_slope_10",
+    "und_slope_15",
+    "und_momentum",
+    "consec_underlying_down",
+    "drop_from_open",
+    "spread_pct",
+    "delta",
+    "theta",
+    "vega",
+    "minutes_since_open",
+    "premium",
+    "candle_range_pct",
+    "bid_size_ratio",
+    "iv_skew",
+    "put_call_volume_ratio"
+  ],
+  "auc": 0.8245157956687461,
+  "walk_forward_auc_mean": 0.800200484613033,
+  "walk_forward_auc_std": 0.01974274980651814,
+  "walk_forward_folds": [
+    {
+      "test_month": "2024-03",
+      "train_end": "2024-02",
+      "auc": 0.7764958888852814,
+      "prec_80": 0.41901188242651655,
+      "signals_80": 1599,
+      "n_test": 69118,
+      "best_iter": 323
+    },
+    {
+      "test_month": "2024-04",
+      "train_end": "2024-03",
+      "auc": 0.7609023152893644,
+      "prec_80": 0.43162393162393164,
+      "signals_80": 1638,
+      "n_test": 75396,
+      "best_iter": 226
+    },
+    {
+      "test_month": "2024-05",
+      "train_end": "2024-04",
+      "auc": 0.7674878516556771,
+      "prec_80": 0.38613406795224975,
+      "signals_80": 2178,
+      "n_test": 77787,
+      "best_iter": 532
+    },
+    {
+      "test_month": "2024-06",
+      "train_end": "2024-05",
+      "auc": 0.7847363915956107,
+      "prec_80": 0.43551185656448815,
+      "signals_80": 1729,
+      "n_test": 63588,
+      "best_iter": 510
+    },
+    {
+      "test_month": "2025-01",
+      "train_end": "2024-06",
+      "auc": 0.797053485542211,
+      "prec_80": 0.5111638954869359,
+      "signals_80": 2105,
+      "n_test": 75069,
+      "best_iter": 746
+    },
+    {
+      "test_month": "2025-02",
+      "train_end": "2025-01",
+      "auc": 0.7889784083728815,
+      "prec_80": 0.5267304445694991,
+      "signals_80": 1777,
+      "n_test": 72852,
+      "best_iter": 594
+    },
+    {
+      "test_month": "2025-03",
+      "train_end": "2025-02",
+      "auc": 0.7795146304059895,
+      "prec_80": 0.3586707410236822,
+      "signals_80": 2618,
+      "n_test": 79427,
+      "best_iter": 1160
+    },
+    {
+      "test_month": "2025-04",
+      "train_end": "2025-03",
+      "auc": 0.7911828060644877,
+      "prec_80": 0.4092827004219409,
+      "signals_80": 1896,
+      "n_test": 75815,
+      "best_iter": 1122
+    },
+    {
+      "test_month": "2025-05",
+      "train_end": "2025-04",
+      "auc": 0.7979039203333534,
+      "prec_80": 0.4399267399267399,
+      "signals_80": 2730,
+      "n_test": 81907,
+      "best_iter": 680
+    },
+    {
+      "test_month": "2025-06",
+      "train_end": "2025-05",
+      "auc": 0.7839133864012355,
+      "prec_80": 0.4456659619450317,
+      "signals_80": 2365,
+      "n_test": 81953,
+      "best_iter": 370
+    },
+    {
+      "test_month": "2025-07",
+      "train_end": "2025-06",
+      "auc": 0.8000407442509904,
+      "prec_80": 0.4123148869836321,
+      "signals_80": 3849,
+      "n_test": 83736,
+      "best_iter": 1026
+    },
+    {
+      "test_month": "2025-08",
+      "train_end": "2025-07",
+      "auc": 0.7929796274263801,
+      "prec_80": 0.4186246418338109,
+      "signals_80": 3490,
+      "n_test": 81228,
+      "best_iter": 741
+    },
+    {
+      "test_month": "2025-09",
+      "train_end": "2025-08",
+      "auc": 0.8085308837761019,
+      "prec_80": 0.4843269821757836,
+      "signals_80": 3254,
+      "n_test": 80427,
+      "best_iter": 1810
+    },
+    {
+      "test_month": "2025-10",
+      "train_end": "2025-09",
+      "auc": 0.8013218909234502,
+      "prec_80": 0.45562801247519136,
+      "signals_80": 3527,
+      "n_test": 84965,
+      "best_iter": 1130
+    },
+    {
+      "test_month": "2025-11",
+      "train_end": "2025-10",
+      "auc": 0.8094825603129558,
+      "prec_80": 0.44861337683523655,
+      "signals_80": 3065,
+      "n_test": 68703,
+      "best_iter": 1385
+    },
+    {
+      "test_month": "2025-12",
+      "train_end": "2025-11",
+      "auc": 0.8110079396212745,
+      "prec_80": 0.46897163120567376,
+      "signals_80": 3384,
+      "n_test": 84980,
+      "best_iter": 1213
+    },
+    {
+      "test_month": "2026-01",
+      "train_end": "2025-12",
+      "auc": 0.8209578475459859,
+      "prec_80": 0.46778126088470917,
+      "signals_80": 2871,
+      "n_test": 81136,
+      "best_iter": 757
+    },
+    {
+      "test_month": "2026-02",
+      "train_end": "2026-01",
+      "auc": 0.8273510639923701,
+      "prec_80": 0.5149313962873285,
+      "signals_80": 1239,
+      "n_test": 76984,
+      "best_iter": 1505
+    },
+    {
+      "test_month": "2026-03",
+      "train_end": "2026-02",
+      "auc": 0.8233333858921873,
+      "prec_80": 0.45625,
+      "signals_80": 1760,
+      "n_test": 88473,
+      "best_iter": 1998
+    },
+    {
+      "test_month": "2026-04",
+      "train_end": "2026-03",
+      "auc": 0.8240073706195021,
+      "prec_80": 0.4984069185252617,
+      "signals_80": 2197,
+      "n_test": 79488,
+      "best_iter": 1999
+    },
+    {
+      "test_month": "2026-05",
+      "train_end": "2026-04",
+      "auc": 0.8327124669106897,
+      "prec_80": 0.5196024295969078,
+      "signals_80": 1811,
+      "n_test": 76361,
+      "best_iter": 1199
+    },
+    {
+      "test_month": "2026-06",
+      "train_end": "2026-05",
+      "auc": 0.8245157956687461,
+      "prec_80": 0.4947839046199702,
+      "signals_80": 671,
+      "n_test": 25880,
+      "best_iter": 1068
+    }
+  ],
+  "precision": 0.27093937991670525,
+  "recall": 0.5258194881005838,
+  "best_threshold": 0.6000000000000002,
+  "f1": 0.3576118491372729,
+  "best_iteration": 1068,
+  "n_train": 1781357,
+  "n_test": 25880,
+  "n_positive_train": 193402,
+  "n_positive_test": 2227,
+  "scan_end_minutes": 360,
+  "window_minutes": 60,
+  "min_gain_pct": 20.0,
+  "low_proximity_pct": 5.0,
+  "label_strategy": "sliding_window_near_low",
+  "train_months": "2024-01 to 2026-05",
+  "test_month": "2026-06"
+}

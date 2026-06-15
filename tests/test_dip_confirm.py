@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -34,6 +33,7 @@ def _make_settings(tmp_db_path: str, **overrides) -> Settings:
         "ENABLE_VINNY_STRATEGY": False,
         "ENABLE_SCORE_SIZING": False,
         "ENABLE_SMART_ENTRY": False,
+        "ENABLE_PUT_TRADING": True,
         "ENABLE_DIP_CONFIRM": True,
         "DIP_CONFIRM_MAX_POLLS": 3,
         "DIP_CONFIRM_POLL_SEC": 0.01,  # fast for tests

@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from options_owl.sourcing.scoring.types import (
-    Direction,
     ScoredSignal,
     SignalContext,
-    TierResult,
 )
 
 

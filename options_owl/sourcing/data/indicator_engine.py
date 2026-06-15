@@ -13,8 +13,7 @@ All formulas match the N8N workflow parameters (see Appendix D of Doc 01):
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -422,7 +421,7 @@ def detect_sweeps(candles: list[dict], levels: dict) -> dict:
 
     for bar in window:
         h = bar["high"]
-        l = bar["low"]
+        low = bar["low"]
         c = bar["close"]
 
         # Sweep above then close below = bull trap (bearish sweep)
@@ -434,11 +433,11 @@ def detect_sweeps(candles: list[dict], levels: dict) -> dict:
             sweeps["sweep_session_high"] = True
 
         # Sweep below then close above = bear trap (bullish sweep)
-        if pdl > 0 and l < pdl and c > pdl:
+        if pdl > 0 and low < pdl and c > pdl:
             sweeps["sweep_pdl"] = True
-        if pwl > 0 and l < pwl and c > pwl:
+        if pwl > 0 and low < pwl and c > pwl:
             sweeps["sweep_pwl"] = True
-        if session_low > 0 and l < session_low and c > session_low:
+        if session_low > 0 and low < session_low and c > session_low:
             sweeps["sweep_session_low"] = True
 
     return sweeps
@@ -462,7 +461,6 @@ def compute_indicators(candles: list[dict]) -> IndicatorSet:
     if not candles or len(candles) < 5:
         return IndicatorSet()
 
-    opens = np.array([c["open"] for c in candles], dtype=np.float64)
     highs = np.array([c["high"] for c in candles], dtype=np.float64)
     lows = np.array([c["low"] for c in candles], dtype=np.float64)
     closes = np.array([c["close"] for c in candles], dtype=np.float64)

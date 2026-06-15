@@ -9,17 +9,12 @@ Covers:
 """
 
 import json
-import time as _time
 
 import pytest
 
 from options_owl.collectors.candle_cache import (
     CandleBar,
     CandleCache,
-    calc_atr,
-    calc_rsi,
-    calc_volume_trend,
-    detect_candle_pattern,
     evaluate_enrg,
 )
 
@@ -81,7 +76,6 @@ class TestMarketDataStreamMinuteBarBuffer:
     """Test that AM events populate the minute-bar buffer."""
 
     def test_minute_bars_stored_from_am_event(self):
-        from collections import deque
         from options_owl.collectors.market_data_stream import MarketDataStream
         from options_owl.config.settings import Settings
 

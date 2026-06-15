@@ -1372,6 +1372,40 @@ class PaperTrader:
                 if _max_conc <= 0:  # auto-adapt
                     _max_conc = 2 if _live_bal < 8000 else 4
                 _is_put = signal.direction == Direction.PUT
+                # Stage D: conviction-based bet sizing for UW flow trades (flag-gated, default off).
+                # Sizes up clustered / high-ask / (single-stock) big-premium sweeps; down singles +
+                # index $1M+ hedges. Capped by MAX_POSITION_PCT inside score_to_contracts.
+                _conv_mult = 1.0
+                if (getattr(self.settings, "ENABLE_V7_CONVICTION_SIZING", False)
+                        and signal.flow_cluster_count is not None):
+                    from options_owl.risk.exit_v5.config import INDEX_TICKERS
+                    from options_owl.risk.vinny_strategy import flow_conviction_mult
+                    _is_index = (signal.ticker or "").upper() in INDEX_TICKERS
+                    # Serve-time P(runner) tilt (flag-gated, default off; None = no tilt, safe fallback)
+                    _p_runner = None
+                    if getattr(self.settings, "ENABLE_V7_RUNNER_TILT", False):
+                        from options_owl.risk.flow_runner import compute_flow_p_runner
+                        try:
+                            _p_runner = await asyncio.wait_for(
+                                compute_flow_p_runner(signal, self.settings), timeout=20)
+                        except (TimeoutError, asyncio.TimeoutError):
+                            logger.warning(f"FLOW_P_RUNNER: timed out for {signal.ticker} — no tilt")
+                            _p_runner = None
+                    # B2 market-tide gate (flag-gated): only fetched for PUTs (calls unaffected)
+                    _tide_bias = None
+                    if getattr(self.settings, "ENABLE_V7_TIDE_GATE", False) and _is_put:
+                        from options_owl.risk.flow_runner import get_market_tide_bias
+                        try:
+                            _tide_bias = await asyncio.wait_for(
+                                get_market_tide_bias(self.settings), timeout=15)
+                        except (TimeoutError, asyncio.TimeoutError):
+                            _tide_bias = None
+                    _conv_mult, _conv_desc = flow_conviction_mult(
+                        signal.flow_cluster_count, signal.flow_total_premium,
+                        signal.flow_ask_frac, _is_index, _p_runner,
+                        is_put=_is_put, tide_bias=_tide_bias,
+                        tide_misaligned_put_mult=getattr(self.settings, "V7_TIDE_MISALIGNED_PUT_MULT", 0.30))
+                    logger.info(f"CONVICTION_SIZING: {signal.ticker} {_conv_desc}")
                 total_contracts = score_to_contracts(
                     signal.score,
                     cost_per_contract=cost_per_contract,
@@ -1380,8 +1414,10 @@ class PaperTrader:
                     max_concurrent=_max_conc,
                     max_portfolio_risk_pct=self.settings.MAX_PORTFOLIO_RISK_PCT,
                     ml_confidence=getattr(self, "_current_ml_confidence", None),
+                    conviction_mult=_conv_mult,
                     is_put=_is_put,
                     put_budget_multiplier=getattr(self.settings, "PUT_BUDGET_MULTIPLIER", 0.50),
+                    max_position_dollars=getattr(self.settings, "MAX_POSITION_DOLLARS", 0.0),
                 )
                 if total_contracts <= 0:
                     logger.info(f"Score {signal.score} too low for Vinny sizing — 0 contracts")

@@ -97,7 +97,7 @@ async def _fetch_from_capitol_trades(ticker: str) -> CongressActivity | None:
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
-                f"https://www.capitoltrades.com/trades",
+                "https://www.capitoltrades.com/trades",
                 params={"asset": ticker.upper(), "page": "1"},
                 headers={
                     "User-Agent": "Mozilla/5.0 (compatible; OptionsOwl/1.0)",

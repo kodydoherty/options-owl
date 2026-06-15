@@ -5,21 +5,21 @@ Tests the complete lifecycle for both directions:
   2. Route through entry pipeline (18 gates)
   3. Open paper trade with correct sizing
   4. V5 FSM evaluates exit conditions
-  5. PUT uses PUT_SCALP_CONFIG (fixed +50%/-60%/60m)
+  5. PUT uses PUT_SCALP_CONFIG (no ceiling, -50% hard stop, trail system exits)
   6. CALL uses per-ticker V5Config (adaptive FSM)
   7. Close trade and verify DB state
 
 Also tests:
   - Bear mode detection (SPY down from open)
   - PUT ticker exclusion (AAPL, GOOGL, NVDA, AMZN excluded from PUTs)
-  - PUT scalp exit at profit target, stop loss, and max hold time
+  - PUT scalp/soft/adaptive trail exits, hard stop, grace period backstop
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
 import aiosqlite
@@ -37,7 +37,6 @@ from options_owl.models.signals import (
 )
 from options_owl.risk.exit_v5.config import (
     PUT_SCALP_CONFIG,
-    V5Config,
     get_ticker_config,
 )
 from options_owl.risk.exit_v5.fsm import ExitFSM, TradeState
@@ -67,6 +66,9 @@ def _make_settings(tmp_db_path: str, **overrides) -> Settings:
         "ENABLE_VINNY_STRATEGY": True,
         "ENABLE_SCORE_SIZING": True,
         "ENABLE_SMART_ENTRY": False,
+        "ENABLE_PUT_TRADING": True,
+        "ENABLE_DIRECTIONAL_REGIME": False,
+        "CB_CLOSING_BUFFER_MINUTES": 0,
         "ANTI_CHASE_MAX_MOVE_PCT": 99.0,
         "ENTRY_HARD_CUTOFF_HOUR": 23,
         "ENTRY_HARD_CUTOFF_MINUTE": 59,
@@ -192,6 +194,24 @@ class TestPutPipeline:
         trader = PaperTrader(settings)
         await trader.init()
 
+        # Mock candle cache with bearish data for PutBearishConfirmGate
+        from options_owl.collectors.candle_cache import CandleBar
+        # 6 bearish bars: close < open, close < vwap
+        bearish_bars = [
+            CandleBar(0, 522.0, 522.5, 519.0, 519.5, 1000, vwap=521.0),
+            CandleBar(0, 520.0, 520.5, 518.0, 518.5, 1000, vwap=520.0),
+            CandleBar(0, 519.0, 519.5, 517.0, 517.5, 1000, vwap=519.0),
+            CandleBar(0, 518.0, 518.5, 516.0, 516.5, 1000, vwap=518.0),
+            CandleBar(0, 517.0, 517.5, 515.0, 515.5, 1000, vwap=517.0),
+            CandleBar(0, 516.0, 516.5, 514.0, 514.5, 1000, vwap=516.0),
+        ]
+        mock_candle_cache = AsyncMock()
+        mock_candle_cache.get_candle_data = AsyncMock(return_value={
+            "5m": bearish_bars,
+            "indicators": {"5m": {"rsi": 38.0, "ema9": 515.0, "ema21": 518.0}},
+        })
+        trader._candle_cache = mock_candle_cache
+
         market_time = datetime(2026, 5, 26, 13, 30, 0, tzinfo=ZoneInfo("America/New_York"))
         with patch.object(trader, "_get_current_price", return_value=519.50), \
              patch("options_owl.execution.paper_trader._today_et", return_value=market_time):
@@ -255,6 +275,23 @@ class TestPutPipeline:
         trader = PaperTrader(settings)
         await trader.init()
 
+        # Mock candle cache with bearish data for PutBearishConfirmGate
+        from options_owl.collectors.candle_cache import CandleBar
+        bearish_bars = [
+            CandleBar(0, 522.0, 522.5, 519.0, 519.5, 1000, vwap=521.0),
+            CandleBar(0, 520.0, 520.5, 518.0, 518.5, 1000, vwap=520.0),
+            CandleBar(0, 519.0, 519.5, 517.0, 517.5, 1000, vwap=519.0),
+            CandleBar(0, 518.0, 518.5, 516.0, 516.5, 1000, vwap=518.0),
+            CandleBar(0, 517.0, 517.5, 515.0, 515.5, 1000, vwap=517.0),
+            CandleBar(0, 516.0, 516.5, 514.0, 514.5, 1000, vwap=516.0),
+        ]
+        mock_cc = AsyncMock()
+        mock_cc.get_candle_data = AsyncMock(return_value={
+            "5m": bearish_bars,
+            "indicators": {"5m": {"rsi": 38.0, "ema9": 515.0, "ema21": 518.0}},
+        })
+        trader._candle_cache = mock_cc
+
         market_time = datetime(2026, 5, 26, 13, 30, 0, tzinfo=ZoneInfo("America/New_York"))
         with patch.object(trader, "_get_current_price", return_value=519.50), \
              patch("options_owl.execution.paper_trader._today_et", return_value=market_time):
@@ -286,9 +323,12 @@ class TestPutScalpExits:
         """get_ticker_config returns PUT_SCALP_CONFIG for PUT option_type."""
         cfg = get_ticker_config("SPY", use_per_ticker=True, option_type="put")
         assert cfg is PUT_SCALP_CONFIG
-        assert cfg.profit_target_general_pct == 50.0
-        assert cfg.backstop_0dte_pct == 60.0
-        assert cfg.theta_bleed_min == 60.0
+        assert cfg.profit_target_general_pct == 0.0  # no ceiling — trail locks in gains
+        assert cfg.backstop_0dte_pct == 50.0
+        assert cfg.theta_bleed_min == 999.0  # no hold limit — trail handles exits
+        # Scalp trail and soft trail are enabled for PUTs
+        assert cfg.scalp_peak_threshold_pct == 15.0
+        assert cfg.soft_trail_band_low_pct == 15.0
 
     def test_call_gets_normal_config(self):
         """get_ticker_config returns normal V5Config for CALL option_type."""
@@ -296,8 +336,8 @@ class TestPutScalpExits:
         assert cfg is not PUT_SCALP_CONFIG
         assert cfg.profit_target_general_pct == 0.0  # disabled for calls
 
-    def test_put_profit_target_exit(self):
-        """PUT at +55% should trigger profit target (50% threshold)."""
+    def test_put_no_profit_target_holds(self):
+        """PUT at +36% should HOLD — no profit target, trail locks in gains."""
         fsm = ExitFSM(PUT_SCALP_CONFIG)
         state = TradeState(
             trade_id=1, ticker="QQQ", option_type="put",
@@ -306,15 +346,14 @@ class TestPutScalpExits:
         )
         now = datetime(2026, 5, 26, 13, 10)  # 10min past entry (past grace)
         action = fsm.evaluate(
-            state=state, current_premium=0.39,  # +56%
-            bid=0.38, ask=0.40, now_et=now,
+            state=state, current_premium=0.34,  # +36%
+            bid=0.33, ask=0.35, now_et=now,
             current_underlying=449.0, minutes_to_close=50.0,
         )
-        assert action.should_exit
-        assert action.reason == ExitReason.PROFIT_TARGET
+        assert not action.should_exit  # trail system manages profitable PUTs
 
     def test_put_stop_loss_exit(self):
-        """PUT at -60% should trigger hard stop."""
+        """PUT at -55% should trigger hard stop (50% threshold)."""
         fsm = ExitFSM(PUT_SCALP_CONFIG)
         state = TradeState(
             trade_id=2, ticker="QQQ", option_type="put",
@@ -323,15 +362,14 @@ class TestPutScalpExits:
         )
         now = datetime(2026, 5, 26, 13, 10)
         action = fsm.evaluate(
-            state=state, current_premium=0.10,  # -60%
-            bid=0.09, ask=0.11, now_et=now,
+            state=state, current_premium=0.11,  # -56%
+            bid=0.10, ask=0.12, now_et=now,
             current_underlying=451.0, minutes_to_close=50.0,
         )
         assert action.should_exit
-        assert action.reason == ExitReason.HARD_STOP
 
-    def test_put_max_hold_exit(self):
-        """PUT held 65 minutes should trigger theta bleed (60min max hold)."""
+    def test_put_no_hold_limit(self):
+        """PUT held 65 minutes should HOLD — no time limit, trail handles exits."""
         fsm = ExitFSM(PUT_SCALP_CONFIG)
         state = TradeState(
             trade_id=3, ticker="QQQ", option_type="put",
@@ -344,8 +382,7 @@ class TestPutScalpExits:
             bid=0.21, ask=0.23, now_et=now,
             current_underlying=450.2, minutes_to_close=55.0,
         )
-        assert action.should_exit
-        assert action.reason == ExitReason.THETA_BLEED
+        assert not action.should_exit  # no hold time limit for PUTs
 
     def test_put_holds_during_grace(self):
         """PUT within grace period should HOLD (unless at backstop)."""
@@ -379,6 +416,84 @@ class TestPutScalpExits:
         )
         assert action.should_exit
         assert action.reason == ExitReason.HARD_STOP
+
+    def test_put_scalp_trail_fires(self):
+        """PUT peaked +25%, faded below 60% of peak → scalp trail exits."""
+        fsm = ExitFSM(PUT_SCALP_CONFIG)
+        state = TradeState(
+            trade_id=6, ticker="SPY", option_type="put",
+            entry_premium=0.20, entry_time=datetime(2026, 5, 26, 13, 0),
+            contracts=10, entry_underlying_price=450.0, dte=0,
+        )
+        # Build peak first
+        now = datetime(2026, 5, 26, 13, 6)
+        fsm.evaluate(
+            state=state, current_premium=0.25,  # +25% (sets peak)
+            bid=0.24, ask=0.26, now_et=now,
+            current_underlying=449.0, minutes_to_close=50.0,
+        )
+        # Now fade to 60% of peak gain: peak_gain=$0.05, 60% = $0.03, floor = 0.20 + 0.03 = 0.23
+        # Premium at $0.209 = keeping only 18% of gains → below 60% threshold
+        now2 = datetime(2026, 5, 26, 13, 8)
+        action = fsm.evaluate(
+            state=state, current_premium=0.209,
+            bid=0.20, ask=0.22, now_et=now2,
+            current_underlying=449.5, minutes_to_close=48.0,
+        )
+        assert action.should_exit
+        assert action.reason == ExitReason.SCALP_TRAIL
+
+    def test_put_soft_trail_fires(self):
+        """PUT peaked +30%, faded below soft trail floor → exits."""
+        fsm = ExitFSM(PUT_SCALP_CONFIG)
+        state = TradeState(
+            trade_id=7, ticker="SPY", option_type="put",
+            entry_premium=0.20, entry_time=datetime(2026, 5, 26, 13, 0),
+            contracts=10, entry_underlying_price=450.0, dte=0,
+        )
+        # Build peak at +30%
+        now = datetime(2026, 5, 26, 13, 6)
+        fsm.evaluate(
+            state=state, current_premium=0.26,  # +30%
+            bid=0.25, ask=0.27, now_et=now,
+            current_underlying=449.0, minutes_to_close=50.0,
+        )
+        # Soft trail: keep 60% of gains. peak=$0.26, gain=$0.06, keep=0.036, floor=0.236
+        # Premium at $0.225 < floor → should exit
+        now2 = datetime(2026, 5, 26, 13, 8)
+        action = fsm.evaluate(
+            state=state, current_premium=0.225,
+            bid=0.22, ask=0.23, now_et=now2,
+            current_underlying=449.5, minutes_to_close=48.0,
+        )
+        assert action.should_exit
+        assert action.reason in (ExitReason.SCALP_TRAIL, ExitReason.SOFT_TRAIL)
+
+    def test_put_trail_exits_on_large_drop(self):
+        """PUT peaked +25%, drops 40% from peak → trail system exits (soft or adaptive)."""
+        fsm = ExitFSM(PUT_SCALP_CONFIG)
+        state = TradeState(
+            trade_id=8, ticker="SPY", option_type="put",
+            entry_premium=1.00, entry_time=datetime(2026, 5, 26, 13, 0),
+            contracts=5, entry_underlying_price=450.0, dte=0,
+        )
+        # Build peak at +25% ($1.25)
+        now = datetime(2026, 5, 26, 13, 6)
+        fsm.evaluate(
+            state=state, current_premium=1.25,  # +25%
+            bid=1.24, ask=1.26, now_et=now,
+            current_underlying=448.0, minutes_to_close=50.0,
+        )
+        # Drop 40% from peak: peak=$1.25, price=$0.75
+        # Soft trail (gate 7) fires before adaptive trail (gate 8)
+        now2 = datetime(2026, 5, 26, 13, 10)
+        action = fsm.evaluate(
+            state=state, current_premium=0.75,  # 40% drop from peak
+            bid=0.74, ask=0.76, now_et=now2,
+            current_underlying=449.0, minutes_to_close=46.0,
+        )
+        assert action.should_exit
+        assert action.reason in (ExitReason.SOFT_TRAIL, ExitReason.ADAPTIVE_TRAIL)
 
 
 # ---------------------------------------------------------------------------
@@ -436,15 +551,14 @@ class TestMonitorBridgePutConfig:
 
         now = datetime(2026, 5, 26, 13, 10)  # 10min past entry, past grace
 
-        # At +55% gain, should trigger profit target
+        # At +56% gain, should HOLD — no profit target, trail locks in gains
         reason, desc = bridge.evaluate(
             trade=trade,
             exit_premium=0.39,  # +56%
             current_price=519.0,
             now_et=now,
         )
-        assert reason == "profit_target"
-        assert "50.0%" in desc or "Profit target" in desc
+        assert reason is None  # trail system manages, no immediate exit
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +596,24 @@ class TestMixedPortfolio:
         settings = _make_settings(tmp_db_path)
         trader = PaperTrader(settings)
         await trader.init()
+
+        # Mock candle cache with bearish data for PutBearishConfirmGate
+        from options_owl.collectors.candle_cache import CandleBar
+        # 6 bearish bars: close < open, close < vwap
+        bearish_bars = [
+            CandleBar(0, 522.0, 522.5, 519.0, 519.5, 1000, vwap=521.0),
+            CandleBar(0, 520.0, 520.5, 518.0, 518.5, 1000, vwap=520.0),
+            CandleBar(0, 519.0, 519.5, 517.0, 517.5, 1000, vwap=519.0),
+            CandleBar(0, 518.0, 518.5, 516.0, 516.5, 1000, vwap=518.0),
+            CandleBar(0, 517.0, 517.5, 515.0, 515.5, 1000, vwap=517.0),
+            CandleBar(0, 516.0, 516.5, 514.0, 514.5, 1000, vwap=516.0),
+        ]
+        mock_candle_cache = AsyncMock()
+        mock_candle_cache.get_candle_data = AsyncMock(return_value={
+            "5m": bearish_bars,
+            "indicators": {"5m": {"rsi": 38.0, "ema9": 515.0, "ema21": 518.0}},
+        })
+        trader._candle_cache = mock_candle_cache
 
         call_sig = _make_call_signal(ticker="QQQ", premium=1.80, strike=450.0)
         put_sig = _make_put_signal(ticker="SPY", premium=0.30, strike=520.0)

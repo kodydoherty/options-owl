@@ -211,6 +211,73 @@ async def polygon_option_quote(
         return None
 
 
+async def polygon_intraday_1m(api_key: str, symbol: str, date: str, limit: int = 30) -> list[dict]:
+    """Fetch today's 1-min bars for a symbol (option contract OR underlying ticker).
+
+    Returns up to `limit` most-recent bars oldest→newest, each {close, volume}. Used by
+    serve-time P(runner) feature assembly. Empty list on any failure (caller degrades gracefully).
+    """
+    if not api_key:
+        return []
+    url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/minute/{date}/{date}"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, params={"apiKey": api_key, "adjusted": "true",
+                                                 "sort": "desc", "limit": limit})
+        if resp.status_code != 200:
+            return []
+        rows = resp.json().get("results", []) or []
+        bars = [{"close": float(b.get("c") or 0), "volume": float(b.get("v") or 0)} for b in rows]
+        bars.reverse()  # oldest -> newest
+        return bars
+    except Exception as e:
+        logger.debug(f"Polygon intraday 1m failed for {symbol}: {e}")
+        return []
+
+
+async def polygon_option_snapshot_greeks(
+    api_key: str,
+    ticker: str,
+    strike: float,
+    expiry: str,
+    option_type: str,
+) -> dict | None:
+    """Fetch greeks + IV + volume + NBBO for one option (Polygon /v3/snapshot, Options add-on).
+
+    Returns {bid, ask, mid, iv, delta, theta, vega, volume, bid_size, ask_size} or None.
+    Used by serve-time P(runner) feature assembly (flow_runner). Greeks are |abs| (model uses abs delta).
+    """
+    if not api_key:
+        return None
+    contract = build_option_contract_ticker(ticker, strike, expiry, option_type)
+    url = f"https://api.polygon.io/v3/snapshot/options/{ticker.upper()}/{contract}"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, params={"apiKey": api_key})
+        if resp.status_code != 200:
+            return None
+        r = resp.json().get("results", {})
+        g = r.get("greeks", {}) or {}
+        q = r.get("last_quote", {}) or {}
+        day = r.get("day", {}) or {}
+        bid = float(q.get("bid") or 0)
+        ask = float(q.get("ask") or 0)
+        return {
+            "bid": round(bid, 4), "ask": round(ask, 4),
+            "mid": round((bid + ask) / 2, 4) if bid > 0 and ask > 0 else 0.0,
+            "iv": float(r.get("implied_volatility") or 0),
+            "delta": abs(float(g.get("delta") or 0)),
+            "theta": float(g.get("theta") or 0),
+            "vega": float(g.get("vega") or 0),
+            "volume": int(day.get("volume") or 0),
+            "bid_size": float(q.get("bid_size") or 0),
+            "ask_size": float(q.get("ask_size") or 0),
+        }
+    except Exception as e:
+        logger.debug(f"Polygon greeks snapshot failed for {ticker} ${strike} {option_type}: {e}")
+        return None
+
+
 async def polygon_option_chain(
     api_key: str,
     ticker: str,

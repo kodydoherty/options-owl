@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import datetime
+from unittest.mock import MagicMock
 
 import aiosqlite
 import pytest
@@ -202,8 +202,8 @@ class TestSizingWith15Pct4C:
             assert result == expected, f"Score {score} got {result}, expected {expected}"
 
     def test_below_floor_rejected(self):
-        """Score 74 → 0 contracts."""
-        assert score_to_contracts(74, cost_per_contract=150, balance=8227) == 0
+        """Score 61 → 0 contracts (below the 62 floor)."""
+        assert score_to_contracts(61, cost_per_contract=150, balance=8227) == 0
 
     def test_all_scores_respect_15pct_cap(self):
         """All scores cap at 15% of portfolio."""

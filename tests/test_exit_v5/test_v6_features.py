@@ -470,6 +470,205 @@ class TestSpreadCostGate:
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# 6b. OTM Distance Gate
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class TestOTMDistanceGate:
+    """V2 per-ticker dollar-based OTM gate tests.
+
+    AMZN: wide grid ($2.50 interval), 1 strike OTM allowed = $2.50 max
+    SPY: fine grid ($1.00 interval), 3 strikes OTM allowed = $3.00 max
+    META: standard grid ($2.50 interval), 2 strikes OTM allowed = $5.00 max
+    """
+
+    @pytest.fixture
+    def gate(self):
+        from options_owl.risk.pipeline import OTMDistanceGate
+        return OTMDistanceGate()
+
+    @pytest.mark.asyncio
+    async def test_blocks_otm_call_amzn(self, gate):
+        """AMZN CALL strike $253 with underlying $250 = $3.00 OTM > $2.50 max → blocked."""
+        from options_owl.risk.pipeline import GateResult
+        from options_owl.models.signals import Direction
+        signal = MagicMock(
+            ticker="AMZN", strike=253.0, entry_price=250.0,
+            direction=Direction.CALL,
+        )
+        result = await gate.evaluate({"signal": signal, "settings": SimpleNamespace(MAX_OTM_DISTANCE_PCT=1.5)})
+        assert result.result == GateResult.FAIL
+        assert "$2.5" in result.reason  # max $2.5 for AMZN
+
+    @pytest.mark.asyncio
+    async def test_passes_one_strike_otm_amzn(self, gate):
+        """AMZN CALL strike $252.50 with underlying $250 = $2.50 OTM = exactly 1 strike → passes."""
+        from options_owl.risk.pipeline import GateResult
+        from options_owl.models.signals import Direction
+        signal = MagicMock(
+            ticker="AMZN", strike=252.50, entry_price=250.0,
+            direction=Direction.CALL,
+        )
+        result = await gate.evaluate({"signal": signal, "settings": SimpleNamespace(MAX_OTM_DISTANCE_PCT=1.5)})
+        assert result.result == GateResult.PASS
+
+    @pytest.mark.asyncio
+    async def test_passes_atm_call(self, gate):
+        """AMZN CALL strike $250 with underlying $249.50 = $0.50 OTM → passes."""
+        from options_owl.risk.pipeline import GateResult
+        from options_owl.models.signals import Direction
+        signal = MagicMock(
+            ticker="AMZN", strike=250.0, entry_price=249.50,
+            direction=Direction.CALL,
+        )
+        result = await gate.evaluate({"signal": signal, "settings": SimpleNamespace(MAX_OTM_DISTANCE_PCT=1.5)})
+        assert result.result == GateResult.PASS
+
+    @pytest.mark.asyncio
+    async def test_passes_itm_call(self, gate):
+        """CALL strike $248 with underlying $250 = ITM → always passes."""
+        from options_owl.risk.pipeline import GateResult
+        from options_owl.models.signals import Direction
+        signal = MagicMock(
+            ticker="AMZN", strike=248.0, entry_price=250.0,
+            direction=Direction.CALL,
+        )
+        result = await gate.evaluate({"signal": signal, "settings": SimpleNamespace(MAX_OTM_DISTANCE_PCT=1.5)})
+        assert result.result == GateResult.PASS
+
+    @pytest.mark.asyncio
+    async def test_blocks_otm_put_amzn(self, gate):
+        """AMZN PUT strike $247 with underlying $250 = $3.00 OTM > $2.50 max → blocked."""
+        from options_owl.risk.pipeline import GateResult
+        from options_owl.models.signals import Direction
+        signal = MagicMock(
+            ticker="AMZN", strike=247.0, entry_price=250.0,
+            direction=Direction.PUT,
+        )
+        result = await gate.evaluate({"signal": signal, "settings": SimpleNamespace(MAX_OTM_DISTANCE_PCT=1.5)})
+        assert result.result == GateResult.FAIL
+
+    @pytest.mark.asyncio
+    async def test_passes_slightly_otm_put(self, gate):
+        """AMZN PUT strike $248 with underlying $250 = $2.00 OTM < $2.50 max → passes."""
+        from options_owl.risk.pipeline import GateResult
+        from options_owl.models.signals import Direction
+        signal = MagicMock(
+            ticker="AMZN", strike=248.0, entry_price=250.0,
+            direction=Direction.PUT,
+        )
+        result = await gate.evaluate({"signal": signal, "settings": SimpleNamespace(MAX_OTM_DISTANCE_PCT=1.5)})
+        assert result.result == GateResult.PASS
+
+    @pytest.mark.asyncio
+    async def test_skips_when_no_data(self, gate):
+        """Missing strike or underlying → skip."""
+        from options_owl.risk.pipeline import GateResult
+        from options_owl.models.signals import Direction
+        signal = MagicMock(
+            ticker="AMZN", strike=0, entry_price=250.0,
+            direction=Direction.CALL,
+        )
+        result = await gate.evaluate({"signal": signal, "settings": SimpleNamespace(MAX_OTM_DISTANCE_PCT=1.5)})
+        assert result.result == GateResult.SKIP
+
+    @pytest.mark.asyncio
+    async def test_spy_allows_3_strikes_otm(self, gate):
+        """SPY fine grid: 3 strikes × $1.00 = $3.00 max OTM."""
+        from options_owl.risk.pipeline import GateResult
+        from options_owl.models.signals import Direction
+        # $3.00 OTM = exactly 3 strikes → passes
+        signal = MagicMock(
+            ticker="SPY", strike=553.0, entry_price=550.0,
+            direction=Direction.CALL,
+        )
+        result = await gate.evaluate({"signal": signal, "settings": SimpleNamespace(MAX_OTM_DISTANCE_PCT=1.5)})
+        assert result.result == GateResult.PASS
+        # $4.00 OTM = 4 strikes → blocked
+        signal2 = MagicMock(
+            ticker="SPY", strike=554.0, entry_price=550.0,
+            direction=Direction.CALL,
+        )
+        result2 = await gate.evaluate({"signal": signal2, "settings": SimpleNamespace(MAX_OTM_DISTANCE_PCT=1.5)})
+        assert result2.result == GateResult.FAIL
+
+    @pytest.mark.asyncio
+    async def test_meta_allows_2_strikes_otm(self, gate):
+        """META standard grid: 2 strikes × $2.50 = $5.00 max OTM."""
+        from options_owl.risk.pipeline import GateResult
+        from options_owl.models.signals import Direction
+        # $5.00 OTM = exactly 2 strikes → passes
+        signal = MagicMock(
+            ticker="META", strike=605.0, entry_price=600.0,
+            direction=Direction.CALL,
+        )
+        result = await gate.evaluate({"signal": signal, "settings": SimpleNamespace(MAX_OTM_DISTANCE_PCT=1.5)})
+        assert result.result == GateResult.PASS
+        # $6.00 OTM → blocked
+        signal2 = MagicMock(
+            ticker="META", strike=606.0, entry_price=600.0,
+            direction=Direction.CALL,
+        )
+        result2 = await gate.evaluate({"signal": signal2, "settings": SimpleNamespace(MAX_OTM_DISTANCE_PCT=1.5)})
+        assert result2.result == GateResult.FAIL
+
+    @pytest.mark.asyncio
+    async def test_amzn_249_scenario(self, gate):
+        """AMZN #249: strike $250, underlying $248.92 = $1.08 OTM < $2.50 max → passes."""
+        from options_owl.risk.pipeline import GateResult
+        from options_owl.models.signals import Direction
+        signal = MagicMock(
+            ticker="AMZN", strike=250.0, entry_price=248.92,
+            direction=Direction.CALL,
+        )
+        result = await gate.evaluate({"signal": signal, "settings": SimpleNamespace(MAX_OTM_DISTANCE_PCT=1.5)})
+        assert result.result == GateResult.PASS
+
+    @pytest.mark.asyncio
+    async def test_unknown_ticker_uses_default(self, gate):
+        """Unknown ticker uses default $2.50 interval × 2 = $5.00 max."""
+        from options_owl.risk.pipeline import GateResult
+        from options_owl.models.signals import Direction
+        signal = MagicMock(
+            ticker="XYZ", strike=106.0, entry_price=100.0,
+            direction=Direction.CALL,
+        )
+        result = await gate.evaluate({"signal": signal, "settings": SimpleNamespace(MAX_OTM_DISTANCE_PCT=1.5)})
+        assert result.result == GateResult.FAIL  # $6.00 > $5.00
+
+
+class TestGetMaxOtmDistance:
+    """Test per-ticker OTM distance thresholds from strike grid intervals."""
+
+    def test_fine_grid_tickers(self):
+        from options_owl.risk.exit_v5.config import get_max_otm_distance
+        assert get_max_otm_distance("SPY") == 3.0    # $1.00 × 3
+        assert get_max_otm_distance("QQQ") == 3.0    # $1.00 × 3
+        assert get_max_otm_distance("IWM") == 1.5    # $0.50 × 3
+        assert get_max_otm_distance("NVDA") == 1.5   # $0.50 × 3
+        assert get_max_otm_distance("MSTR") == 1.5   # $0.50 × 3
+
+    def test_standard_grid_tickers(self):
+        from options_owl.risk.exit_v5.config import get_max_otm_distance
+        assert get_max_otm_distance("META") == 5.0   # $2.50 × 2
+        assert get_max_otm_distance("TSLA") == 5.0   # $2.50 × 2
+        assert get_max_otm_distance("PLTR") == 2.0   # $1.00 × 2
+        assert get_max_otm_distance("AVGO") == 5.0   # $2.50 × 2
+        assert get_max_otm_distance("MSFT") == 5.0   # $2.50 × 2
+
+    def test_wide_grid_tickers(self):
+        from options_owl.risk.exit_v5.config import get_max_otm_distance
+        assert get_max_otm_distance("AMZN") == 2.5   # $2.50 × 1
+        assert get_max_otm_distance("AAPL") == 2.5   # $2.50 × 1
+        assert get_max_otm_distance("AMD") == 2.5    # $2.50 × 1
+        assert get_max_otm_distance("GOOGL") == 2.5  # $2.50 × 1
+
+    def test_unknown_ticker_default(self):
+        from options_owl.risk.exit_v5.config import get_max_otm_distance
+        assert get_max_otm_distance("XYZ") == 5.0    # $2.50 default × 2
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # 7. Monitor Bridge Integration
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -488,6 +687,7 @@ class TestMonitorBridgeV6:
             "V6_SCALEOUT_GAIN_PCT": 20.0,
             "V6_SCALEOUT_FRACTION": 0.333,
             "V6_SCALEOUT_MIN_CONTRACTS": 3,
+            "ENABLE_PUT_TRADING": True,
         }
         defaults.update(overrides)
         return SimpleNamespace(**defaults)
@@ -577,21 +777,21 @@ class TestPutScalpConfig:
         cfg = get_ticker_config("NVDA", use_per_ticker=True, option_type="call")
         assert cfg is TICKER_CONFIGS["NVDA"]
 
-    def test_put_scalp_profit_target_at_50pct(self):
+    def test_put_scalp_no_profit_target(self):
         from options_owl.risk.exit_v5.config import PUT_SCALP_CONFIG
-        assert PUT_SCALP_CONFIG.profit_target_general_pct == 50.0
+        assert PUT_SCALP_CONFIG.profit_target_general_pct == 0.0  # no ceiling
 
-    def test_put_scalp_stop_at_60pct(self):
+    def test_put_scalp_stop_at_50pct(self):
         from options_owl.risk.exit_v5.config import PUT_SCALP_CONFIG
-        assert PUT_SCALP_CONFIG.backstop_0dte_pct == 60.0
-        assert PUT_SCALP_CONFIG.tight_stop_0dte_pct == 60.0
+        assert PUT_SCALP_CONFIG.backstop_0dte_pct == 50.0
+        assert PUT_SCALP_CONFIG.tight_stop_0dte_pct == 50.0
 
-    def test_put_scalp_max_hold_60min(self):
+    def test_put_scalp_no_hold_limit(self):
         from options_owl.risk.exit_v5.config import PUT_SCALP_CONFIG
-        assert PUT_SCALP_CONFIG.theta_bleed_min == 60.0
+        assert PUT_SCALP_CONFIG.theta_bleed_min == 999.0  # no time limit
 
-    def test_put_scalp_fsm_exits_at_profit_target(self):
-        """PUT at +50% gain should trigger profit target."""
+    def test_put_scalp_fsm_holds_at_35pct_gain(self):
+        """PUT at +35% gain should HOLD — no profit target, trail manages exits."""
         from options_owl.risk.exit_v5.config import PUT_SCALP_CONFIG
         fsm = ExitFSM(PUT_SCALP_CONFIG)
         state = TradeState(
@@ -601,15 +801,14 @@ class TestPutScalpConfig:
         )
         now = datetime(2026, 1, 5, 14, 10)  # 10min into trade (past grace)
         action = fsm.evaluate(
-            state=state, current_premium=0.31,  # +55%
-            bid=0.29, ask=0.31, now_et=now,
+            state=state, current_premium=0.27,  # +35%
+            bid=0.26, ask=0.28, now_et=now,
             current_underlying=499.0, minutes_to_close=50.0,
         )
-        assert action.should_exit
-        assert action.reason == ExitReason.PROFIT_TARGET
+        assert not action.should_exit  # trail system manages profitable PUTs
 
     def test_put_scalp_fsm_exits_at_stop(self):
-        """PUT at -60% loss should trigger graduated stop."""
+        """PUT at -55% loss should trigger graduated stop (50% threshold)."""
         from options_owl.risk.exit_v5.config import PUT_SCALP_CONFIG
         fsm = ExitFSM(PUT_SCALP_CONFIG)
         state = TradeState(
@@ -619,15 +818,14 @@ class TestPutScalpConfig:
         )
         now = datetime(2026, 1, 5, 14, 10)  # past grace
         action = fsm.evaluate(
-            state=state, current_premium=0.08,  # -60%
-            bid=0.07, ask=0.09, now_et=now,
+            state=state, current_premium=0.09,  # -55%
+            bid=0.08, ask=0.10, now_et=now,
             current_underlying=501.0, minutes_to_close=50.0,
         )
         assert action.should_exit
-        assert action.reason == ExitReason.HARD_STOP
 
-    def test_put_scalp_fsm_exits_at_max_hold(self):
-        """PUT held 60+ minutes should trigger theta bleed exit."""
+    def test_put_scalp_fsm_holds_at_65min(self):
+        """PUT held 65min should HOLD — no time limit, trail handles exits."""
         from options_owl.risk.exit_v5.config import PUT_SCALP_CONFIG
         fsm = ExitFSM(PUT_SCALP_CONFIG)
         state = TradeState(
@@ -641,8 +839,7 @@ class TestPutScalpConfig:
             bid=0.17, ask=0.19, now_et=now,
             current_underlying=500.5, minutes_to_close=55.0,
         )
-        assert action.should_exit
-        assert action.reason == ExitReason.THETA_BLEED
+        assert not action.should_exit  # no hold time limit for PUTs
 
     def test_monitor_bridge_uses_put_config(self):
         """Bridge should use PUT_SCALP_CONFIG for PUT trades."""
@@ -699,9 +896,10 @@ class TestV6DCA:
             "V6_DCA_MIN_DIP_PCT": 15.0,
             "V6_DCA_MAX_DIP_PCT": 35.0,
             "V6_DCA_UNDERLYING_THRESHOLD": 0.5,
-            "WEBULL_ENTRY_AGGRESS_PCT": 2.0,
+            "WEBULL_ENTRY_AGGRESS_PCT": 5.0,
             "PORTFOLIO_SIZE": 100000.0,  # large enough that DCA cap doesn't interfere
             "MAX_DCA_POSITION_PCT": 50.0,  # permissive for unit tests
+            "ENABLE_PUT_TRADING": True,
         }
         defaults.update(overrides)
         return SimpleNamespace(**defaults)

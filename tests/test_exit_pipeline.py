@@ -11,7 +11,7 @@ Validates that:
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -28,14 +28,8 @@ from options_owl.risk.pipeline import (
     ProfitLockExitGate,
     ProfitRetraceExitGate,
     StopLossExitGate,
-    Target1ExitGate,
-    Target2ExitGate,
-    Target3ExitGate,
-    Target4ExitGate,
-    Target5ExitGate,
     ThetaBleedExitGate,
     TimeDecayZoneExitGate,
-    TimeExpiryExitGate,
     TrailingStopExitGate,
     BEClampExitGate,
     SoftTrailExitGate,
@@ -49,11 +43,7 @@ from options_owl.risk.pipeline import (
 from options_owl.risk.vinny_strategy import (
     check_anti_chase,
     check_consecutive_loser_pause,
-    check_theta_bleed,
-    check_time_decay_no_new_high,
-    compute_vix_adjusted_trail,
     evaluate_adaptive_trail,
-    is_time_decay_zone,
     score_to_contracts,
 )
 
@@ -728,10 +718,10 @@ class TestProfitLockRatchet:
 
 
 class TestScoreBasedSizing:
-    """Verify score_to_contracts returns correct values (flat sizing above 78)."""
+    """Verify score_to_contracts returns correct values (flat sizing above 75)."""
 
-    def test_below_78_returns_zero(self):
-        assert score_to_contracts(77) == 0
+    def test_below_75_returns_zero(self):
+        assert score_to_contracts(61) == 0
         assert score_to_contracts(50) == 0
         assert score_to_contracts(0) == 0
 
@@ -741,7 +731,7 @@ class TestScoreBasedSizing:
         assert score_to_contracts(130) == 4
         assert score_to_contracts(110) == 4
         assert score_to_contracts(95) == 4
-        assert score_to_contracts(78) == 4
+        assert score_to_contracts(75) == 4
 
     def test_dollar_target_sizing(self):
         # $10k balance, 75% risk cap, 4 concurrent → $1875 per slot

@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Option Data — Streaming Already Works, Scanner Was Blind</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-light: #dbeafe;
+            --danger: #dc2626;
+            --warning: #f59e0b;
+            --success: #16a34a;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-600: #4b5563;
+            --gray-800: #1f2937;
+            --gray-900: #111827;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            color: var(--gray-800);
+            line-height: 1.6;
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 2rem;
+            background: #fff;
+        }
+        header {
+            border-bottom: 3px solid var(--primary);
+            padding-bottom: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        header h1 { font-size: 1.75rem; color: var(--gray-900); }
+        .meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.5rem 2rem;
+            margin-top: 1rem;
+            font-size: 0.875rem;
+            color: var(--gray-600);
+        }
+        .meta dt { font-weight: 600; display: inline; }
+        .meta dd { display: inline; margin-left: 0.25rem; }
+        .status-badge {
+            display: inline-block;
+            padding: 0.125rem 0.625rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .status-active { background: var(--primary-light); color: var(--primary); }
+        section { margin-bottom: 2rem; }
+        section > h2 {
+            font-size: 1.25rem;
+            color: var(--primary);
+            border-bottom: 1px solid var(--gray-200);
+            padding-bottom: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        section > h3 { font-size: 1rem; margin: 1rem 0 0.5rem; color: var(--gray-900); }
+        ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+        li { margin-bottom: 0.25rem; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1rem;
+            font-size: 0.875rem;
+        }
+        th, td {
+            text-align: left;
+            padding: 0.5rem 0.75rem;
+            border: 1px solid var(--gray-200);
+        }
+        th { background: var(--gray-50); font-weight: 600; }
+        pre {
+            background: var(--gray-50);
+            border: 1px solid var(--gray-200);
+            border-radius: 0.375rem;
+            padding: 1rem;
+            overflow-x: auto;
+            font-size: 0.8125rem;
+            line-height: 1.5;
+            margin-bottom: 1rem;
+        }
+        code { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: 0.8125rem; }
+        .callout {
+            padding: 0.75rem 1rem;
+            border-left: 4px solid var(--primary);
+            background: var(--primary-light);
+            border-radius: 0 0.375rem 0.375rem 0;
+            margin-bottom: 1rem;
+            font-size: 0.875rem;
+        }
+        .callout.danger { border-left-color: var(--danger); background: #fef2f2; }
+        .callout.warning { border-left-color: var(--warning); background: #fffbeb; }
+        .negative { color: var(--danger); font-weight: 600; }
+        .positive { color: var(--success); font-weight: 600; }
+        .diagram {
+            background: var(--gray-50);
+            border: 1px solid var(--gray-200);
+            border-radius: 0.375rem;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            font-family: 'SF Mono', monospace;
+            font-size: 0.8125rem;
+            line-height: 1.8;
+            white-space: pre;
+        }
+        footer {
+            margin-top: 3rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--gray-200);
+            font-size: 0.75rem;
+            color: var(--gray-600);
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Real-Time Option Data — Streaming Already Works, Scanner Was Blind</h1>
+    <div class="meta">
+        <div><dt>Spec ID:</dt><dd>OWL-012</dd></div>
+        <div><dt>Status:</dt><dd><span class="status-badge status-active">Active</span></dd></div>
+        <div><dt>Project:</dt><dd>OptionsOwl</dd></div>
+        <div><dt>Category:</dt><dd>infrastructure</dd></div>
+        <div><dt>Created:</dt><dd>2026-06-01</dd></div>
+        <div><dt>Author:</dt><dd>Claude + Kody</dd></div>
+    </div>
+</header>
+
+<section>
+    <h2>1. Discovery: Streaming Was Already Working</h2>
+    <div class="callout">
+        <strong>Key finding (2026-06-01):</strong> The FlowCollector in the harvester ALREADY streams
+        real-time option quotes via Polygon WebSocket and publishes full snapshots (bid/ask/greeks) to
+        Redis every 1 second. The data was there all along — the ML scanner just never read it for PUTs.
+    </div>
+
+    <p>The original diagnosis was that the scanner had a 60-90 second latency due to REST polling.
+    Investigation revealed the FlowCollector WebSocket was providing <span class="positive">1-second freshness</span>
+    for ALL option types (calls AND puts) across 26 tickers. The actual bugs were:</p>
+
+    <ol>
+        <li><strong>OWL-011 (FIXED):</strong> Scanner hardcoded <code>"call"</code> in Redis key lookup.
+        PUT premium data was in Redis but never read. Fixed 2026-06-01.</li>
+        <li><strong>Remaining:</strong> Scanner tracks only CALL time series in <code>TickerScanState</code>.
+        PUT-specific premium patterns cannot be detected by the ML model.</li>
+    </ol>
+
+    <h3>Actual Latency Chain (with fix deployed)</h3>
+    <table>
+        <thead>
+            <tr><th>Step</th><th>Latency</th><th>Source</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>FlowCollector receives Polygon WS quote</td><td class="positive">&lt;100ms</td><td>WebSocket push</td></tr>
+            <tr><td>Buffer + flush to Redis</td><td>~1s</td><td>Redis SET (1s flush loop)</td></tr>
+            <tr><td>Scanner reads from Redis</td><td>~15s</td><td>SCAN_INTERVAL_SECONDS=15</td></tr>
+            <tr><td>ML model runs</td><td>~50ms</td><td>LightGBM inference</td></tr>
+            <tr><td>PUT premium lookup from Redis (NEW)</td><td>~10ms</td><td>Redis GET</td></tr>
+            <tr><td><strong>Total worst case</strong></td><td><strong>~16s</strong></td><td></td></tr>
+        </tbody>
+    </table>
+    <p>This is already a <span class="positive">10x improvement</span> over the original 150s estimate.
+    Smart entry deviation check may still be needed as a safety gate, but deviations should now be &lt;10%
+    instead of 100-1000%.</p>
+</section>
+
+<section>
+    <h2>2. Current Architecture (Already Streaming)</h2>
+
+    <div class="diagram">WORKING NOW:
+  Polygon Options WS -(real-time)-> FlowCollector -(1s flush)-> Redis snapshots
+  Scanner -(15s poll)-> Redis GET owl:snapshot:{T}:{type}:{K}:{exp} -> ML -> Trade
+
+  FlowCollector subscribed to 26 tickers (T.O:* trades + Q.O:* quotes)
+  Publishes: owl:snapshot (full greeks), owl:option (premium only)
+  Both CALL and PUT data available in Redis</div>
+
+    <h3>2.1 What's Working</h3>
+    <ol>
+        <li><strong>FlowCollector WS</strong> connected to <code>wss://socket.polygon.io/options</code> — 26 tickers</li>
+        <li><strong><code>_process_quote()</code></strong> parses bid/ask, computes greeks (BS model), buffers full snapshot</li>
+        <li><strong><code>_redis_quote_flush_loop()</code></strong> publishes to Redis every 1 second</li>
+        <li><strong>Both CALL and PUT</strong> snapshots available via <code>owl:snapshot:{ticker}:{type}:{strike}:{expiry}</code></li>
+        <li><strong>Scanner reads from Redis</strong> every 15 seconds — gets 1s-fresh data</li>
+        <li><strong>OWL-011 fix</strong> enables PUT premium lookup when direction=PUT (deployed 2026-06-01)</li>
+    </ol>
+</section>
+
+<section>
+    <h2>3. Remaining Work</h2>
+
+    <h3>Phase 1: Dual CALL+PUT State Tracking (improve signal quality)</h3>
+    <table>
+        <thead>
+            <tr><th>#</th><th>Task</th><th>Status</th><th>Details</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>1.1</td>
+                <td>OWL-011: PUT premium lookup after direction</td>
+                <td class="positive">DONE</td>
+                <td>Scanner fetches PUT snapshot from Redis when direction=PUT. Deployed 2026-06-01.</td>
+            </tr>
+            <tr>
+                <td>1.2</td>
+                <td>Dual TickerScanState (CALL + PUT)</td>
+                <td>TODO</td>
+                <td>Track separate time series for call and put premiums. ML model runs on both.
+                Enables PUT-specific pattern detection instead of "CALL pattern + direction flip".</td>
+            </tr>
+            <tr>
+                <td>1.3</td>
+                <td>Widen or remove smart entry deviation for ML signals</td>
+                <td>TODO</td>
+                <td>With 1s-fresh Redis data, scanner premium matches live price. The 75% deviation gate
+                is too aggressive for ML signals. Options: (a) widen to 150%, (b) skip for ML-sourced,
+                (c) use Redis timestamp to verify freshness instead of price deviation.</td>
+            </tr>
+            <tr>
+                <td>1.4</td>
+                <td>Fix score floor mismatch (75 vs 78)</td>
+                <td>TODO</td>
+                <td>Pipeline approves at score &ge; 75, sizing rejects below 78. IWM CALL score=75 was
+                approved then killed by sizing. Align to one threshold.</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>Phase 2: Position Monitor Uses Redis Streaming Data</h3>
+    <table>
+        <thead>
+            <tr><th>#</th><th>Task</th><th>Status</th><th>Details</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>2.1</td>
+                <td>Read open position premiums from Redis first</td>
+                <td>TODO</td>
+                <td>Position monitor currently polls Polygon REST for premium. FlowCollector already
+                publishes the same data to Redis. Read from Redis (1s fresh) before REST fallback.</td>
+            </tr>
+            <tr>
+                <td>2.2</td>
+                <td>Faster exit cycle when Redis data is fresh</td>
+                <td>TODO</td>
+                <td>If Redis snapshot is &lt;5s old, evaluate exit immediately. Currently fixed 5s poll.
+                Could reduce to 1-2s for real-time exits on bid disappearance / stop triggers.</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>Phase 3: Expand Scan Window (stretch goal)</h3>
+    <table>
+        <thead>
+            <tr><th>#</th><th>Task</th><th>Status</th><th>Details</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>3.1</td>
+                <td>Extend ML_SCAN_END_MIN beyond 90 (11:00 AM)</td>
+                <td>TODO</td>
+                <td>Current scan window is 9:35-11:00 AM. With real-time data, scanning through
+                1:00 PM or later could capture afternoon signals. Today's AAPL PUT signals at
+                min=60-84 would have been in-window but were after the restart at min=130.</td>
+            </tr>
+        </tbody>
+    </table>
+</section>
+
+<section>
+    <h2>4. Polygon WebSocket API Details</h2>
+
+    <h3>4.1 Option Quote Channel</h3>
+    <pre><code># Subscribe to option quotes
+ws.subscribe("Q.O:O:AAPL260601C00310000")  # AAPL $310 Call, June 1 2026
+
+# Message format:
+{
+  "ev": "Q",           // event type
+  "sym": "O:AAPL...",  // option symbol
+  "bp": 3.30,          // bid price
+  "bs": 59,            // bid size
+  "ap": 3.60,          // ask price
+  "as": 47,            // ask size
+  "t": 1780327394919   // timestamp (ms)
+}</code></pre>
+
+    <h3>4.2 Option Trade Channel</h3>
+    <pre><code># Subscribe to option trades
+ws.subscribe("T.O:O:AAPL260601C00310000")
+
+# Message format:
+{
+  "ev": "T",
+  "sym": "O:AAPL...",
+  "p": 3.45,           // trade price
+  "s": 10,             // trade size
+  "t": 1780327394919
+}</code></pre>
+
+    <h3>4.3 Contract Symbol Format</h3>
+    <pre><code># O:{TICKER}{YYMMDD}{C|P}{STRIKE*1000}
+# Examples:
+O:AAPL260601C00310000   # AAPL $310 Call, June 1 2026
+O:AAPL260601P00310000   # AAPL $310 Put, June 1 2026
+O:SPY260601C00756000    # SPY $756 Call, June 1 2026</code></pre>
+
+    <h3>4.4 Subscription Limits</h3>
+    <p>Polygon Business plan: up to 1,000 concurrent WS subscriptions. With 16 tickers x 2 types (call/put) x 3 strikes (ATM +/-1) x 2 expiries = ~192 subscriptions. Well within limits.</p>
+</section>
+
+<section>
+    <h2>5. Redis Pub/Sub Schema</h2>
+    <pre><code># Channel naming
+owl:quote:{ticker}:{call|put}:{strike}:{expiry}
+
+# Example
+owl:quote:AAPL:put:310.0:2026-06-01
+
+# Message (JSON)
+{
+  "bid": 3.30,
+  "ask": 3.60,
+  "mid": 3.45,
+  "bid_size": 59,
+  "ask_size": 47,
+  "volume": 10085,
+  "t": 1780327394.919
+}
+
+# Pattern subscription (bot subscribes to all AAPL quotes)
+PSUBSCRIBE owl:quote:AAPL:*</code></pre>
+</section>
+
+<section>
+    <h2>6. Performance Impact</h2>
+    <table>
+        <thead>
+            <tr><th>Metric</th><th>Current (REST polling)</th><th>Target (WebSocket)</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>Quote latency</td><td class="negative">60-150s</td><td class="positive">&lt;1s</td></tr>
+            <tr><td>Premium accuracy at signal time</td><td class="negative">Stale (minutes old)</td><td class="positive">Real-time</td></tr>
+            <tr><td>Smart entry rejection rate</td><td class="negative">~80% (today)</td><td class="positive">~5% (only real moves)</td></tr>
+            <tr><td>Polygon API calls/min</td><td>~200 (REST)</td><td class="positive">~10 (WS keepalive)</td></tr>
+            <tr><td>Redis operations/min</td><td>~200 (GET)</td><td>~500 (pub/sub messages)</td></tr>
+            <tr><td>PUT signal coverage</td><td class="negative">0% (bug)</td><td class="positive">100%</td></tr>
+        </tbody>
+    </table>
+</section>
+
+<section>
+    <h2>7. Risks and Mitigations</h2>
+    <ul>
+        <li><strong>WS disconnects:</strong> Auto-reconnect with exponential backoff. Fall back to REST polling. Log gap duration.</li>
+        <li><strong>Data flood:</strong> Throttle ML evaluation to max once per 5s per ticker. Buffer quotes, process latest only.</li>
+        <li><strong>Redis pub/sub reliability:</strong> Pub/sub is fire-and-forget. If a bot misses a message, the next one arrives in &lt;1s. Snapshot keys remain as backup.</li>
+        <li><strong>Polygon rate limits:</strong> WS has no rate limit on reads (it's a push channel). Only subscription changes count against limits.</li>
+        <li><strong>ATM strike shifts:</strong> Monitor underlying price; when ATM shifts, unsubscribe old strikes, subscribe new ones. Do this at most once per minute to avoid thrashing.</li>
+    </ul>
+</section>
+
+<section>
+    <h2>8. Dependencies</h2>
+    <ul>
+        <li>Polygon Business plan (already active) with Options WebSocket access</li>
+        <li>Redis pub/sub (already running in production stack)</li>
+        <li>OWL-011 (CALL-only bug fix) should ship first as an immediate fix</li>
+    </ul>
+</section>
+
+<section>
+    <h2>9. Success Criteria</h2>
+    <ul>
+        <li>Scanner premium matches smart entry premium within 5% (currently 100-1000%)</li>
+        <li>PUT signals have same pass rate as CALL signals through smart entry</li>
+        <li>End-to-end latency from price change to trade decision &lt; 5 seconds</li>
+        <li>At least 3 trades executed per day on days with ML signals (currently 0)</li>
+    </ul>
+</section>
+
+<footer>
+    OptionsOwl &mdash; Infrastructure Specification | 2026-06-01
+</footer>
+
+</body>
+</html>

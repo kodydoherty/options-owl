@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Entry-Quality Score — Graduated Momentum + Conviction Sizing</title>
+<style>
+:root{--primary:#2563eb;--primary-light:#dbeafe;--danger:#dc2626;--warning:#f59e0b;--success:#16a34a;--gray-50:#f9fafb;--gray-200:#e5e7eb;--gray-600:#4b5563;--gray-800:#1f2937;--gray-900:#111827;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:var(--gray-800);line-height:1.6;max-width:980px;margin:0 auto;padding:2rem;background:#fff;}
+header{border-bottom:3px solid var(--primary);padding-bottom:1.5rem;margin-bottom:2rem;}
+header h1{font-size:1.5rem;color:var(--gray-900);}
+.meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:.5rem 2rem;margin-top:1rem;font-size:.875rem;color:var(--gray-600);}
+.meta dt{font-weight:600;display:inline;}.meta dd{display:inline;margin-left:.25rem;}
+.badge{display:inline-block;padding:.1rem .55rem;border-radius:9999px;font-size:.7rem;font-weight:700;text-transform:uppercase;background:var(--gray-200);color:var(--gray-600);}
+section{margin-bottom:1.8rem;}section>h2{font-size:1.2rem;color:var(--primary);border-bottom:1px solid var(--gray-200);padding-bottom:.4rem;margin-bottom:.9rem;}
+section>h3{font-size:1rem;margin:1rem 0 .5rem;color:var(--gray-900);}
+ul,ol{padding-left:1.5rem;margin-bottom:.75rem;}li{margin-bottom:.3rem;}
+table{width:100%;border-collapse:collapse;margin-bottom:1rem;font-size:.85rem;}th,td{text-align:left;padding:.45rem .7rem;border:1px solid var(--gray-200);vertical-align:top;}th{background:var(--gray-50);font-weight:600;}
+code{font-family:'SF Mono','Consolas',monospace;font-size:.82rem;background:var(--gray-50);padding:.05rem .25rem;border-radius:3px;}
+.callout{padding:.7rem 1rem;border-left:4px solid var(--primary);background:var(--primary-light);border-radius:0 .375rem .375rem 0;margin-bottom:1rem;font-size:.875rem;}
+.callout.danger{border-left-color:var(--danger);background:#fef2f2;}
+footer{margin-top:2.5rem;padding-top:1rem;border-top:1px solid var(--gray-200);font-size:.75rem;color:var(--gray-600);}
+</style></head>
+<body>
+<header>
+<h1>Entry-Quality Score — Graduated Momentum + Conviction Sizing</h1>
+<div class="meta">
+<div><dt>Spec ID:</dt><dd>entry-quality-score</dd></div>
+<div><dt>Status:</dt><dd><span class="badge">Todo</span></dd></div>
+<div><dt>Project:</dt><dd>OptionsOwl</dd></div>
+<div><dt>Category:</dt><dd>pipeline / experiment</dd></div>
+<div><dt>Created:</dt><dd>2026-06-11</dd></div>
+<div><dt>Depends on:</dt><dd>multi-year backfill + runner feature-analysis + sizing experiment</dd></div>
+</div>
+</header>
+
+<section>
+<h2>1. Problem — binary is the wrong shape</h2>
+<p><code>momentum_confirm</code> is currently <strong>all-or-nothing</strong>: ON blocked so much it cost <strong>+45%</strong> in the backtest; OFF let in immediate-faders (2026-06-11 live: SMCI/MSTR/PLTR peaked +4–13% then stopped, −$368 combined). One gate is trying to do two jobs with one threshold — <em>reject garbage</em> AND <em>don't reject runners</em>. A single boolean can't separate a +4% fader from a +200% runner at entry.</p>
+<div class="callout"><strong>Core idea:</strong> replace the binary momentum gate with a continuous <strong>entry-quality score</strong> that (a) hard-blocks only the clear immediate-fade signature and (b) feeds the rest into <strong>position sizing</strong> — "how much," not "yes/no." A weak-but-tradeable signal costs 1 contract, not a full-size −$158 stop; a runner-like signal gets real size.</p>
+</section>
+
+<section>
+<h2>2. Goals &amp; success criteria</h2>
+<ul>
+<li>Reduce the <strong>immediate-fade loser rate</strong> (trades that peak &lt;~15% then stop) vs momentum-off, WITHOUT cutting runner capture.</li>
+<li>Beat BOTH binary-on and binary-off on <strong>risk-adjusted return</strong> (P&amp;L + profit factor + max-DD) across multiple historical windows (OOS).</li>
+<li>Convert the quality score into a sizing multiplier so conviction → size (unifies with the sizing overhaul).</li>
+<li>Preserve / improve total P&amp;L and runner count vs the current live config (momentum-off).</li>
+</ul>
+</section>
+
+<section>
+<h2>3. Design</h2>
+<h3>3.1 Entry-quality score (0–1)</h3>
+<p>A continuous score computed at entry from <strong>serve-time-safe early features</strong> (already available or cheap to add): early follow-through (1–3 min premium/underlying momentum after the signal), price extension vs VWAP, candle structure (body/wick, direction agreement), RSI, early volume, spread, and the ML pattern-confidence. No future data.</p>
+<h3>3.2 Two outputs from one score</h3>
+<ol>
+<li><strong>Hard floor (reject):</strong> below a calibrated quality floor → block (the clear immediate-fade signature — today's +4% peakers). This is the narrow "reject garbage" job, NOT the blunt momentum_confirm.</li>
+<li><strong>Sizing multiplier:</strong> above the floor, map quality → budget% (monotonic). Low-but-tradeable → small (e.g. 1 contract / 0.3× slot); runner-like → scale up (toward the position cap). Replaces the backwards 60% confidence tier and composes with the sizing experiment's curve.</li>
+</ol>
+<h3>3.3b Reversal-confirmed entry on LIVE TICKS (the patient-entry upgrade)</h3>
+<div class="callout danger"><strong>VALIDATION RESULT (2026-06-11): REFUTED on real tick data — do not build as-is.</strong> Tick analysis of ~2.5 wk / 92 executed trades (all 5 bots) found counter-trend is NOT the fader cause (against-trend trades won MORE: 66% vs 51%; half the faders faded WITH the micro-trend), and simulated reversal-confirmed entry either missed winners or failed to filter faders (waiting pays up via theta+continuation). Direction does not separate faders. Tiny sample (caveat), but combined with confidence-scaling also overfitting OOS, the working conclusion is: faders likely can't be filtered at entry. Re-scope this spec away from entry-filtering toward (a) runner-PREDICTION for sizing-up and (b) exits/sizing. Section kept for the record.</div>
+<p>Instead of binary block (momentum_confirm) or blind wait-then-buy (current dip-confirm), a <strong>good</strong> signal that's momentarily counter-trend enters a <strong>patient-wait</strong> state and only fires when the underlying <strong>reverses into our direction</strong> — capturing a better price AND trend alignment. This is what turns "don't fight the trend" from a rejection into a timing edge.</p>
+<ul>
+<li><strong>Use live tick/quote stream, NOT 1-min candles.</strong> Current dip-confirm polls premium every ~5s and derives VWAP/support from candles — both lag up to a full bar. Detect the reversal on the real-time Polygon WS tick feed (already running via market_data_stream / FlowCollector): underlying up-ticks off a local low, micro higher-low, VWAP reclaim, short-EMA/RSI flip — sub-second, not a delayed candle close.</li>
+<li><strong>Reversal trigger (CALL):</strong> underlying stops falling and turns up (N consecutive up-ticks / higher-low / reclaim of a micro level) → enter near the local bottom with momentum now aligned. (PUT: mirror.)</li>
+<li><strong>Quality-scaled patience:</strong> a high-quality signal gets a longer wait window to find its reversal; a weak one gets little/none. Cap the window — if no reversal in the window, SKIP (this is how we avoid the fader instead of buying into it).</li>
+<li><strong>Makes both gates smart:</strong> anti_chase → "chasing is OK <em>if</em> a live-tick reversal confirms" (so we still catch runners on the turn); momentum_confirm → "wait for momentum to flip into our direction" rather than a hard block.</li>
+<li><strong>Risk:</strong> a fast reversal-then-rocket could trigger before confirmation (miss). Mitigate with a fast tick trigger + quality-scaled patience. Tune the confirmation strictness on data.</li>
+</ul>
+<div class="callout warning"><strong>Backtest-fidelity caveat:</strong> ThetaData history is 1-min bars, so the backtest can validate the <em>concept</em> (reversal-confirmed entry on 1-min) but the live tick implementation is finer — expect live to differ from backtest on this component; validate the live version with shadow/paper before full size.</div>
+
+<h3>3.3 Calibration (empirical, not hand-tuned)</h3>
+<p>Learn the quality score from the <strong>runner-vs-fader feature analysis</strong> on the backfilled ~2.75 yr: for trades that became runners (peak ≥100% / ≥200%) vs immediate-faders (peak &lt;15% → stop), find which entry features separate them, then encode that as the score (logistic/GBM on entry features → P(runner-or-good) ). The floor + sizing curve are set from this distribution, then validated OOS — not guessed.</p>
+</section>
+
+<section>
+<h2>4. Files to modify</h2>
+<table>
+<thead><tr><th>File</th><th>Change</th></tr></thead>
+<tbody>
+<tr><td>options_owl/risk/pipeline.py</td><td>Replace/augment <code>MomentumConfirmGate</code> with an entry-quality computation; gate only on the hard floor; pass the quality score downstream (ctx)</td></tr>
+<tr><td>options_owl/risk/vinny_strategy.py</td><td><code>score_to_contracts</code> consumes the quality score as the sizing multiplier (replaces the non-monotonic 60% conf tier)</td></tr>
+<tr><td>options_owl/sourcing/features/ (new or shared)</td><td>Entry-quality feature builder (serve-time-safe), shared by trainer + serving (no skew)</td></tr>
+<tr><td>scripts/backtest_gold_standard.py</td><td>Implement the graduated quality gate+sizing as togg/range flags for the sweep (smart vs binary-on vs binary-off)</td></tr>
+<tr><td>scripts/ (new)</td><td>Calibration script: fit the quality score on runner-vs-fader features; emit the floor + curve</td></tr>
+</tbody>
+</table>
+</section>
+
+<section>
+<h2>5. Testing protocol</h2>
+<ol>
+<li><strong>Runner-vs-fader feature analysis</strong> (prerequisite) → identifies the predictive early features + the fade signature.</li>
+<li>Implement the quality score + graduated gate/sizing behind backtest flags.</li>
+<li><strong>Backtest A/B/C:</strong> smart-graduated vs binary-on (current code default) vs binary-off (current live). Metrics: total P&amp;L, profit factor, max-drawdown, <strong>immediate-fade loser rate</strong> (peak&lt;15%→stop), runner count (≥100%/≥200%), avg/95th position size.</li>
+<li><strong>Multi-window walk-forward</strong> (month-by-month, 2024 → 2026) + dedicated OOS window. Reject in-sample-only winners (same discipline that caught put_bearish / the regime-0.19 threshold).</li>
+<li>Confirm the smart version beats BOTH binaries on risk-adjusted return before any live change.</li>
+</ol>
+</section>
+
+<section>
+<h2>6. Risks &amp; rollback</h2>
+<ul>
+<li><strong>Real-money entry AND sizing change</strong> — highest-leverage, highest-risk surface. Deploy only after multi-window + OOS clears; deploy via rebuild.sh; keep .env/config rollback.</li>
+<li><strong>Overfit risk</strong> — the quality score is fit on historical runners/faders; weight OOS heavily, prefer a simple robust model over a fragile high-AUC one.</li>
+<li><strong>Train/serve skew</strong> — the entry-quality features MUST be computed identically in trainer + live serving (use the shared-feature-module pattern). A unit parity test is mandatory.</li>
+<li>Interim: today's live config (momentum-off) stands until this is validated; the binary revert is available as a fallback if live losers persist.</li>
+</ul>
+</section>
+
+<section>
+<h2>7. Sequencing</h2>
+<p>Queued behind the in-flight work: <strong>multi-year backfill (running) → runner feature-analysis → THIS (entry-quality score) ⊕ conviction sizing → backtest + multi-window/OOS → deploy.</strong> This is the convergence of the three priorities: catch runners, size to conviction, stop bleeding on faders.</p>
+</section>
+
+<footer>OptionsOwl — Entry-Quality Score spec | created 2026-06-11. Related: 2026-06-11_prod-upgrades, memory: gate-sweep-findings-2026-06-10.</footer>
+</body>
+</html>

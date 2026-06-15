@@ -6,11 +6,10 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import pytest
 
 from options_owl.risk.exit_v5.config import V5Config
 from options_owl.risk.exit_v5.fsm import ExitFSM, TradeState
@@ -59,6 +58,7 @@ def _make_settings(**overrides) -> SimpleNamespace:
         ENABLE_V6_2PM_TIGHTEN=False,
         ENABLE_V6_EARLY_POP_GATE=False,
         ENABLE_V6_SIDEWAYS_SCALP=False,
+        ENABLE_PUT_TRADING=True,
         ENABLE_SCALP_TARGET=False,
         SCALP_TARGET_PCT=25.0,
         SCALP_RUNNER_CONFIRM_PCT=40.0,
@@ -399,3 +399,39 @@ class TestMorningCutoff:
         outcome = _run_gate_at_time(settings, self._et_time(11, 30))
         # 11:30 AM < 12:00 PM custom cutoff -> PASS
         assert outcome.result == GateResult.PASS
+
+    def _run_gate_flow_call(self, settings, mock_time: datetime):
+        """Run TimeOfDayGate with a flow-sourced CALL signal (bot_source.value='uw_flow')."""
+        gate = TimeOfDayGate()
+        flow_signal = SimpleNamespace(
+            score=90, bot_source=SimpleNamespace(value="uw_flow"),
+            direction=SimpleNamespace(name="CALL"),
+        )
+        ctx = {"settings": settings, "signal": flow_signal}
+
+        class _FakeDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return mock_time.astimezone(tz) if tz is not None else mock_time
+
+        loop = asyncio.new_event_loop()
+        try:
+            with patch("datetime.datetime", _FakeDatetime):
+                return loop.run_until_complete(gate.evaluate(ctx))
+        finally:
+            loop.close()
+
+    def test_flow_call_bypasses_morning_cutoff(self):
+        """UW flow CALL at 1:00 PM ET -> SKIP (all-day source). Regression: the $6.25M
+        SPY whale call on 2026-06-15 was wrongly blocked by the 11:00 ET morning cutoff."""
+        settings = _make_tod_settings(ENABLE_MORNING_CUTOFF=True)
+        outcome = self._run_gate_flow_call(settings, self._et_time(13, 0))
+        assert outcome.result == GateResult.SKIP
+        assert "flow" in outcome.reason.lower()
+
+    def test_flow_call_still_blocked_by_eod_hard_cutoff(self):
+        """Flow does NOT escape the EOD hard cutoff (3:55 PM ET) — theta crush still applies."""
+        settings = _make_tod_settings(ENABLE_MORNING_CUTOFF=True)
+        outcome = self._run_gate_flow_call(settings, self._et_time(15, 56))
+        assert outcome.result == GateResult.FAIL
+        assert "after 15:55 ET" in outcome.reason

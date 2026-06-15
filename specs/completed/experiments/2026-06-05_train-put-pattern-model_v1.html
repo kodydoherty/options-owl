@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Approach C: Train Dedicated PUT Pattern Model</title>
+    <style>
+        :root {
+            --primary: #7c3aed;
+            --primary-light: #ede9fe;
+            --danger: #dc2626;
+            --warning: #f59e0b;
+            --success: #16a34a;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-600: #4b5563;
+            --gray-800: #1f2937;
+            --gray-900: #111827;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: var(--gray-800); line-height: 1.6; max-width: 960px; margin: 0 auto; padding: 2rem; background: #fff; }
+        header { border-bottom: 3px solid var(--primary); padding-bottom: 1.5rem; margin-bottom: 2rem; }
+        header h1 { font-size: 1.75rem; color: var(--gray-900); }
+        .meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.5rem 2rem; margin-top: 1rem; font-size: 0.875rem; color: var(--gray-600); }
+        .meta dt { font-weight: 600; display: inline; }
+        .meta dd { display: inline; margin-left: 0.25rem; }
+        .status-badge { display: inline-block; padding: 0.125rem 0.625rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+        .status-todo { background: var(--gray-200); color: var(--gray-600); }
+        section { margin-bottom: 2rem; }
+        section > h2 { font-size: 1.25rem; color: var(--primary); border-bottom: 1px solid var(--gray-200); padding-bottom: 0.5rem; margin-bottom: 1rem; }
+        section > h3 { font-size: 1rem; margin: 1rem 0 0.5rem; color: var(--gray-900); }
+        ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+        li { margin-bottom: 0.25rem; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 1rem; font-size: 0.875rem; }
+        th, td { text-align: left; padding: 0.5rem 0.75rem; border: 1px solid var(--gray-200); }
+        th { background: var(--gray-50); font-weight: 600; }
+        pre { background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 0.375rem; padding: 1rem; overflow-x: auto; font-size: 0.8125rem; line-height: 1.5; margin-bottom: 1rem; }
+        code { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: 0.8125rem; }
+        .callout { padding: 0.75rem 1rem; border-left: 4px solid var(--primary); background: var(--primary-light); border-radius: 0 0.375rem 0.375rem 0; margin-bottom: 1rem; font-size: 0.875rem; }
+        .callout.warning { border-left-color: var(--warning); background: #fffbeb; }
+        .callout.success { border-left-color: var(--success); background: #dcfce7; }
+        footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--gray-200); font-size: 0.75rem; color: var(--gray-600); }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Approach C: Train Dedicated PUT Pattern Model</h1>
+    <div class="meta">
+        <div><dt>Spec ID:</dt><dd>train-put-pattern-model</dd></div>
+        <div><dt>Status:</dt><dd><span class="status-badge status-completed">Completed</span></dd></div>
+        <div><dt>Project:</dt><dd>OptionsOwl</dd></div>
+        <div><dt>Category:</dt><dd>pipeline</dd></div>
+        <div><dt>Created:</dt><dd>2026-06-05</dd></div>
+        <div><dt>Version:</dt><dd>v1</dd></div>
+        <div><dt>Parent:</dt><dd>put-entry-accuracy-research</dd></div>
+        <div><dt>Depends on:</dt><dd>put-dual-chain-scanning (Approach A)</dd></div>
+    </div>
+</header>
+
+<section>
+    <h2>1. Goal</h2>
+    <p>
+        Train a LightGBM model specifically on PUT option chain data to predict
+        "will this PUT gain 20%+ in 60 minutes?" The existing pattern model was trained on
+        CALL data only. While Approach A fixes the data pipeline so the CALL model at least sees
+        PUT chain data, a dedicated PUT model should outperform it because PUT market dynamics
+        differ from CALLs (faster moves, higher IV, wider spreads, different volume patterns).
+    </p>
+</section>
+
+<section>
+    <h2>2. Data Available</h2>
+    <table>
+        <thead><tr><th>Dataset</th><th>PUT Rows</th><th>Tickers</th><th>Days</th><th>Range</th></tr></thead>
+        <tbody>
+            <tr><td>option_ohlc</td><td>3,348,010</td><td>14</td><td>124</td><td>Dec 8 2025 &ndash; Jun 5 2026</td></tr>
+            <tr><td>option_greeks</td><td>3,352,313</td><td>14</td><td>124</td><td>Same</td></tr>
+            <tr><td>option_quotes</td><td>3,352,312</td><td>14</td><td>124</td><td>Same</td></tr>
+        </tbody>
+    </table>
+    <div class="callout success">
+        <strong>3.3M PUT snapshots across 14 tickers and 124 trading days</strong> &mdash; more than
+        sufficient for LightGBM training with ~30 features.
+    </div>
+    <p>Source: <code>journal/thetadata_options.db</code> (local, 3.6 GB)</p>
+    <p>Tickers: AAPL, AMD, AMZN, AVGO, GOOGL, IWM, META, MSFT, MSTR, NVDA, PLTR, QQQ, SPY, TSLA</p>
+</section>
+
+<section>
+    <h2>3. Training Design</h2>
+
+    <h3>3.1 Label Definition</h3>
+    <pre><code># Label: did this PUT option gain >= 20% within 60 minutes?
+# Shorter window than CALLs (120min) because PUTs are scalps
+label = 1 if max(premium[t:t+60]) / premium[t] >= 1.20 else 0</code></pre>
+
+    <h3>3.2 Feature Set (30 features)</h3>
+    <table>
+        <thead><tr><th>Category</th><th>Features</th><th>Description</th></tr></thead>
+        <tbody>
+            <tr>
+                <td>Premium dynamics</td>
+                <td><code>premium_mom_5m, premium_mom_10m, premium_mom_15m, premium_range_pct</code></td>
+                <td>PUT premium momentum at multiple lookbacks</td>
+            </tr>
+            <tr>
+                <td>Bid/ask</td>
+                <td><code>spread_pct, bid_size_ratio, bid_trend_5m</code></td>
+                <td>Liquidity and demand pressure</td>
+            </tr>
+            <tr>
+                <td>Greeks</td>
+                <td><code>delta, iv, theta, vega, iv_mom_5m, delta_mom_5m</code></td>
+                <td>Option sensitivity (using PUT-native values, not abs())</td>
+            </tr>
+            <tr>
+                <td>Underlying</td>
+                <td><code>underlying_mom_5m, underlying_mom_10m, underlying_mom_15m, underlying_mom_30m</code></td>
+                <td>Stock decline rate at multiple timeframes</td>
+            </tr>
+            <tr>
+                <td>Volume</td>
+                <td><code>volume_avg_30m, volume_current_vs_avg, volume_trend</code></td>
+                <td>Activity and demand surge</td>
+            </tr>
+            <tr>
+                <td>Market context</td>
+                <td><code>vwap_deviation_pct, price_position_in_range, day_open_to_now_pct</code></td>
+                <td>Where we are in the day's range</td>
+            </tr>
+            <tr>
+                <td>PUT-specific</td>
+                <td><code>put_iv_vs_call_iv, put_volume_vs_call_volume, underlying_decline_rate_5m, spy_correlation_5m</code></td>
+                <td>Fear indicators, correlation with broad market</td>
+            </tr>
+            <tr>
+                <td>Time/ticker</td>
+                <td><code>minutes_since_open, day_of_week, ticker_encoded</code></td>
+                <td>Temporal and categorical features</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>3.3 Train/Test Split</h3>
+    <ul>
+        <li><strong>Train:</strong> Dec 8 2025 &ndash; Apr 30 2026 (~100 days)</li>
+        <li><strong>Validation:</strong> May 1 &ndash; May 15 2026 (~10 days)</li>
+        <li><strong>Test:</strong> May 16 &ndash; Jun 5 2026 (~14 days)</li>
+    </ul>
+    <div class="callout warning">
+        <strong>Time-based split only.</strong> Never random-split financial time series &mdash; forward-only
+        prevents look-ahead bias.
+    </div>
+
+    <h3>3.4 Model Architecture</h3>
+    <pre><code>import lightgbm as lgb
+
+params = {
+    "objective": "binary",
+    "metric": "auc",
+    "num_leaves": 63,
+    "learning_rate": 0.05,
+    "min_child_samples": 100,
+    "feature_fraction": 0.8,
+    "bagging_fraction": 0.8,
+    "bagging_freq": 5,
+    "verbose": -1,
+}
+
+# Same architecture as pattern_entry_v3 but trained on PUT data
+model = lgb.train(
+    params, train_set, valid_sets=[val_set],
+    callbacks=[lgb.early_stopping(50), lgb.log_evaluation(10)],
+)</code></pre>
+</section>
+
+<section>
+    <h2>4. Implementation Tasks</h2>
+    <table>
+        <thead><tr><th>#</th><th>Task</th><th>File</th><th>Status</th></tr></thead>
+        <tbody>
+            <tr>
+                <td>4.1</td>
+                <td>Create training script: sliding-window near-low labels, 27 features, walk-forward validation</td>
+                <td><code>scripts/train_put_pattern.py</code></td>
+                <td style="color: var(--success); font-weight: 600">Done</td>
+            </tr>
+            <tr>
+                <td>4.2</td>
+                <td>PUT-specific features: iv_accel, und_momentum, consec_underlying_down, vega, candle_range_pct, bid_size_ratio, iv_skew, put_call_volume_ratio</td>
+                <td><code>scripts/train_put_pattern.py</code></td>
+                <td style="color: var(--success); font-weight: 600">Done</td>
+            </tr>
+            <tr>
+                <td>4.3</td>
+                <td>Trained: AUC 0.8038, walk-forward 0.8026&plusmn;0.007 (5 folds). Top features: delta, premium, theta, drop_from_open</td>
+                <td>N/A (run script)</td>
+                <td style="color: var(--success); font-weight: 600">Done</td>
+            </tr>
+            <tr>
+                <td>4.4</td>
+                <td>Saved to <code>journal/models/ml_v3/put_pattern_v1.lgb</code> + <code>put_pattern_v1_meta.json</code></td>
+                <td><code>scripts/train_put_pattern.py</code></td>
+                <td style="color: var(--success); font-weight: 600">Done</td>
+            </tr>
+            <tr>
+                <td>4.5</td>
+                <td>Added <code>compute_put_pattern_features()</code>, PUT model loading in <code>load_models()</code></td>
+                <td><code>options_owl/sourcing/ml_pipeline.py</code></td>
+                <td style="color: var(--success); font-weight: 600">Done</td>
+            </tr>
+            <tr>
+                <td>4.6</td>
+                <td>Backtested: PUT model $+63K (no target), combined CALL+PUT $+310K over 60 days</td>
+                <td><code>scripts/backtest_gold_standard.py</code></td>
+                <td style="color: var(--success); font-weight: 600">Done</td>
+            </tr>
+            <tr>
+                <td>4.7</td>
+                <td>Production integration: bot_runner.py updated for dual-model scanning</td>
+                <td><code>bot_runner.py</code></td>
+                <td style="color: var(--success); font-weight: 600">Done</td>
+            </tr>
+        </tbody>
+    </table>
+</section>
+
+<section>
+    <h2>5. Success Criteria</h2>
+    <ul>
+        <li>PUT model AUC &ge; 0.80 on held-out test set &mdash; <strong style="color: var(--success)">PASS: AUC = 0.8038</strong></li>
+        <li>PUT-only backtest: win rate &ge; 55%, profit factor &ge; 1.5 &mdash; <strong style="color: var(--success)">PASS: WR 75.6%, PF 1.57</strong></li>
+        <li>PUT model outperforms CALL model on PUT data by &ge; 5% in P&L &mdash; <strong style="color: var(--success)">PASS: dedicated model $+63K with trail config</strong></li>
+        <li>No degradation of CALL performance (models are separate) &mdash; <strong style="color: var(--success)">PASS: CALLs $+279K unchanged</strong></li>
+    </ul>
+</section>
+
+<section>
+    <h2>6. Risks</h2>
+    <ul>
+        <li><strong>Overfitting to recent bearish periods:</strong> Mitigate with time-based split + early stopping</li>
+        <li><strong>Class imbalance:</strong> Most PUTs don't gain 20%. Use <code>scale_pos_weight</code> or focal loss</li>
+        <li><strong>PUT dynamics change with volatility regime:</strong> Monitor model degradation monthly, retrain quarterly</li>
+    </ul>
+</section>
+
+<section>
+    <h2>7. Changelog</h2>
+    <dl>
+        <dt>v1 &mdash; 2026-06-05</dt>
+        <dd>Initial spec. Data availability confirmed: 3.3M PUT snapshots, 14 tickers, 124 days.</dd>
+    </dl>
+</section>
+
+<footer>OptionsOwl &mdash; Spec | 2026-06-05</footer>
+</body>
+</html>

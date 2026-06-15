@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PUT Crash-Day Optimization — Production Deploy</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-light: #dbeafe;
+            --danger: #dc2626;
+            --warning: #f59e0b;
+            --success: #16a34a;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-600: #4b5563;
+            --gray-800: #1f2937;
+            --gray-900: #111827;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            color: var(--gray-800);
+            line-height: 1.6;
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 2rem;
+            background: #fff;
+        }
+        header {
+            border-bottom: 3px solid var(--primary);
+            padding-bottom: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        header h1 { font-size: 1.75rem; color: var(--gray-900); }
+        .meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.5rem 2rem;
+            margin-top: 1rem;
+            font-size: 0.875rem;
+            color: var(--gray-600);
+        }
+        .meta dt { font-weight: 600; display: inline; }
+        .meta dd { display: inline; margin-left: 0.25rem; }
+        .status-badge {
+            display: inline-block;
+            padding: 0.125rem 0.625rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .status-active { background: var(--primary-light); color: var(--primary); }
+        section { margin-bottom: 2rem; }
+        section > h2 {
+            font-size: 1.25rem;
+            color: var(--primary);
+            border-bottom: 1px solid var(--gray-200);
+            padding-bottom: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        section > h3 { font-size: 1rem; margin: 1rem 0 0.5rem; color: var(--gray-900); }
+        ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+        li { margin-bottom: 0.25rem; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1rem;
+            font-size: 0.875rem;
+        }
+        th, td {
+            text-align: left;
+            padding: 0.5rem 0.75rem;
+            border: 1px solid var(--gray-200);
+        }
+        th { background: var(--gray-50); font-weight: 600; }
+        pre {
+            background: var(--gray-50);
+            border: 1px solid var(--gray-200);
+            border-radius: 0.375rem;
+            padding: 1rem;
+            overflow-x: auto;
+            font-size: 0.8125rem;
+            line-height: 1.5;
+            margin-bottom: 1rem;
+        }
+        code { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: 0.8125rem; }
+        .callout {
+            padding: 0.75rem 1rem;
+            border-left: 4px solid var(--primary);
+            background: var(--primary-light);
+            border-radius: 0 0.375rem 0.375rem 0;
+            margin-bottom: 1rem;
+            font-size: 0.875rem;
+        }
+        .callout.warning { border-left-color: var(--warning); background: #fffbeb; }
+        .callout.danger { border-left-color: var(--danger); background: #fef2f2; }
+        .callout.success { border-left-color: var(--success); background: #dcfce7; }
+        .changelog { font-size: 0.875rem; }
+        .changelog dt { font-weight: 600; margin-top: 0.5rem; }
+        .changelog dd { margin-left: 1rem; color: var(--gray-600); }
+        footer {
+            margin-top: 3rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--gray-200);
+            font-size: 0.75rem;
+            color: var(--gray-600);
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>PUT Crash-Day Optimization &mdash; Production Deploy</h1>
+    <div class="meta">
+        <div><dt>Spec ID:</dt><dd>put-crash-day-optimization</dd></div>
+        <div><dt>Status:</dt><dd><span class="status-badge status-active">Active</span></dd></div>
+        <div><dt>Project:</dt><dd>OptionsOwl</dd></div>
+        <div><dt>Category:</dt><dd>Pipeline / Strategy</dd></div>
+        <div><dt>Created:</dt><dd>2026-06-09</dd></div>
+        <div><dt>Updated:</dt><dd>2026-06-09</dd></div>
+        <div><dt>Version:</dt><dd>v1</dd></div>
+        <div><dt>Author:</dt><dd>Claude + Kody</dd></div>
+    </div>
+</header>
+
+<section>
+    <h2>1. Overview</h2>
+    <p>On 2026-06-09, the market dropped ~2.7% (SPY) to ~12.9% (AMD). Our bot entered <strong>ZERO PUT trades</strong>
+    despite massive downside moves. Investigation revealed three root causes: the PUT entry timing model blocked
+    100% of signals, two net-loser tickers drained PUT profits, and the backtest had a critical ATM strike
+    selection bug that hid the real opportunity.</p>
+
+    <div class="callout success">
+        <strong>Backtested result with all fixes (60 days, CALL+PUT combined):</strong><br>
+        $+188,250 total &mdash; CALLs $+88K (177 trades, 77% WR) + PUTs $+100K (273 trades, 73% WR)<br>
+        Profit Factor 2.07, Sharpe 12.08, Max Drawdown 9.6%
+    </div>
+</section>
+
+<section>
+    <h2>2. Problem Statement</h2>
+    <p>On the biggest crash day in months (6/9/26), the bot missed $6,400+ in PUT profit because:</p>
+    <ol>
+        <li><strong>PUT entry timing model blocked 168/178 pattern passes</strong> &mdash; trained on normal markets,
+        confidence drops to 0.31-0.45 during crashes. AUC 0.94 but net destructive ($53K opportunity cost vs $12K saved).</li>
+        <li><strong>AMZN and GOOGL are net PUT losers</strong> &mdash; -$10K and -$7K respectively over 60 days.</li>
+        <li><strong>Backtest ATM strike selection bug</strong> &mdash; used bottom-of-day price to pick strike
+        (e.g., SPY $734 instead of $744), causing OTM gate to block everything. Backtest-only fix.</li>
+    </ol>
+</section>
+
+<section>
+    <h2>3. Goals &amp; Success Criteria</h2>
+    <ul>
+        <li>Capture PUT opportunities on crash days (6/9 target: $5K+ vs $0 actual)</li>
+        <li>Eliminate net-loser PUT tickers without affecting CALL performance</li>
+        <li>Maintain or improve overall Profit Factor (&ge;2.0) and Win Rate (&ge;73%)</li>
+        <li>No degradation to CALL P&L ($88K+ over 60 days)</li>
+        <li>All changes deployable before market open 6/10</li>
+    </ul>
+</section>
+
+<section>
+    <h2>4. Evidence &amp; Data</h2>
+
+    <h3>4.1 PUT Entry Timing: Net Destructive</h3>
+    <table>
+        <thead>
+            <tr><th>Config</th><th>Trades</th><th>WR%</th><th>P&L</th><th>PF</th><th>Sharpe</th><th>MaxDD</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>0.85 (was deployed)</td><td>13</td><td>92.3</td><td>$+3,721</td><td>5.47</td><td>12.73</td><td>3.1%</td></tr>
+            <tr><td>0.75</td><td>14</td><td>92.9</td><td>$+4,146</td><td>5.98</td><td>13.48</td><td>3.0%</td></tr>
+            <tr><td>0.70</td><td>17</td><td>88.2</td><td>$+4,431</td><td>4.16</td><td>10.86</td><td>3.0%</td></tr>
+            <tr style="background:#dcfce7"><td><strong>DISABLED (new)</strong></td><td>351</td><td>74.6</td><td><strong>$+57,356</strong></td><td>1.40</td><td>4.82</td><td>19.1%</td></tr>
+        </tbody>
+    </table>
+    <p>Entry timing blocks $53K in profit to avoid $12K in losses. <strong>Verdict: DISABLE for PUTs.</strong></p>
+
+    <h3>4.2 6/9 Crash Day Signal Funnel (before vs after)</h3>
+    <table>
+        <thead>
+            <tr><th>Stage</th><th>Before (deployed)</th><th>After (all fixes)</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>Scanned</td><td>2,974</td><td>1,680</td></tr>
+            <tr><td>Pattern pass</td><td>101</td><td>49</td></tr>
+            <tr><td>Entry timing blocked</td><td>101 (100%)</td><td>0 (disabled)</td></tr>
+            <tr><td>Gate blocked</td><td>0</td><td>24</td></tr>
+            <tr><td>Executed</td><td>0</td><td>10</td></tr>
+            <tr style="background:#dcfce7"><td><strong>P&L</strong></td><td><strong>$0</strong></td><td><strong>$+8,117</strong></td></tr>
+        </tbody>
+    </table>
+
+    <h3>4.3 PUT Ticker Performance (60 days, open-ATM strike)</h3>
+    <table>
+        <thead>
+            <tr><th>Ticker</th><th>Trades</th><th>WR%</th><th>P&L</th><th>Avg</th><th>Action</th></tr>
+        </thead>
+        <tbody>
+            <tr style="background:#dcfce7"><td>TSLA</td><td>55</td><td>67%</td><td>$+37,160</td><td>$+676</td><td>Keep</td></tr>
+            <tr style="background:#dcfce7"><td>SPY</td><td>63</td><td>79%</td><td>$+31,270</td><td>$+496</td><td>Keep</td></tr>
+            <tr style="background:#dcfce7"><td>NVDA</td><td>53</td><td>83%</td><td>$+32,048</td><td>$+605</td><td>Keep</td></tr>
+            <tr style="background:#dcfce7"><td>AAPL</td><td>49</td><td>78%</td><td>$+32,307</td><td>$+659</td><td>Keep</td></tr>
+            <tr style="background:#dcfce7"><td>IWM</td><td>53</td><td>77%</td><td>$+25,503</td><td>$+481</td><td>Keep</td></tr>
+            <tr style="background:#dcfce7"><td>QQQ</td><td>53</td><td>72%</td><td>$+13,704</td><td>$+259</td><td>Keep</td></tr>
+            <tr style="background:#dcfce7"><td>META</td><td>41</td><td>76%</td><td>$+10,512</td><td>$+256</td><td>Keep</td></tr>
+            <tr style="background:#fef2f2"><td>GOOGL</td><td>18</td><td>61%</td><td>$-1,689</td><td>$-94</td><td><strong>EXCLUDE</strong></td></tr>
+            <tr style="background:#fef2f2"><td>AMZN</td><td>17</td><td>71%</td><td>$+1,678 (CALL only)</td><td>$+99</td><td><strong>EXCLUDE from PUTs</strong></td></tr>
+        </tbody>
+    </table>
+    <p>Note: AMZN shows positive here because this is combined CALL+PUT. PUT-only AMZN was -$10K over 60 days.</p>
+
+    <h3>4.4 Gate Block Distribution (60 days, all gates now tracked)</h3>
+    <table>
+        <thead>
+            <tr><th>Gate</th><th>Blocks</th><th>%</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>min_premium ($0.20 floor)</td><td>1,726</td><td>55%</td><td>Expected &mdash; filters penny options</td></tr>
+            <tr><td>otm_distance</td><td>382</td><td>12%</td><td>Per-ticker dollar thresholds</td></tr>
+            <tr><td>premium_cap ($6)</td><td>58</td><td>2%</td><td>May need bear-mode relaxation</td></tr>
+            <tr><td>afternoon_danger</td><td>51</td><td>2%</td><td>Only applies to PUTs in normal mode</td></tr>
+            <tr><td>spread_gate</td><td>10</td><td>0.3%</td><td>Working as intended</td></tr>
+        </tbody>
+    </table>
+</section>
+
+<section>
+    <h2>5. Production Changes</h2>
+
+    <div class="callout danger">
+        <strong>CRITICAL: Do NOT change PAPER_TRADE or WEBULL_KILL_SWITCH.</strong>
+        owlet-kody stays PAPER_TRADE=false, WEBULL_KILL_SWITCH=false.
+    </div>
+
+    <h3>5.1 Files to Modify</h3>
+    <table>
+        <thead>
+            <tr><th>File</th><th>Change</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>options_owl/config/settings.py</code></td>
+                <td>Add AMZN, GOOGL to PUT_EXCLUDED_TICKERS<br>
+                <code>"PLTR,AMD,MSTR,AVGO" &rarr; "PLTR,AMD,MSTR,AVGO,AMZN,GOOGL"</code></td>
+                <td style="color:var(--success)">DONE</td>
+            </tr>
+            <tr>
+                <td><code>options_owl/sourcing/ml_pipeline.py</code></td>
+                <td>Add PUT_ENTRY_TIMING_THRESHOLD setting (default 0.0 = disabled)<br>
+                Load from env in <code>load_settings_from_env()</code></td>
+                <td style="color:var(--success)">DONE</td>
+            </tr>
+            <tr>
+                <td><code>options_owl/bot_runner.py</code></td>
+                <td>Use <code>settings.PUT_ENTRY_TIMING_THRESHOLD</code> instead of model's threshold<br>
+                Skip computation entirely when threshold = 0.0<br>
+                Add <code>put_entry_t=</code> to startup log</td>
+                <td style="color:var(--success)">DONE</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>5.2 Changes NOT deployed (backtest-only improvements)</h3>
+    <table>
+        <thead>
+            <tr><th>Change</th><th>File</th><th>Rationale for deferring</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>ATM PUT strike selection (open price)</td>
+                <td>backtest_gold_standard.py</td>
+                <td>Backtest-only &mdash; production already uses dynamic Polygon strike resolution</td>
+            </tr>
+            <tr>
+                <td>Bear-mode premium cap 2x ($6&rarr;$12)</td>
+                <td>backtest_gold_standard.py</td>
+                <td>Needs more data &mdash; only 32 bear-mode trades in backtest</td>
+            </tr>
+            <tr>
+                <td>Bear-mode OTM distance 2x</td>
+                <td>backtest_gold_standard.py</td>
+                <td>Needs more data &mdash; could increase losses on normal red days</td>
+            </tr>
+            <tr>
+                <td>Gate block tracking (5 new gates)</td>
+                <td>backtest_gold_standard.py</td>
+                <td>Diagnostic only &mdash; no production impact</td>
+            </tr>
+            <tr>
+                <td>Asymmetric OTM download (--otm-below)</td>
+                <td>download_thetadata.py</td>
+                <td>Data quality improvement for future backtests</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>5.3 Code Details</h3>
+
+    <h4>settings.py (line ~303)</h4>
+    <pre><code># Before:
+PUT_EXCLUDED_TICKERS: str = "PLTR,AMD,MSTR,AVGO"
+
+# After:
+PUT_EXCLUDED_TICKERS: str = "PLTR,AMD,MSTR,AVGO,AMZN,GOOGL"</code></pre>
+
+    <h4>ml_pipeline.py &mdash; MLPipelineSettings</h4>
+    <pre><code># New setting (default 0.0 = disabled):
+PUT_ENTRY_TIMING_THRESHOLD: float = 0.0
+
+# In load_settings_from_env():
+PUT_ENTRY_TIMING_THRESHOLD=_float("PUT_ENTRY_TIMING_THRESHOLD", 0.0),</code></pre>
+
+    <h4>bot_runner.py &mdash; PUT entry timing check</h4>
+    <pre><code># Before: always checked against model threshold
+if entry_conf < models.put_entry_threshold:
+    ...block...
+
+# After: check runtime setting, skip entirely when 0.0
+put_threshold = settings.PUT_ENTRY_TIMING_THRESHOLD
+if put_threshold > 0:
+    # compute features and check
+    if entry_conf < put_threshold:
+        ...block...
+# else: disabled, skip entire computation</code></pre>
+</section>
+
+<section>
+    <h2>6. Backtest-Only Fixes (for accurate future backtesting)</h2>
+
+    <h3>6.1 ATM PUT Strike Selection</h3>
+    <p><strong>Bug:</strong> <code>ORDER BY MIN(ABS(og.underlying_price - oohlc.strike))</code> picked the strike
+    closest to the underlying at <em>any point during the day</em>. On crash days, this selected the bottom-of-day
+    strike (e.g., SPY $734) which was deep OTM at market open.</p>
+    <p><strong>Fix:</strong> Use the opening underlying price to select the ATM PUT strike. This matches production
+    behavior where the bot resolves ATM at scan time (near open).</p>
+    <p><strong>Impact:</strong> SPY 6/9 went from $0 to $+4,218. Total 6/9 PUT P&L: $+73 &rarr; $+6,463.</p>
+
+    <h3>6.2 Gate Block Tracking</h3>
+    <p>5 gates were incrementing <code>signals_gate_blocked</code> without adding to the <code>gate_blocks</code>
+    dict, making debugging impossible:</p>
+    <ul>
+        <li><code>min_premium</code> &mdash; premium below $0.20 floor</li>
+        <li><code>premium_cap</code> &mdash; premium above $6 cap</li>
+        <li><code>spread_gate</code> &mdash; bid-ask spread &gt; 15%</li>
+        <li><code>same_direction</code> &mdash; too many same-direction positions</li>
+        <li><code>gfv_limit</code> &mdash; good faith violation buying power limit</li>
+    </ul>
+
+    <h3>6.3 ThetaData Download (from earlier session)</h3>
+    <ul>
+        <li>Fixed <code>find_atm_strike()</code> to use open price instead of close price</li>
+        <li>Added <code>--otm-below</code> flag for asymmetric PUT depth (e.g., <code>--otm 4 --otm-below 10</code>)</li>
+        <li>Default OTM depth changed from 2 to 4</li>
+    </ul>
+</section>
+
+<section>
+    <h2>7. Implementation Plan</h2>
+    <table>
+        <thead>
+            <tr><th>#</th><th>Task</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>1</td><td>Disable PUT entry timing in ml_pipeline.py (PUT_ENTRY_TIMING_THRESHOLD=0.0)</td><td style="color:var(--success)">DONE</td></tr>
+            <tr><td>2</td><td>Update bot_runner.py to use runtime threshold setting</td><td style="color:var(--success)">DONE</td></tr>
+            <tr><td>3</td><td>Add AMZN, GOOGL to PUT_EXCLUDED_TICKERS in settings.py</td><td style="color:var(--success)">DONE</td></tr>
+            <tr><td>4</td><td>Fix backtest ATM strike selection (open price)</td><td style="color:var(--success)">DONE</td></tr>
+            <tr><td>5</td><td>Add gate block tracking to backtest</td><td style="color:var(--success)">DONE</td></tr>
+            <tr><td>6</td><td>Run tests: <code>pytest tests/ -q</code></td><td>Todo</td></tr>
+            <tr><td>7</td><td>Deploy: <code>./scripts/rebuild.sh</code></td><td>Todo</td></tr>
+            <tr><td>8</td><td>Verify on droplet: check startup log shows <code>put_entry_t=0.0</code></td><td>Todo</td></tr>
+        </tbody>
+    </table>
+</section>
+
+<section>
+    <h2>8. Testing Plan</h2>
+
+    <h3>8.1 Pre-Deploy Verification</h3>
+    <ul>
+        <li><code>pytest tests/ -q</code> &mdash; all tests must pass</li>
+        <li><code>ruff check options_owl/</code> &mdash; no lint errors</li>
+    </ul>
+
+    <h3>8.2 Post-Deploy Verification</h3>
+    <ul>
+        <li>Check startup log: <code>grep 'put_entry_t' journal/owlet-kody/logs/options_owl_$(date +%Y-%m-%d).log</code></li>
+        <li>Verify <code>put_entry_t=0.0</code> (disabled)</li>
+        <li>Check PUT_EXCLUDED includes AMZN, GOOGL: <code>grep 'PUT_EXCLUDED' journal/owlet-kody/logs/options_owl_$(date +%Y-%m-%d).log</code></li>
+        <li>Monitor first PUT scan cycle for signals passing pattern model</li>
+    </ul>
+
+    <h3>8.3 Re-enable Path</h3>
+    <p>If PUT entry timing is needed later, set <code>PUT_ENTRY_TIMING_THRESHOLD=0.75</code> in .env or docker-compose.yml.
+    The model stays loaded; only the runtime threshold changes.</p>
+</section>
+
+<section>
+    <h2>9. Risks &amp; Rollback</h2>
+    <ul>
+        <li><strong>More PUT trades = more exposure:</strong> Disabling entry timing increases PUT volume from ~13 to ~273 trades/60 days.
+        Mitigated by PUT_SCALP_CONFIG hard stop (-50%) and breakeven ratchet (+20% &rarr; floor = entry).</li>
+        <li><strong>AMZN/GOOGL exclusion may miss occasional winners:</strong> Low risk &mdash; both are net losers over 60 days.
+        Can re-evaluate after 30 more trading days.</li>
+    </ul>
+    <h3>Rollback Plan</h3>
+    <p>Set <code>PUT_ENTRY_TIMING_THRESHOLD=0.85</code> in docker-compose.yml and <code>docker compose up -d owlet-kody</code>.
+    Remove AMZN,GOOGL from PUT_EXCLUDED_TICKERS in settings.py and rebuild.</p>
+</section>
+
+<section>
+    <h2>10. Future Optimizations (deferred)</h2>
+    <ul>
+        <li><strong>Bear-mode premium cap relaxation:</strong> Raise PUT premium cap from $6 to $12 when SPY down &gt;0.5%.
+        Only 32 bear-mode trades in backtest &mdash; needs more data before production.</li>
+        <li><strong>Bear-mode OTM distance relaxation:</strong> Widen OTM gate 2x during crash. Needs validation that
+        it doesn't increase losses on mild red days.</li>
+        <li><strong>Multi-strike PUT scanning:</strong> After a PUT trade closes, re-enter same ticker on the new ATM strike.
+        Tested in backtest but picked suboptimal strikes mid-day. Needs smarter strike selection logic
+        (e.g., only re-enter if underlying moved &gt;1% since last entry).</li>
+        <li><strong>Afternoon danger gate for PUTs:</strong> Currently applies to PUTs in non-bear mode.
+        Could remove entirely since PUTs scan all day (5-360min) in production.</li>
+    </ul>
+</section>
+
+<section>
+    <h2>11. Changelog</h2>
+    <dl class="changelog">
+        <dt>v1 &mdash; 2026-06-09</dt>
+        <dd>Initial spec created. PUT entry timing disabled, AMZN/GOOGL excluded from PUTs,
+        backtest ATM strike selection fixed, gate tracking added. Ready for deploy.</dd>
+    </dl>
+</section>
+
+<footer>
+    OptionsOwl &mdash; PUT Crash-Day Optimization | 2026-06-09
+</footer>
+
+</body>
+</html>

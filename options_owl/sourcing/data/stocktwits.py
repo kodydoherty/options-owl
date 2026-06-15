@@ -69,11 +69,7 @@ async def fetch_sentiment(ticker: str) -> RetailSentiment | None:
                 return None
 
             data = resp.json()
-            symbol_data = data.get("symbol", {})
             messages = data.get("messages", [])
-
-            # Extract sentiment from symbol watchlist stats
-            sentiment_data = symbol_data.get("watchlist_count", 0)
 
             # Count bull/bear from recent messages
             bulls = 0

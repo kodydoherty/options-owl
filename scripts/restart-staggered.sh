@@ -7,7 +7,7 @@ set -e
 
 DELAY=${1:-15}  # seconds between each restart (default 15)
 
-BOTS=(owlet-kody owlet-adam owlet-vinny owlet-yank owlet-harvester)
+BOTS=(owlet-kody owlet-dennis owlet-adam owlet-vinny owlet-yank owlet-harvester)
 
 run_on_droplet() {
     if [ -f /root/options-owl/docker-compose.yml ]; then

@@ -74,9 +74,13 @@ class TestScoreSizing:
         assert score_to_contracts(100) == 4
         assert score_to_contracts(90) == 4
         assert score_to_contracts(78) == 4
+        assert score_to_contracts(75) == 4
 
     def test_reject(self):
-        assert score_to_contracts(77) == 0
+        # Score floor aligned to the 0.62 pattern gate (2026-06-15): 62+ trades, below rejected.
+        assert score_to_contracts(74) == 4   # was rejected under old 75 floor; now trades
+        assert score_to_contracts(62) == 4   # at the floor
+        assert score_to_contracts(61) == 0   # just below the 62 floor
         assert score_to_contracts(50) == 0
 
 

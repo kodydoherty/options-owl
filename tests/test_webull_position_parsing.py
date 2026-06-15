@@ -8,7 +8,7 @@ because it looked for option_type/expiry at top level, but they're in legs[0].
 This caused the reconciler to never detect orphaned Webull positions.
 """
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 from options_owl.execution.webull_executor import WebullExecutor
 

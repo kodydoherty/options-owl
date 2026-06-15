@@ -1,6 +1,5 @@
 """Tests for all 5 scoring tiers + the scoring engine."""
 
-import pytest
 
 from options_owl.sourcing.data.indicator_engine import IndicatorSet
 from options_owl.sourcing.scoring.adjustments import tier4_risk

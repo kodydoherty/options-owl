@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Twitter/Social Media Signal Source for Options Trading</title>
+    <style>
+        :root {
+            --primary: #7c3aed;
+            --primary-light: #ede9fe;
+            --danger: #dc2626;
+            --warning: #f59e0b;
+            --success: #16a34a;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-600: #4b5563;
+            --gray-800: #1f2937;
+            --gray-900: #111827;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            color: var(--gray-800);
+            line-height: 1.6;
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 2rem;
+            background: #fff;
+        }
+        header {
+            border-bottom: 3px solid var(--primary);
+            padding-bottom: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        header h1 { font-size: 1.75rem; color: var(--gray-900); }
+        .meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.5rem 2rem;
+            margin-top: 1rem;
+            font-size: 0.875rem;
+            color: var(--gray-600);
+        }
+        .meta dt { font-weight: 600; display: inline; }
+        .meta dd { display: inline; margin-left: 0.25rem; }
+        .status-badge {
+            display: inline-block;
+            padding: 0.125rem 0.625rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .status-todo { background: var(--gray-200); color: var(--gray-600); }
+        .status-active { background: var(--primary-light); color: var(--primary); }
+        .status-completed { background: #dcfce7; color: var(--success); }
+        .status-rejected { background: #fef2f2; color: var(--danger); }
+        .experiment-type {
+            display: inline-block;
+            padding: 0.125rem 0.625rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            background: var(--primary-light);
+            color: var(--primary);
+        }
+        section { margin-bottom: 2rem; }
+        section > h2 {
+            font-size: 1.25rem;
+            color: var(--primary);
+            border-bottom: 1px solid var(--gray-200);
+            padding-bottom: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        section > h3 { font-size: 1rem; margin: 1rem 0 0.5rem; color: var(--gray-900); }
+        ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+        li { margin-bottom: 0.25rem; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1rem;
+            font-size: 0.875rem;
+        }
+        th, td {
+            text-align: left;
+            padding: 0.5rem 0.75rem;
+            border: 1px solid var(--gray-200);
+        }
+        th { background: var(--gray-50); font-weight: 600; }
+        td.positive { color: var(--success); font-weight: 600; }
+        td.negative { color: var(--danger); font-weight: 600; }
+        pre {
+            background: var(--gray-50);
+            border: 1px solid var(--gray-200);
+            border-radius: 0.375rem;
+            padding: 1rem;
+            overflow-x: auto;
+            font-size: 0.8125rem;
+            line-height: 1.5;
+            margin-bottom: 1rem;
+        }
+        code { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: 0.8125rem; }
+        .callout {
+            padding: 0.75rem 1rem;
+            border-left: 4px solid var(--primary);
+            background: var(--primary-light);
+            border-radius: 0 0.375rem 0.375rem 0;
+            margin-bottom: 1rem;
+            font-size: 0.875rem;
+        }
+        .callout.warning { border-left-color: var(--warning); background: #fffbeb; }
+        .callout.danger { border-left-color: var(--danger); background: #fef2f2; }
+        .callout.success { border-left-color: var(--success); background: #dcfce7; }
+        .verdict {
+            padding: 1rem;
+            border: 2px solid var(--gray-200);
+            border-radius: 0.5rem;
+            margin-top: 1rem;
+            font-size: 1rem;
+        }
+        .verdict.adopted { border-color: var(--success); background: #f0fdf4; }
+        .verdict.rejected { border-color: var(--danger); background: #fef2f2; }
+        .verdict.modified { border-color: var(--warning); background: #fffbeb; }
+        .changelog { font-size: 0.875rem; }
+        .changelog dt { font-weight: 600; margin-top: 0.5rem; }
+        .changelog dd { margin-left: 1rem; color: var(--gray-600); }
+        footer {
+            margin-top: 3rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--gray-200);
+            font-size: 0.75rem;
+            color: var(--gray-600);
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Twitter/Social Media Signal Source for Options Trading</h1>
+    <div class="meta">
+        <div><dt>Spec ID:</dt><dd>twitter-social-signal-source</dd></div>
+        <div><dt>Type:</dt><dd><span class="experiment-type">Experiment</span></dd></div>
+        <div><dt>Status:</dt><dd><span class="status-badge status-todo">Todo</span></dd></div>
+        <div><dt>Project:</dt><dd>OptionsOwl</dd></div>
+        <div><dt>Category:</dt><dd>experiments</dd></div>
+        <div><dt>Created:</dt><dd>2026-06-05</dd></div>
+        <div><dt>Updated:</dt><dd>2026-06-05</dd></div>
+        <div><dt>Version:</dt><dd>v1</dd></div>
+        <div><dt>Author:</dt><dd>Kody Doherty</dd></div>
+    </div>
+</header>
+
+<section>
+    <h2>1. Hypothesis</h2>
+    <p>
+        Twitter/X and other social media platforms (StockTwits, Reddit r/wallstreetbets, FinTwit)
+        contain real-time options trade callouts from profitable traders that can serve as an
+        <strong>additional signal source</strong> alongside the existing Discord (Neverland Pirates) collector.
+        By ingesting and scoring social media callouts through the same ML pipeline, we can increase
+        signal volume, diversify signal sources, and potentially capture moves that Discord misses.
+    </p>
+    <div class="callout">
+        <strong>Expected outcome:</strong> Social media signals, when filtered through the existing
+        ML scoring pipeline (score &ge; 78), will produce a win rate within 5% of Discord signals and
+        increase total daily signal volume by 30&ndash;50%. Combined portfolio P&L should improve due
+        to more opportunities, not lower quality.
+    </div>
+</section>
+
+<section>
+    <h2>2. Background &amp; Motivation</h2>
+    <p>
+        Currently, OptionsOwl relies on a <strong>single signal source</strong>: the Neverland Pirates
+        Discord server. This creates concentration risk &mdash; if the Discord goes offline, changes
+        quality, or stops posting, the bot stops trading entirely. Social media platforms offer a
+        massive volume of options callouts from thousands of traders, but the signal-to-noise ratio
+        is extremely low. The key challenge is extracting actionable, parseable trade signals from
+        noisy social media text and filtering them through our existing quality gates.
+    </p>
+    <h3>Why Twitter/X Specifically</h3>
+    <ul>
+        <li><strong>Real-time:</strong> Tweets arrive faster than Discord messages in many cases</li>
+        <li><strong>Volume:</strong> Thousands of options callouts per day from FinTwit accounts</li>
+        <li><strong>Track records:</strong> Accounts like @unusual_whales, @OptionsAction, @0DTETrader publish live calls with verifiable histories</li>
+        <li><strong>API access:</strong> Twitter API v2 supports filtered streams with keyword/account matching</li>
+        <li><strong>Sentiment layer:</strong> Aggregate sentiment can validate or contradict individual signals</li>
+    </ul>
+    <h3>Other Potential Sources</h3>
+    <table>
+        <thead><tr><th>Platform</th><th>Signal Type</th><th>API Access</th><th>Priority</th></tr></thead>
+        <tbody>
+            <tr><td>Twitter/X</td><td>Individual callouts + unusual activity alerts</td><td>v2 filtered stream ($100/mo Basic)</td><td>High</td></tr>
+            <tr><td>StockTwits</td><td>Bullish/bearish sentiment + trade ideas</td><td>Free API (rate limited)</td><td>Medium</td></tr>
+            <tr><td>Reddit (r/wsb, r/options)</td><td>DD posts, YOLO plays, sentiment</td><td>Free API (rate limited)</td><td>Low</td></tr>
+            <tr><td>Telegram channels</td><td>Premium alert channels</td><td>Telethon/Pyrogram</td><td>Medium</td></tr>
+            <tr><td>Unusual Whales</td><td>Institutional flow alerts</td><td>Paid API ($50/mo)</td><td>High</td></tr>
+        </tbody>
+    </table>
+</section>
+
+<section>
+    <h2>3. Methodology</h2>
+
+    <h3>3.1 Control (Baseline)</h3>
+    <p>Current production setup: Discord-only signal source, ML scoring pipeline, V5 FSM exits.</p>
+    <pre><code># Current architecture
+Discord (Neverland Pirates) &rarr; discord_collector.py &rarr; signal parser/scorer
+  &rarr; ML pipeline (18 gates) &rarr; Webull executor</code></pre>
+
+    <h3>3.2 Test (Experiment)</h3>
+    <p>
+        Add a <code>twitter_collector.py</code> (and optionally <code>stocktwits_collector.py</code>)
+        that ingests social media posts, parses them into the same <code>TradeSignal</code> format,
+        and feeds them through the identical ML scoring pipeline. Social signals get an additional
+        <strong>source credibility score</strong> based on the poster's historical accuracy.
+    </p>
+    <pre><code># Proposed architecture
+Discord (Neverland Pirates) &rarr; discord_collector.py  &rarr;&brvbar;
+Twitter/X (FinTwit accounts) &rarr; twitter_collector.py &rarr;&brvbar;&rarr; signal parser/scorer
+StockTwits (optional)        &rarr; stocktwits_collector &rarr;&brvbar;   &rarr; ML pipeline (18 gates)
+                                                              &rarr; Webull executor</code></pre>
+
+    <h3>3.3 Data Source &amp; Period</h3>
+    <table>
+        <tr><th>Data Source</th><td>Twitter API v2 filtered stream + StockTwits API</td></tr>
+        <tr><th>Date Range</th><td>Phase 1: 2 weeks paper-only; Phase 2: 4 weeks live (reduced size)</td></tr>
+        <tr><th>Sample Size</th><td>Est. 50&ndash;200 parseable signals/day from Twitter, 20&ndash;50 from StockTwits</td></tr>
+        <tr><th>Script/Command</th><td><code>python -m options_owl.collectors.twitter_collector</code></td></tr>
+    </table>
+
+    <h3>3.4 Metrics</h3>
+    <ul>
+        <li><strong>Primary:</strong> Win rate and profit factor of social-sourced trades vs Discord-sourced trades (both scored &ge; 78)</li>
+        <li><strong>Secondary:</strong> Signal volume increase, unique tickers covered, time-to-signal (social vs Discord for same move), false positive rate</li>
+    </ul>
+</section>
+
+<section>
+    <h2>4. Implementation</h2>
+
+    <h3>4.1 Phase 1: Twitter Collector (Core)</h3>
+    <table>
+        <thead>
+            <tr><th>#</th><th>Task</th><th>File</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>4.1.1</td>
+                <td>Twitter API v2 client: filtered stream connection with reconnect logic</td>
+                <td><code>options_owl/collectors/twitter_collector.py</code></td>
+                <td>Todo</td>
+            </tr>
+            <tr>
+                <td>4.1.2</td>
+                <td>Tweet parser: extract ticker, direction, strike, expiry, premium from tweet text.
+                    Handle formats: "$NVDA 130C 6/6 @ 2.50", "NVDA calls 130 strike", "bought NVDA 130 calls June 6"</td>
+                <td><code>options_owl/signals/twitter_parser.py</code></td>
+                <td>Todo</td>
+            </tr>
+            <tr>
+                <td>4.1.3</td>
+                <td>Account allowlist: curated list of 20&ndash;50 FinTwit accounts with known track records.
+                    Each account gets a credibility weight (0.5&ndash;1.5x) based on historical accuracy.</td>
+                <td><code>options_owl/config/twitter_accounts.py</code></td>
+                <td>Todo</td>
+            </tr>
+            <tr>
+                <td>4.1.4</td>
+                <td>Deduplication: same trade from multiple sources (Discord + Twitter) should not create
+                    duplicate positions. Match on ticker + direction + strike + expiry within 5min window.</td>
+                <td><code>options_owl/signals/deduplication.py</code></td>
+                <td>Todo</td>
+            </tr>
+            <tr>
+                <td>4.1.5</td>
+                <td>Source tracking: add <code>signal_source</code> column to <code>paper_trades</code> table
+                    (values: 'discord', 'twitter', 'stocktwits'). Track P&L by source for comparison.</td>
+                <td><code>options_owl/execution/paper_trader.py</code></td>
+                <td>Todo</td>
+            </tr>
+            <tr>
+                <td>4.1.6</td>
+                <td>Integration: feed parsed Twitter signals into the same <code>signal_consumer</code>
+                    queue that Discord signals use. No changes to ML pipeline needed.</td>
+                <td><code>options_owl/main.py</code></td>
+                <td>Todo</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>4.2 Phase 2: Signal Quality Filtering</h3>
+    <table>
+        <thead>
+            <tr><th>#</th><th>Task</th><th>File</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>4.2.1</td>
+                <td>NLP classifier: distinguish actionable trade calls from commentary/analysis/memes.
+                    Binary classifier: "is this a specific trade entry callout?" Use few-shot LLM or fine-tuned model.</td>
+                <td><code>options_owl/signals/tweet_classifier.py</code></td>
+                <td>Todo</td>
+            </tr>
+            <tr>
+                <td>4.2.2</td>
+                <td>Spam/pump filter: detect coordinated pump campaigns (multiple accounts, same ticker,
+                    within minutes). Block signals that match pump patterns.</td>
+                <td><code>options_owl/signals/pump_detector.py</code></td>
+                <td>Todo</td>
+            </tr>
+            <tr>
+                <td>4.2.3</td>
+                <td>Credibility scoring: track each account's historical signal accuracy over time.
+                    Weight = rolling 30-day win rate. Accounts below 40% WR get auto-muted.</td>
+                <td><code>options_owl/signals/account_tracker.py</code></td>
+                <td>Todo</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>4.3 Phase 3: Sentiment Aggregation (Optional)</h3>
+    <table>
+        <thead>
+            <tr><th>#</th><th>Task</th><th>File</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>4.3.1</td>
+                <td>Aggregate sentiment feature: count bullish vs bearish mentions per ticker per 15min window.
+                    Feed as additional feature to ML pattern model.</td>
+                <td><code>options_owl/sourcing/sentiment_features.py</code></td>
+                <td>Todo</td>
+            </tr>
+            <tr>
+                <td>4.3.2</td>
+                <td>Contrarian filter: if sentiment is overwhelmingly one-sided (&gt;90% bullish or bearish),
+                    flag as potential reversal risk. Add as pipeline gate.</td>
+                <td><code>options_owl/risk/pipeline.py</code></td>
+                <td>Todo</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>4.4 Configuration</h3>
+    <pre><code># .env additions
+TWITTER_BEARER_TOKEN=...              # Twitter API v2 bearer token
+TWITTER_STREAM_RULES=...              # Filtered stream rules (JSON)
+ENABLE_TWITTER_SIGNALS=false          # Feature flag (paper-only first)
+TWITTER_BUDGET_MULTIPLIER=0.50        # Half-size positions for social signals initially
+STOCKTWITS_API_KEY=...                # Optional: StockTwits API key
+ENABLE_STOCKTWITS_SIGNALS=false       # Feature flag</code></pre>
+</section>
+
+<section>
+    <h2>5. Results</h2>
+
+    <div class="callout warning">
+        <strong>Fill this section after the experiment completes.</strong> Include raw numbers, not just conclusions.
+    </div>
+
+    <h3>5.1 Summary</h3>
+    <table>
+        <thead>
+            <tr><th>Metric</th><th>Discord (Control)</th><th>Twitter (Test)</th><th>Delta</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>Win Rate</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td></tr>
+            <tr><td>Profit Factor</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td></tr>
+            <tr><td>Avg P&L/Trade</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td></tr>
+            <tr><td>Signals/Day</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td></tr>
+            <tr><td>Unique Tickers</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td></tr>
+            <tr><td>Parse Success Rate</td><td>N/A</td><td>&mdash;</td><td>&mdash;</td></tr>
+            <tr><td>Duplicate Rate</td><td>N/A</td><td>&mdash;</td><td>&mdash;</td></tr>
+        </tbody>
+    </table>
+
+    <h3>5.2 Detailed Breakdown</h3>
+    <p><em>To be filled after experiment.</em></p>
+
+    <h3>5.3 Unexpected Findings</h3>
+    <ul>
+        <li><em>To be filled after experiment.</em></li>
+    </ul>
+</section>
+
+<section>
+    <h2>6. Conclusion &amp; Decision</h2>
+
+    <div class="verdict">
+        <strong>Verdict: Pending</strong>
+        <p>Experiment has not been run yet.</p>
+    </div>
+
+    <h3>Follow-up Actions</h3>
+    <ul>
+        <li>Research Twitter API v2 pricing and rate limits for filtered stream</li>
+        <li>Curate initial account allowlist (20&ndash;50 FinTwit traders with verifiable track records)</li>
+        <li>Build tweet parser with test suite covering common callout formats</li>
+        <li>Run 2-week paper-only trial before any live capital</li>
+        <li>Compare signal timing: does Twitter beat Discord for the same moves?</li>
+    </ul>
+</section>
+
+<section>
+    <h2>7. Risks &amp; Considerations</h2>
+    <ul>
+        <li><strong>Signal-to-noise ratio:</strong> Twitter is ~95% noise. Without aggressive filtering, the bot will be overwhelmed with garbage signals. The ML pipeline (score &ge; 78) is the primary defense, but parsing failures waste compute.</li>
+        <li><strong>API cost:</strong> Twitter API v2 Basic tier is $100/mo. Pro tier ($5,000/mo) is overkill. Basic provides 10K tweets/mo read + filtered stream &mdash; should be sufficient with account-based filtering.</li>
+        <li><strong>Pump-and-dump risk:</strong> Social media is rife with coordinated pump schemes. Small-cap/meme tickers called on Twitter may be traps. Mitigation: only trade our existing 14-ticker universe (SPY, QQQ, NVDA, TSLA, etc), ignore unknown tickers.</li>
+        <li><strong>Latency:</strong> By the time a tweet is posted, parsed, scored, and executed, the move may already be priced in. Need to measure signal-to-execution latency and compare to Discord path.</li>
+        <li><strong>Account credibility decay:</strong> Good accounts go bad. Need rolling accuracy tracking with auto-mute below 40% WR threshold.</li>
+        <li><strong>Rate limits:</strong> Twitter API v2 Basic has strict rate limits. Filtered stream is the most efficient approach (push vs poll), but reconnects count against limits.</li>
+        <li><strong>Legal/TOS:</strong> Automated trading based on social media signals is legal, but scraping without API access violates Twitter TOS. Must use official API only.</li>
+        <li><strong>Concentration risk reduction:</strong> The main strategic value is reducing dependence on a single Discord server. Even if Twitter signals are slightly worse quality, diversification has value.</li>
+    </ul>
+</section>
+
+<section>
+    <h2>8. Tweet Parsing Examples</h2>
+    <p>Common formats the parser must handle:</p>
+    <pre><code># Format 1: Standard callout
+"$NVDA 130C 6/6 @ 2.50"
+→ ticker=NVDA, direction=CALL, strike=130, expiry=2026-06-06, premium=2.50
+
+# Format 2: Verbose
+"Bought NVDA 130 calls June 6 for $2.50"
+→ ticker=NVDA, direction=CALL, strike=130, expiry=2026-06-06, premium=2.50
+
+# Format 3: Shorthand
+"TSLA 180p 0dte"
+→ ticker=TSLA, direction=PUT, strike=180, expiry=today, premium=None (lookup)
+
+# Format 4: Unusual Whales style
+"🐳 NVDA | Unusual Call Activity | $130 Strike | 6/6 Exp | 5K Volume"
+→ ticker=NVDA, direction=CALL, strike=130, expiry=2026-06-06, premium=None
+
+# Format 5: Emoji-heavy
+"🚀 $TSLA calls 180 LFG 🔥🔥🔥"
+→ ticker=TSLA, direction=CALL, strike=180, expiry=None (infer 0DTE), premium=None
+
+# Format 6: PUT callout
+"$SPY puts looking good, grabbed 540p 0dte at .85"
+→ ticker=SPY, direction=PUT, strike=540, expiry=today, premium=0.85
+
+# Reject: Commentary (not a trade entry)
+"NVDA looking strong today, might break 130 resistance"
+→ REJECT (no specific trade entry)</code></pre>
+</section>
+
+<section>
+    <h2>9. Architecture Decision: LLM vs Regex Parser</h2>
+    <table>
+        <thead><tr><th>Approach</th><th>Pros</th><th>Cons</th><th>Cost</th></tr></thead>
+        <tbody>
+            <tr>
+                <td><strong>Regex patterns</strong></td>
+                <td>Fast, free, deterministic, no API dependency</td>
+                <td>Brittle, can't handle novel formats, high maintenance</td>
+                <td>$0</td>
+            </tr>
+            <tr>
+                <td><strong>Claude Haiku classifier</strong></td>
+                <td>Handles any format, extracts structured data reliably, classifies intent</td>
+                <td>API latency (~200ms), cost per call, dependency on Anthropic API</td>
+                <td>~$5&ndash;15/day at 200 tweets/day</td>
+            </tr>
+            <tr>
+                <td><strong>Hybrid: regex first, LLM fallback</strong></td>
+                <td>Fast for common patterns, robust for edge cases, cost-efficient</td>
+                <td>More complex code, two code paths to maintain</td>
+                <td>~$2&ndash;5/day</td>
+            </tr>
+        </tbody>
+    </table>
+    <div class="callout">
+        <strong>Recommendation:</strong> Start with hybrid approach. Regex handles the 80% of tweets
+        that follow standard "$TICKER strike direction" patterns. Claude Haiku handles ambiguous tweets
+        that regex can't parse. Both output the same <code>TradeSignal</code> schema.
+    </div>
+</section>
+
+<section>
+    <h2>10. Changelog</h2>
+    <dl class="changelog">
+        <dt>v1 &mdash; 2026-06-05</dt>
+        <dd>Initial experiment spec created. Covers Twitter/X as primary social source,
+            StockTwits as secondary, with phased rollout plan.</dd>
+    </dl>
+</section>
+
+<footer>
+    OptionsOwl &mdash; Experiment Specification | 2026-06-05
+</footer>
+
+</body>
+</html>

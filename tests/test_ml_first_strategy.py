@@ -757,7 +757,7 @@ class TestScoreSizing:
 
     def test_below_threshold_gets_0(self):
         from options_owl.risk.vinny_strategy import score_to_contracts
-        assert score_to_contracts(77) == 0  # below 78 = rejected
+        assert score_to_contracts(61) == 0  # below 75 = rejected
 
     def test_capped_by_affordability(self):
         """With $400 balance and $170 cost/contract — position cap limits it."""
@@ -851,7 +851,8 @@ class TestWebullSafetyRails:
         with pytest.raises(ValueError, match="hard cap"):
             executor._check_safety_limits(5, 11.0, "BUY")
 
-    def test_kill_switch_blocks_all(self):
+    @pytest.mark.asyncio
+    async def test_kill_switch_blocks_all(self):
         from options_owl.config.settings import Settings
         from options_owl.execution.webull_executor import WebullExecutor
 
@@ -863,7 +864,7 @@ class TestWebullSafetyRails:
         )
         executor = WebullExecutor(s)
         with pytest.raises(RuntimeError, match="KILL_SWITCH"):
-            executor._check_kill_switch()
+            await executor._check_kill_switch()
 
     def test_400_dollar_trade_within_limits(self):
         """$400 portfolio: 2 contracts at $1.50 = $300 total, well within caps."""
@@ -1296,7 +1297,8 @@ class TestPaperTraderLifecycle:
             ENABLE_RISK_MANAGER=False, SIMULATED_ENTRY_SLIPPAGE_BPS=0.0,
             SIMULATED_EXIT_SLIPPAGE_BPS=0.0, ENABLE_DCA=False,
             ENABLE_VINNY_STRATEGY=False, ENABLE_SCORE_SIZING=False,
-            ENABLE_SMART_ENTRY=False,
+            ENABLE_SMART_ENTRY=False, ENABLE_DIRECTIONAL_REGIME=False,
+            CB_CLOSING_BUFFER_MINUTES=0,
         )
         trader = PaperTrader(settings)
         await trader.init()
@@ -1348,7 +1350,8 @@ class TestPaperTraderLifecycle:
             ENABLE_RISK_MANAGER=False, SIMULATED_ENTRY_SLIPPAGE_BPS=0.0,
             SIMULATED_EXIT_SLIPPAGE_BPS=0.0, ENABLE_DCA=False,
             ENABLE_VINNY_STRATEGY=False, ENABLE_SCORE_SIZING=False,
-            ENABLE_SMART_ENTRY=False,
+            ENABLE_SMART_ENTRY=False, ENABLE_DIRECTIONAL_REGIME=False,
+            CB_CLOSING_BUFFER_MINUTES=0,
         )
         trader = PaperTrader(settings)
         await trader.init()

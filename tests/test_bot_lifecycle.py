@@ -75,6 +75,7 @@ class TestRetryLogic:
 
         def fake_run(coro):
             nonlocal call_count
+            coro.close()  # dispose the un-awaited coroutine (asyncio.run is mocked)
             call_count += 1
             raise KeyboardInterrupt
 
@@ -97,6 +98,7 @@ class TestRetryLogic:
 
         def fake_run(coro):
             nonlocal call_count
+            coro.close()  # dispose the un-awaited coroutine (asyncio.run is mocked)
             call_count += 1
             if call_count < 3:
                 raise ConnectionError("test")

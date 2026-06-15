@@ -16,19 +16,15 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from options_owl.collectors.candle_collector import (
-    CANDLE_SCHEMA,
     CandleCollector,
     MinuteBar,
-    PriceObs,
     _5M_MS,
     _ws_auth_ok,
     read_candles_from_db,
@@ -56,6 +52,13 @@ def _make_minute_bar(ts_ms: float, price: float, volume: float = 1000) -> Minute
         volume=volume,
         vwap=price,
     )
+
+
+def _only(candles: list[dict], tf: str = "5m") -> list[dict]:
+    """Filter built candles to one timeframe. The collector emits 1m/5m/15m/1h
+    (1m added 2026-06-12 for the regime morning window); these tests assert the
+    5m bucketing specifically."""
+    return [c for c in candles if c["timeframe"] == tf]
 
 
 # ---------------------------------------------------------------------------
@@ -106,39 +109,39 @@ class TestBucketStart:
 
 class TestRecordPrice:
     def test_record_basic(self):
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
         collector.record_price("SPY", 542.30)
         assert len(collector._poll_obs["SPY"]) == 1
         assert collector._poll_obs["SPY"][0].price == 542.30
 
     def test_case_insensitive(self):
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
         collector.record_price("spy", 542.30)
         assert len(collector._poll_obs["SPY"]) == 1
 
     def test_unknown_ticker_ignored(self):
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
         collector.record_price("TSLA", 200.0)
         assert "TSLA" not in collector._poll_obs
 
     def test_zero_price_ignored(self):
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
         collector.record_price("SPY", 0)
         assert len(collector._poll_obs["SPY"]) == 0
 
     def test_negative_price_ignored(self):
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
         collector.record_price("SPY", -1.0)
         assert len(collector._poll_obs["SPY"]) == 0
 
     def test_custom_timestamp(self):
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
         ts = _ts_ms(14, 0)
         collector.record_price("SPY", 542.30, ts_ms=ts)
         assert collector._poll_obs["SPY"][0].ts_ms == ts
 
     def test_auto_timestamp(self):
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
         before = time.time() * 1000
         collector.record_price("SPY", 542.30)
         after = time.time() * 1000
@@ -147,7 +150,7 @@ class TestRecordPrice:
 
     def test_buffer_limit(self):
         """Buffer doesn't grow unbounded."""
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
         for i in range(600):
             collector.record_price("SPY", 542.0 + i * 0.01, ts_ms=_ts_ms(10, 0) + i * 60000)
         # deque maxlen is 500
@@ -160,19 +163,19 @@ class TestRecordPrice:
 
 class TestIngestMinuteBar:
     def test_basic(self):
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
         bar = _make_minute_bar(_ts_ms(14, 0), 542.30)
         collector.ingest_minute_bar("SPY", bar)
         assert len(collector._minute_bars["SPY"]) == 1
 
     def test_zero_close_ignored(self):
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
         bar = MinuteBar(ts_ms=_ts_ms(14, 0), open=0, high=0, low=0, close=0)
         collector.ingest_minute_bar("SPY", bar)
         assert len(collector._minute_bars["SPY"]) == 0
 
     def test_unknown_ticker_ignored(self):
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
         bar = _make_minute_bar(_ts_ms(14, 0), 200.0)
         collector.ingest_minute_bar("TSLA", bar)
         assert "TSLA" not in collector._minute_bars
@@ -185,7 +188,7 @@ class TestIngestMinuteBar:
 class TestBuildFromMinuteBars:
     def test_single_complete_bucket(self):
         """5 minute bars in one bucket produce 1 candle."""
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
 
         # Simulate a completed 5m bucket (14:00 - 14:04)
         # We need "now" to be past the bucket boundary (14:05+)
@@ -202,8 +205,9 @@ class TestBuildFromMinuteBars:
             mock_time.time.return_value = _ts_ms(14, 6) / 1000
             candles = collector.build_candles("SPY")
 
-        assert len(candles) == 1
-        c = candles[0]
+        c5 = _only(candles)
+        assert len(c5) == 1
+        c = c5[0]
         assert c["ticker"] == "SPY"
         assert c["timeframe"] == "5m"
         assert c["source"] == "ws"
@@ -215,7 +219,7 @@ class TestBuildFromMinuteBars:
 
     def test_current_bucket_excluded(self):
         """In-progress bucket is NOT included in output."""
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
 
         # Place a bar at 14:00 (bucket starts at 14:00)
         collector.ingest_minute_bar("SPY", _make_minute_bar(_ts_ms(14, 0), 542.0))
@@ -225,11 +229,11 @@ class TestBuildFromMinuteBars:
             mock_time.time.return_value = _ts_ms(14, 3) / 1000
             candles = collector.build_candles("SPY")
 
-        assert len(candles) == 0  # not yet complete
+        assert len(_only(candles)) == 0  # not yet complete
 
     def test_multiple_buckets(self):
         """Bars spanning two 5m buckets produce 2 candles."""
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
 
         # Bucket 1: 14:00-14:04
         for i in range(5):
@@ -246,12 +250,13 @@ class TestBuildFromMinuteBars:
             mock_time.time.return_value = _ts_ms(14, 11) / 1000
             candles = collector.build_candles("SPY")
 
-        assert len(candles) == 2
-        assert candles[0]["bar_start_ts"] < candles[1]["bar_start_ts"]
+        c5 = _only(candles)
+        assert len(c5) == 2
+        assert c5[0]["bar_start_ts"] < c5[1]["bar_start_ts"]
 
     def test_already_flushed_excluded(self):
         """Previously flushed candles are not re-built."""
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
 
         for i in range(5):
             collector.ingest_minute_bar(
@@ -261,10 +266,12 @@ class TestBuildFromMinuteBars:
         with patch("options_owl.collectors.candle_collector.time") as mock_time:
             mock_time.time.return_value = _ts_ms(14, 6) / 1000
             candles = collector.build_candles("SPY")
-            assert len(candles) == 1
+            assert len(_only(candles)) == 1
 
-            # Simulate flush by updating last_flushed
-            collector._last_flushed_ts["SPY"] = candles[0]["bar_start_ts"]
+            # Simulate flush by updating last_flushed for all timeframes
+            for c in candles:
+                key = f"{c['ticker']}:{c['timeframe']}"
+                collector._last_flushed_ts[key] = c["bar_start_ts"]
 
             # Build again — should be empty
             candles2 = collector.build_candles("SPY")
@@ -278,7 +285,7 @@ class TestBuildFromMinuteBars:
 class TestBuildFromPolls:
     def test_single_bucket(self):
         """Poll observations in one 5m bucket produce 1 candle."""
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
 
         prices = [542.0, 543.5, 541.0, 542.8, 543.2]
         for i, p in enumerate(prices):
@@ -288,8 +295,9 @@ class TestBuildFromPolls:
             mock_time.time.return_value = _ts_ms(14, 6) / 1000
             candles = collector.build_candles("SPY")
 
-        assert len(candles) == 1
-        c = candles[0]
+        c5 = _only(candles)
+        assert len(c5) == 1
+        c = c5[0]
         assert c["source"] == "poll"
         assert c["open"] == 542.0
         assert c["high"] == 543.5
@@ -298,7 +306,7 @@ class TestBuildFromPolls:
         assert c["volume"] == 0  # no volume from polls
 
     def test_empty_observations(self):
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
         with patch("options_owl.collectors.candle_collector.time") as mock_time:
             mock_time.time.return_value = _ts_ms(14, 6) / 1000
             candles = collector.build_candles("SPY")
@@ -312,7 +320,7 @@ class TestBuildFromPolls:
 class TestSourcePriority:
     def test_ws_preferred_over_polls(self):
         """When both WS minute bars and polls exist, WS wins."""
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
 
         # Add both WS and poll data for the same bucket
         for i in range(3):
@@ -325,12 +333,13 @@ class TestSourcePriority:
             mock_time.time.return_value = _ts_ms(14, 6) / 1000
             candles = collector.build_candles("SPY")
 
-        assert len(candles) == 1
-        assert candles[0]["source"] == "ws"
+        c5 = _only(candles)
+        assert len(c5) == 1
+        assert c5[0]["source"] == "ws"
 
     def test_poll_fallback_when_no_ws(self):
         """When no WS data, falls back to poll observations."""
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
 
         for i in range(3):
             collector.record_price("SPY", 542.0 + i, ts_ms=_ts_ms(14, i))
@@ -339,155 +348,87 @@ class TestSourcePriority:
             mock_time.time.return_value = _ts_ms(14, 6) / 1000
             candles = collector.build_candles("SPY")
 
-        assert len(candles) == 1
-        assert candles[0]["source"] == "poll"
+        c5 = _only(candles)
+        assert len(c5) == 1
+        assert c5[0]["source"] == "poll"
 
 
 # ---------------------------------------------------------------------------
 # DB integration (init, flush, read, cleanup)
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def tmp_db(tmp_path):
-    return tmp_path / "test_candles.db"
-
-
 class TestDBIntegration:
     @pytest.mark.asyncio
-    async def test_init_db_creates_table(self, tmp_db):
-        collector = CandleCollector(tmp_db, ["SPY"])
-        await collector.init_db()
-        assert tmp_db.exists()
+    async def test_flush_writes_candles_to_pg(self):
+        """flush() writes candles via PG batch write."""
+        from unittest.mock import AsyncMock
+        collector = CandleCollector(["SPY", "QQQ"])
 
-        import aiosqlite
-        async with aiosqlite.connect(tmp_db) as conn:
-            cursor = await conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='stock_candles'"
-            )
-            row = await cursor.fetchone()
-            assert row is not None
-
-    @pytest.mark.asyncio
-    async def test_init_db_idempotent(self, tmp_db):
-        """Calling init_db twice doesn't error."""
-        collector = CandleCollector(tmp_db, ["SPY"])
-        await collector.init_db()
-        await collector.init_db()
-
-    @pytest.mark.asyncio
-    async def test_flush_writes_candles(self, tmp_db):
-        collector = CandleCollector(tmp_db, ["SPY", "QQQ"])
-        await collector.init_db()
-
-        # Add data for completed buckets
         for i in range(5):
             collector.record_price("SPY", 542.0 + i, ts_ms=_ts_ms(14, i))
             collector.record_price("QQQ", 480.0 + i, ts_ms=_ts_ms(14, i))
 
-        with patch("options_owl.collectors.candle_collector.time") as mock_time:
+        mock_batch = AsyncMock()
+        mock_ticks = AsyncMock()
+        with patch("options_owl.collectors.candle_collector.time") as mock_time, \
+             patch("options_owl.db.postgres.is_connected", return_value=True), \
+             patch("options_owl.db.postgres.write_stock_candles_batch", new=mock_batch), \
+             patch("options_owl.db.postgres.write_stock_ticks_batch", new=mock_ticks):
             mock_time.time.return_value = _ts_ms(14, 6) / 1000
             written = await collector.flush()
 
-        assert written >= 2  # at least 1 per ticker
-
-        import aiosqlite
-        async with aiosqlite.connect(tmp_db) as conn:
-            cursor = await conn.execute("SELECT COUNT(*) FROM stock_candles")
-            count = (await cursor.fetchone())[0]
-            assert count >= 2
+        assert written >= 2
 
     @pytest.mark.asyncio
-    async def test_flush_idempotent(self, tmp_db):
+    async def test_flush_idempotent(self):
         """Flushing twice doesn't duplicate rows."""
-        collector = CandleCollector(tmp_db, ["SPY"])
-        await collector.init_db()
+        from unittest.mock import AsyncMock
+        collector = CandleCollector(["SPY"])
 
         for i in range(5):
             collector.record_price("SPY", 542.0, ts_ms=_ts_ms(14, i))
 
-        with patch("options_owl.collectors.candle_collector.time") as mock_time:
+        mock_batch = AsyncMock()
+        mock_ticks = AsyncMock()
+        with patch("options_owl.collectors.candle_collector.time") as mock_time, \
+             patch("options_owl.db.postgres.is_connected", return_value=True), \
+             patch("options_owl.db.postgres.write_stock_candles_batch", new=mock_batch), \
+             patch("options_owl.db.postgres.write_stock_ticks_batch", new=mock_ticks):
             mock_time.time.return_value = _ts_ms(14, 6) / 1000
             w1 = await collector.flush()
             w2 = await collector.flush()
 
-        # Second flush should write 0 (already flushed)
         assert w1 >= 1
         assert w2 == 0
 
     @pytest.mark.asyncio
-    async def test_read_candles_from_db(self, tmp_db):
-        """read_candles_from_db returns bars in ascending order."""
-        collector = CandleCollector(tmp_db, ["SPY"])
-        await collector.init_db()
+    async def test_read_candles_from_db_uses_pg(self):
+        """read_candles_from_db reads from PG."""
+        from unittest.mock import AsyncMock
 
-        # Two complete buckets
-        for i in range(5):
-            collector.record_price("SPY", 542.0, ts_ms=_ts_ms(14, i))
-        for i in range(5):
-            collector.record_price("SPY", 543.0, ts_ms=_ts_ms(14, 5 + i))
+        mock_candles = [
+            {"bar_time": datetime(2026, 5, 14, 14, 0, tzinfo=timezone.utc),
+             "open": 542.0, "high": 543.0, "low": 541.0, "close": 542.5, "volume": 1000, "vwap": 542.2},
+            {"bar_time": datetime(2026, 5, 14, 14, 5, tzinfo=timezone.utc),
+             "open": 542.5, "high": 544.0, "low": 542.0, "close": 543.5, "volume": 2000, "vwap": 543.0},
+        ]
 
-        with patch("options_owl.collectors.candle_collector.time") as mock_time:
-            mock_time.time.return_value = _ts_ms(14, 11) / 1000
-            await collector.flush()
+        with patch("options_owl.db.postgres.read_stock_candles", new=AsyncMock(return_value=mock_candles)):
+            rows = await read_candles_from_db("", "SPY", "5m", limit=10)
 
-        rows = await read_candles_from_db(tmp_db, "SPY", "5m", limit=10)
-        assert len(rows) >= 2
-        # Verify ascending order
-        for i in range(1, len(rows)):
-            assert rows[i]["bar_start_ts"] > rows[i - 1]["bar_start_ts"]
+        assert len(rows) == 2
+        assert rows[1]["bar_start_ts"] > rows[0]["bar_start_ts"]
+        assert rows[0]["close"] == 542.5
 
     @pytest.mark.asyncio
-    async def test_read_candles_nonexistent_db(self, tmp_path):
-        """Reading from a nonexistent DB returns empty list."""
-        rows = await read_candles_from_db(tmp_path / "nope.db", "SPY")
+    async def test_read_candles_pg_disconnected(self):
+        """read_candles_from_db returns empty when PG returns None."""
+        from unittest.mock import AsyncMock
+
+        with patch("options_owl.db.postgres.read_stock_candles", new=AsyncMock(return_value=None)):
+            rows = await read_candles_from_db("", "SPY")
+
         assert rows == []
-
-    @pytest.mark.asyncio
-    async def test_read_candles_wrong_ticker(self, tmp_db):
-        collector = CandleCollector(tmp_db, ["SPY"])
-        await collector.init_db()
-
-        for i in range(5):
-            collector.record_price("SPY", 542.0, ts_ms=_ts_ms(14, i))
-
-        with patch("options_owl.collectors.candle_collector.time") as mock_time:
-            mock_time.time.return_value = _ts_ms(14, 6) / 1000
-            await collector.flush()
-
-        rows = await read_candles_from_db(tmp_db, "TSLA")
-        assert rows == []
-
-    @pytest.mark.asyncio
-    async def test_cleanup_old_bars(self, tmp_db):
-        collector = CandleCollector(tmp_db, ["SPY"])
-        await collector.init_db()
-
-        # Insert a bar with a very old timestamp
-        import aiosqlite
-        async with aiosqlite.connect(tmp_db) as conn:
-            await conn.execute(
-                """INSERT INTO stock_candles
-                   (ticker, timeframe, bar_start_ts, bar_start, open, high, low, close)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                ("SPY", "5m", 1000000, "2000-01-01T00:00:00+00:00", 100, 101, 99, 100),
-            )
-            # Insert a recent bar
-            recent_ts = int(time.time() * 1000)
-            await conn.execute(
-                """INSERT INTO stock_candles
-                   (ticker, timeframe, bar_start_ts, bar_start, open, high, low, close)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                ("SPY", "5m", recent_ts, "2026-05-14T14:00:00+00:00", 542, 543, 541, 542),
-            )
-            await conn.commit()
-
-        deleted = await collector.cleanup_old_bars(keep_hours=1)
-        assert deleted >= 1
-
-        # Recent bar should survive
-        rows = await read_candles_from_db(tmp_db, "SPY")
-        assert len(rows) >= 1
-        assert rows[-1]["bar_start_ts"] == recent_ts
 
 
 # ---------------------------------------------------------------------------
@@ -496,39 +437,38 @@ class TestDBIntegration:
 
 class TestCandleCacheSharedDB:
     @pytest.mark.asyncio
-    async def test_shared_db_used_before_rest(self, tmp_db):
-        """CandleCache checks shared DB before making REST calls."""
+    async def test_shared_db_reads_from_pg(self):
+        """CandleCache reads candles via PG (through read_candles_from_db)."""
+        from unittest.mock import AsyncMock
         from options_owl.collectors.candle_cache import CandleCache
 
-        # Set up shared DB with candle data
-        collector = CandleCollector(tmp_db, ["SPY"])
-        await collector.init_db()
+        mock_rows = [
+            {"bar_start_ts": _ts_ms(14, 0), "open": 542.0, "high": 543.0,
+             "low": 541.0, "close": 542.5, "volume": 1000, "vwap": 542.2},
+        ]
 
-        for i in range(5):
-            collector.record_price("SPY", 542.0 + i * 0.1, ts_ms=_ts_ms(14, i))
-
-        with patch("options_owl.collectors.candle_collector.time") as mock_time:
-            mock_time.time.return_value = _ts_ms(14, 6) / 1000
-            await collector.flush()
-
-        # Create CandleCache with shared_db_path (no API key needed)
-        cache = CandleCache(api_key="", shared_db_path=str(tmp_db))
-        bars = await cache.get_candles("SPY", "5m")
+        cache = CandleCache(api_key="", shared_db_path="pg")
+        with patch(
+            "options_owl.collectors.candle_collector.read_candles_from_db",
+            new=AsyncMock(return_value=mock_rows),
+        ):
+            bars = await cache.get_candles("SPY", "5m")
 
         assert len(bars) >= 1
-        assert bars[0].close > 0
+        assert bars[0].close == 542.5
 
     @pytest.mark.asyncio
-    async def test_shared_db_missing_falls_through(self, tmp_path):
-        """When shared DB doesn't exist, CandleCache falls through to next source."""
+    async def test_pg_disconnected_returns_empty(self):
+        """When PG returns no data, CandleCache returns empty."""
+        from unittest.mock import AsyncMock
         from options_owl.collectors.candle_cache import CandleCache
 
-        cache = CandleCache(
-            api_key="",
-            shared_db_path=str(tmp_path / "nonexistent.db"),
-        )
-        bars = await cache.get_candles("SPY", "5m")
-        # Should return empty (no REST key either), not crash
+        cache = CandleCache(api_key="", shared_db_path="pg")
+        with patch(
+            "options_owl.collectors.candle_collector.read_candles_from_db",
+            new=AsyncMock(return_value=[]),
+        ):
+            bars = await cache.get_candles("SPY", "5m")
         assert bars == []
 
 
@@ -538,7 +478,7 @@ class TestCandleCacheSharedDB:
 
 class TestBuildAllCandles:
     def test_multiple_tickers(self):
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY", "QQQ", "TSLA"])
+        collector = CandleCollector(["SPY", "QQQ", "TSLA"])
 
         for i in range(5):
             collector.record_price("SPY", 542.0, ts_ms=_ts_ms(14, i))
@@ -599,7 +539,7 @@ class TestHarvesterSafety:
         assert "polygon_options" not in source
 
     def test_candle_collector_no_http_calls(self):
-        """CandleCollector only writes via aiosqlite, no HTTP calls."""
+        """CandleCollector doesn't make HTTP calls (data comes from WS/PG)."""
         import inspect
         import options_owl.collectors.candle_collector as mod
 
@@ -619,25 +559,18 @@ class TestHarvesterSafety:
         assert import_pos > 0
         assert run_pos > import_pos
 
-    def test_candle_schema_has_unique_constraint(self):
-        """Verify UNIQUE constraint prevents duplicate candle bars."""
-        assert "UNIQUE(ticker, timeframe, bar_start_ts)" in CANDLE_SCHEMA
+    def test_pg_schema_has_unique_constraint(self):
+        """Verify PG schema has UNIQUE constraint on stock_candles."""
+        from options_owl.db.postgres import SCHEMA_SQL
+        assert "UNIQUE (ticker, timeframe, bar_time)" in SCHEMA_SQL
 
-    def test_candle_schema_uses_wal(self):
-        """WAL mode required for concurrent reads from multiple agents."""
-        import inspect
-        import options_owl.collectors.candle_collector as mod
-
-        source = inspect.getsource(mod)
-        assert "PRAGMA journal_mode=WAL" in source
-
-    def test_docker_compose_harvester_db_rw_for_wal(self):
-        """Agent containers mount harvester DB as :rw for WAL sidecar files."""
+    def test_docker_compose_all_bots_have_pg(self):
+        """All trading bots connect to PostgreSQL for market data."""
         from pathlib import Path
 
         compose = Path("/Users/kody/dev/options-owl/docker-compose.yml").read_text()
-        # Each agent should have :rw mount of harvester journal (WAL needs write for -shm/-wal)
-        assert "shared_harvester:rw" in compose
+        assert "ENABLE_POSTGRES=true" in compose
+        assert "DATABASE_URL=postgresql://" in compose
 
 
 # ---------------------------------------------------------------------------
@@ -647,20 +580,21 @@ class TestHarvesterSafety:
 class TestEdgeCases:
     def test_single_observation_in_bucket(self):
         """A single price observation still produces a valid candle."""
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
         collector.record_price("SPY", 542.0, ts_ms=_ts_ms(14, 0))
 
         with patch("options_owl.collectors.candle_collector.time") as mock_time:
             mock_time.time.return_value = _ts_ms(14, 6) / 1000
             candles = collector.build_candles("SPY")
 
-        assert len(candles) == 1
-        c = candles[0]
+        c5 = _only(candles)
+        assert len(c5) == 1
+        c = c5[0]
         assert c["open"] == c["high"] == c["low"] == c["close"] == 542.0
 
     def test_observations_across_day_boundary(self):
         """Observations near midnight are bucketed correctly."""
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
 
         # Just before midnight bucket and just after
         late_ts = _ts_ms(23, 58)
@@ -676,7 +610,7 @@ class TestEdgeCases:
 
     def test_build_candles_unknown_ticker(self):
         """Building candles for untracked ticker returns empty."""
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
         candles = collector.build_candles("UNKNOWN")
         assert candles == []
 
@@ -695,21 +629,22 @@ class TestEdgeCases:
         assert _ws_auth_ok([]) is False
 
     def test_ws_connected_property(self):
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
         assert collector.ws_connected is False
 
     def test_bar_start_is_valid_iso(self):
         """bar_start field is a valid ISO 8601 timestamp."""
-        collector = CandleCollector(Path("/tmp/test.db"), ["SPY"])
+        collector = CandleCollector(["SPY"])
         collector.record_price("SPY", 542.0, ts_ms=_ts_ms(14, 0))
 
         with patch("options_owl.collectors.candle_collector.time") as mock_time:
             mock_time.time.return_value = _ts_ms(14, 6) / 1000
             candles = collector.build_candles("SPY")
 
-        assert len(candles) == 1
+        c5 = _only(candles)
+        assert len(c5) == 1
         # Should parse without error
-        dt = datetime.fromisoformat(candles[0]["bar_start"])
+        dt = datetime.fromisoformat(c5[0]["bar_start"])
         assert dt.tzinfo is not None  # must be timezone-aware
 
 
@@ -719,11 +654,12 @@ class TestEdgeCases:
 
 class TestFullCycle:
     @pytest.mark.asyncio
-    async def test_record_build_flush_read(self, tmp_db):
-        """Complete cycle: record -> build -> flush -> read."""
+    async def test_record_build_flush(self):
+        """Complete cycle: record -> build -> flush to PG."""
+        from unittest.mock import AsyncMock, MagicMock
+
         tickers = ["SPY", "QQQ", "TSLA"]
-        collector = CandleCollector(tmp_db, tickers)
-        await collector.init_db()
+        collector = CandleCollector(tickers)
 
         # Simulate 15 minutes of polling (3 complete 5m buckets)
         for minute in range(15):
@@ -733,36 +669,34 @@ class TestFullCycle:
                     ticker, price, ts_ms=_ts_ms(14, minute)
                 )
 
+        mock_pg = MagicMock()
+        mock_pg.is_connected.return_value = True
+        mock_pg.write_stock_candles_batch = AsyncMock()
+        mock_pg.write_stock_ticks_batch = AsyncMock()
+
         with patch("options_owl.collectors.candle_collector.time") as mock_time:
-            # "Now" is 14:16 — so 14:00, 14:05, 14:10 buckets are complete
             mock_time.time.return_value = _ts_ms(14, 16) / 1000
-            written = await collector.flush()
+            with patch("options_owl.db.postgres.is_connected", return_value=True), \
+                 patch("options_owl.db.postgres.write_stock_candles_batch", new=mock_pg.write_stock_candles_batch), \
+                 patch("options_owl.db.postgres.write_stock_ticks_batch", new=mock_pg.write_stock_ticks_batch):
+                written = await collector.flush()
 
-        assert written >= 9  # 3 tickers * 3 buckets
-
-        # Read back
-        for ticker in tickers:
-            rows = await read_candles_from_db(tmp_db, ticker)
-            assert len(rows) >= 3
-            # Verify chronological order
-            for i in range(1, len(rows)):
-                assert rows[i]["bar_start_ts"] > rows[i - 1]["bar_start_ts"]
-            # Verify OHLC makes sense
-            for r in rows:
-                assert r["high"] >= r["open"]
-                assert r["high"] >= r["close"]
-                assert r["low"] <= r["open"]
-                assert r["low"] <= r["close"]
+        assert written >= 9  # 3 tickers * 3 timeframes (5m, 15m, 1h)
+        mock_pg.write_stock_candles_batch.assert_called_once()
+        candles = mock_pg.write_stock_candles_batch.call_args[0][0]
+        for c in candles:
+            assert c["high"] >= c["open"]
+            assert c["high"] >= c["close"]
+            assert c["low"] <= c["open"]
+            assert c["low"] <= c["close"]
 
     @pytest.mark.asyncio
-    async def test_ws_message_processing(self, tmp_db):
+    async def test_ws_message_processing(self):
         """Test _process_ws_message correctly parses Polygon AM events."""
-        collector = CandleCollector(tmp_db, ["SPY", "TSLA"])
-        await collector.init_db()
+        collector = CandleCollector(["SPY", "TSLA"])
 
         import json
 
-        # Valid AM event for SPY
         msg = json.dumps([{
             "ev": "AM",
             "sym": "SPY",
@@ -784,10 +718,9 @@ class TestFullCycle:
         assert bar.volume == 150000
 
     @pytest.mark.asyncio
-    async def test_ws_ignores_option_symbols(self, tmp_db):
+    async def test_ws_ignores_option_symbols(self):
         """WS processor ignores option symbols (O:SPY...)."""
-        collector = CandleCollector(tmp_db, ["SPY"])
-        await collector.init_db()
+        collector = CandleCollector(["SPY"])
 
         import json
 
@@ -801,10 +734,9 @@ class TestFullCycle:
         assert len(collector._minute_bars["SPY"]) == 0
 
     @pytest.mark.asyncio
-    async def test_ws_ignores_untracked_tickers(self, tmp_db):
+    async def test_ws_ignores_untracked_tickers(self):
         """WS processor ignores tickers not in the universe."""
-        collector = CandleCollector(tmp_db, ["SPY"])
-        await collector.init_db()
+        collector = CandleCollector(["SPY"])
 
         import json
 
@@ -817,42 +749,37 @@ class TestFullCycle:
         assert len(collector._minute_bars["SPY"]) == 0
 
     @pytest.mark.asyncio
-    async def test_ws_ignores_non_am_events(self, tmp_db):
+    async def test_ws_ignores_non_am_events(self):
         """WS processor ignores non-AM events (T, Q, status)."""
-        collector = CandleCollector(tmp_db, ["SPY"])
-        await collector.init_db()
+        collector = CandleCollector(["SPY"])
 
         import json
 
-        # Trade event
         msg = json.dumps([{"ev": "T", "sym": "SPY", "p": 542.30}])
         collector._process_ws_message(msg)
         assert len(collector._minute_bars["SPY"]) == 0
 
-        # Status event
         msg = json.dumps([{"ev": "status", "message": "connected"}])
         collector._process_ws_message(msg)
         assert len(collector._minute_bars["SPY"]) == 0
 
     @pytest.mark.asyncio
-    async def test_ws_handles_malformed_json(self, tmp_db):
+    async def test_ws_handles_malformed_json(self):
         """WS processor doesn't crash on malformed messages."""
-        collector = CandleCollector(tmp_db, ["SPY"])
-        await collector.init_db()
+        collector = CandleCollector(["SPY"])
 
         collector._process_ws_message("not json at all")
         collector._process_ws_message(b"\x00\x01\x02")
         collector._process_ws_message("")
-        # Should not crash
         assert len(collector._minute_bars["SPY"]) == 0
 
     @pytest.mark.asyncio
-    async def test_ws_bars_produce_better_candles(self, tmp_db):
-        """WS minute bars produce candles with real OHLCV (not just close)."""
-        collector = CandleCollector(tmp_db, ["SPY"])
-        await collector.init_db()
+    async def test_ws_bars_produce_candles_with_volume(self):
+        """WS minute bars produce candles with real OHLCV."""
+        from unittest.mock import AsyncMock
 
-        # Add WS bars with distinct OHLC
+        collector = CandleCollector(["SPY"])
+
         for i in range(5):
             bar = MinuteBar(
                 ts_ms=_ts_ms(14, i),
@@ -865,13 +792,18 @@ class TestFullCycle:
             )
             collector.ingest_minute_bar("SPY", bar)
 
-        with patch("options_owl.collectors.candle_collector.time") as mock_time:
+        mock_batch = AsyncMock()
+        mock_ticks = AsyncMock()
+        with patch("options_owl.collectors.candle_collector.time") as mock_time, \
+             patch("options_owl.db.postgres.is_connected", return_value=True), \
+             patch("options_owl.db.postgres.write_stock_candles_batch", new=mock_batch), \
+             patch("options_owl.db.postgres.write_stock_ticks_batch", new=mock_ticks):
             mock_time.time.return_value = _ts_ms(14, 6) / 1000
             written = await collector.flush()
 
         assert written >= 1
-        rows = await read_candles_from_db(tmp_db, "SPY")
-        assert len(rows) >= 1
-        r = rows[-1]
-        assert r["volume"] > 0  # real volume from WS
-        assert r["high"] > r["low"]  # distinct OHLC
+        candles = mock_batch.call_args[0][0]
+        five_m = [c for c in candles if c["timeframe"] == "5m"]
+        assert len(five_m) >= 1
+        assert five_m[0]["volume"] > 0
+        assert five_m[0]["high"] > five_m[0]["low"]

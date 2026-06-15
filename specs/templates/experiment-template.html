@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{SPEC_TITLE}}</title>
+    <style>
+        :root {
+            --primary: #7c3aed;
+            --primary-light: #ede9fe;
+            --danger: #dc2626;
+            --warning: #f59e0b;
+            --success: #16a34a;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-600: #4b5563;
+            --gray-800: #1f2937;
+            --gray-900: #111827;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            color: var(--gray-800);
+            line-height: 1.6;
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 2rem;
+            background: #fff;
+        }
+        header {
+            border-bottom: 3px solid var(--primary);
+            padding-bottom: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        header h1 { font-size: 1.75rem; color: var(--gray-900); }
+        .meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.5rem 2rem;
+            margin-top: 1rem;
+            font-size: 0.875rem;
+            color: var(--gray-600);
+        }
+        .meta dt { font-weight: 600; display: inline; }
+        .meta dd { display: inline; margin-left: 0.25rem; }
+        .status-badge {
+            display: inline-block;
+            padding: 0.125rem 0.625rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .status-todo { background: var(--gray-200); color: var(--gray-600); }
+        .status-active { background: var(--primary-light); color: var(--primary); }
+        .status-completed { background: #dcfce7; color: var(--success); }
+        .status-rejected { background: #fef2f2; color: var(--danger); }
+        .experiment-type {
+            display: inline-block;
+            padding: 0.125rem 0.625rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            background: var(--primary-light);
+            color: var(--primary);
+        }
+        section { margin-bottom: 2rem; }
+        section > h2 {
+            font-size: 1.25rem;
+            color: var(--primary);
+            border-bottom: 1px solid var(--gray-200);
+            padding-bottom: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        section > h3 { font-size: 1rem; margin: 1rem 0 0.5rem; color: var(--gray-900); }
+        ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+        li { margin-bottom: 0.25rem; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1rem;
+            font-size: 0.875rem;
+        }
+        th, td {
+            text-align: left;
+            padding: 0.5rem 0.75rem;
+            border: 1px solid var(--gray-200);
+        }
+        th { background: var(--gray-50); font-weight: 600; }
+        td.positive { color: var(--success); font-weight: 600; }
+        td.negative { color: var(--danger); font-weight: 600; }
+        pre {
+            background: var(--gray-50);
+            border: 1px solid var(--gray-200);
+            border-radius: 0.375rem;
+            padding: 1rem;
+            overflow-x: auto;
+            font-size: 0.8125rem;
+            line-height: 1.5;
+            margin-bottom: 1rem;
+        }
+        code { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: 0.8125rem; }
+        .callout {
+            padding: 0.75rem 1rem;
+            border-left: 4px solid var(--primary);
+            background: var(--primary-light);
+            border-radius: 0 0.375rem 0.375rem 0;
+            margin-bottom: 1rem;
+            font-size: 0.875rem;
+        }
+        .callout.warning { border-left-color: var(--warning); background: #fffbeb; }
+        .callout.danger { border-left-color: var(--danger); background: #fef2f2; }
+        .callout.success { border-left-color: var(--success); background: #dcfce7; }
+        .verdict {
+            padding: 1rem;
+            border: 2px solid var(--gray-200);
+            border-radius: 0.5rem;
+            margin-top: 1rem;
+            font-size: 1rem;
+        }
+        .verdict.adopted { border-color: var(--success); background: #f0fdf4; }
+        .verdict.rejected { border-color: var(--danger); background: #fef2f2; }
+        .verdict.modified { border-color: var(--warning); background: #fffbeb; }
+        .changelog { font-size: 0.875rem; }
+        .changelog dt { font-weight: 600; margin-top: 0.5rem; }
+        .changelog dd { margin-left: 1rem; color: var(--gray-600); }
+        footer {
+            margin-top: 3rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--gray-200);
+            font-size: 0.75rem;
+            color: var(--gray-600);
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>{{SPEC_TITLE}}</h1>
+    <div class="meta">
+        <div><dt>Spec ID:</dt><dd>{{SPEC_ID}}</dd></div>
+        <div><dt>Type:</dt><dd><span class="experiment-type">Experiment</span></dd></div>
+        <div><dt>Status:</dt><dd><span class="status-badge status-{{STATUS_CLASS}}">{{STATUS}}</span></dd></div>
+        <div><dt>Project:</dt><dd>{{PROJECT}}</dd></div>
+        <div><dt>Category:</dt><dd>experiments</dd></div>
+        <div><dt>Created:</dt><dd>{{CREATED_DATE}}</dd></div>
+        <div><dt>Updated:</dt><dd>{{UPDATED_DATE}}</dd></div>
+        <div><dt>Version:</dt><dd>{{VERSION}}</dd></div>
+        <div><dt>Author:</dt><dd>{{AUTHOR}}</dd></div>
+    </div>
+</header>
+
+<section>
+    <h2>1. Hypothesis</h2>
+    <p>{{HYPOTHESIS}}</p>
+    <div class="callout">
+        <strong>Expected outcome:</strong> {{EXPECTED_OUTCOME}}
+    </div>
+</section>
+
+<section>
+    <h2>2. Background &amp; Motivation</h2>
+    <p>{{BACKGROUND}}</p>
+</section>
+
+<section>
+    <h2>3. Methodology</h2>
+
+    <h3>3.1 Control (Baseline)</h3>
+    <p>{{CONTROL_DESCRIPTION}}</p>
+    <pre><code>{{CONTROL_CONFIG}}</code></pre>
+
+    <h3>3.2 Test (Experiment)</h3>
+    <p>{{TEST_DESCRIPTION}}</p>
+    <pre><code>{{TEST_CONFIG}}</code></pre>
+
+    <h3>3.3 Data Source &amp; Period</h3>
+    <table>
+        <tr><th>Data Source</th><td>{{DATA_SOURCE}}</td></tr>
+        <tr><th>Date Range</th><td>{{DATE_RANGE}}</td></tr>
+        <tr><th>Sample Size</th><td>{{SAMPLE_SIZE}}</td></tr>
+        <tr><th>Script/Command</th><td><code>{{RUN_COMMAND}}</code></td></tr>
+    </table>
+
+    <h3>3.4 Metrics</h3>
+    <ul>
+        <li><strong>Primary:</strong> {{PRIMARY_METRIC}}</li>
+        <li><strong>Secondary:</strong> {{SECONDARY_METRICS}}</li>
+    </ul>
+</section>
+
+<section>
+    <h2>4. Implementation</h2>
+
+    <h3>4.1 Files Changed</h3>
+    <table>
+        <thead>
+            <tr><th>File</th><th>Change</th><th>Reversible?</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>{{FILE_PATH}}</td><td>{{CHANGE_DESC}}</td><td>{{REVERSIBLE}}</td></tr>
+        </tbody>
+    </table>
+
+    <h3>4.2 Configuration</h3>
+    <pre><code>{{CONFIG_CHANGES}}</code></pre>
+</section>
+
+<section>
+    <h2>5. Results</h2>
+
+    <div class="callout warning">
+        <strong>Fill this section after the experiment completes.</strong> Include raw numbers, not just conclusions.
+    </div>
+
+    <h3>5.1 Summary</h3>
+    <table>
+        <thead>
+            <tr><th>Metric</th><th>Control</th><th>Test</th><th>Delta</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>{{METRIC_NAME}}</td>
+                <td>{{CONTROL_VALUE}}</td>
+                <td>{{TEST_VALUE}}</td>
+                <td class="{{POSITIVE_OR_NEGATIVE}}">{{DELTA}}</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>5.2 Detailed Breakdown</h3>
+    <p>{{DETAILED_ANALYSIS}}</p>
+
+    <h3>5.3 Unexpected Findings</h3>
+    <ul>
+        <li>{{UNEXPECTED_1}}</li>
+    </ul>
+</section>
+
+<section>
+    <h2>6. Conclusion &amp; Decision</h2>
+
+    <!-- Change class to: adopted | rejected | modified -->
+    <div class="verdict {{VERDICT_CLASS}}">
+        <strong>Verdict: {{VERDICT}}</strong>
+        <p>{{VERDICT_RATIONALE}}</p>
+    </div>
+
+    <h3>Follow-up Actions</h3>
+    <ul>
+        <li>{{FOLLOWUP_1}}</li>
+    </ul>
+</section>
+
+<section>
+    <h2>7. Risks &amp; Lessons Learned</h2>
+    <ul>
+        <li>{{LESSON_1}}</li>
+    </ul>
+</section>
+
+<section>
+    <h2>8. Changelog</h2>
+    <dl class="changelog">
+        <dt>{{VERSION}} — {{CREATED_DATE}}</dt>
+        <dd>Initial experiment spec created</dd>
+    </dl>
+</section>
+
+<footer>
+    {{PROJECT}} — Experiment Specification | {{CREATED_DATE}}
+</footer>
+
+</body>
+</html>

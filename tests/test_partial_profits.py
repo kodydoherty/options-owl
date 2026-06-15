@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
 import aiosqlite
@@ -47,6 +47,8 @@ def _make_settings(tmp_db_path: str, **overrides) -> Settings:
         "ENABLE_VINNY_STRATEGY": False,
         "ENABLE_SCORE_SIZING": False,
         "ENABLE_SMART_ENTRY": False,
+        "ENABLE_PUT_TRADING": True,
+        "ENABLE_DIRECTIONAL_REGIME": False,
         "ENTRY_HARD_CUTOFF_HOUR": 23,
         "ENTRY_HARD_CUTOFF_MINUTE": 59,
         "TOD_LATE_CUTOFF_HOUR": 23,
@@ -55,6 +57,25 @@ def _make_settings(tmp_db_path: str, **overrides) -> Settings:
     }
     defaults.update(overrides)
     return Settings(**defaults)
+
+
+def _attach_mock_candle_cache(trader: PaperTrader) -> None:
+    """Attach a mock candle cache with bearish data so PUT gates pass."""
+    from options_owl.collectors.candle_cache import CandleBar
+    bearish_bars = [
+        CandleBar(0, 522.0, 522.5, 519.0, 519.5, 1000, vwap=521.0),
+        CandleBar(0, 520.0, 520.5, 518.0, 518.5, 1000, vwap=520.0),
+        CandleBar(0, 519.0, 519.5, 517.0, 517.5, 1000, vwap=519.0),
+        CandleBar(0, 518.0, 518.5, 516.0, 516.5, 1000, vwap=518.0),
+        CandleBar(0, 517.0, 517.5, 515.0, 515.5, 1000, vwap=517.0),
+        CandleBar(0, 516.0, 516.5, 514.0, 514.5, 1000, vwap=516.0),
+    ]
+    mock_cc = AsyncMock()
+    mock_cc.get_candle_data = AsyncMock(return_value={
+        "5m": bearish_bars,
+        "indicators": {"5m": {"rsi": 38.0, "ema9": 515.0, "ema21": 518.0}},
+    })
+    trader._candle_cache = mock_cc
 
 
 def _make_signal(**overrides) -> TradeSignal:
@@ -97,6 +118,7 @@ class TestPartialCloseTradeSpitsCorrectly:
         settings = _make_settings(tmp_db_path)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         # Open a trade — with 20% of $10k = $2000, premium $1.70 -> 11 contracts
         sig = _make_signal(score=130, atm_premium=1.70)
@@ -132,6 +154,7 @@ class TestPartialCloseTradeSpitsCorrectly:
         settings = _make_settings(tmp_db_path)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=130, atm_premium=1.70)
         opened = await trader.evaluate_and_trade(sig, signal_id=1)
@@ -175,6 +198,7 @@ class TestPartialCloseFallsBackToFullClose:
         )
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         # Open with 2 contracts
         sig = _make_signal(score=130, atm_premium=5.00)
@@ -217,6 +241,7 @@ class TestPartialCloseFallsBackToFullClose:
         )
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=130, atm_premium=5.00)
         opened = await trader.evaluate_and_trade(sig, signal_id=1)
@@ -251,6 +276,7 @@ class TestRemainingContractsStillTracked:
         settings = _make_settings(tmp_db_path)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=130, atm_premium=1.70)
         opened = await trader.evaluate_and_trade(sig, signal_id=1)
@@ -282,6 +308,7 @@ class TestT2ClosesRemainder:
         settings = _make_settings(tmp_db_path)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=130, atm_premium=1.70)
         opened = await trader.evaluate_and_trade(sig, signal_id=1)
@@ -325,6 +352,7 @@ class TestStopCloses100Percent:
         settings = _make_settings(tmp_db_path)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=130, atm_premium=1.70)
         opened = await trader.evaluate_and_trade(sig, signal_id=1)
@@ -352,6 +380,7 @@ class TestDisabledFeatureDoesNotSplit:
         settings = _make_settings(tmp_db_path, ENABLE_PARTIAL_PROFITS=False)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=130, atm_premium=1.70)
         opened = await trader.evaluate_and_trade(sig, signal_id=1)
@@ -383,6 +412,7 @@ class TestEdgeCaseSingleContract:
         )
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         # 1 contract: 500 * 5% = $25 -> int(25/170) = 0, max(1, 0) = 1
         sig = _make_signal(score=130, atm_premium=1.70)
@@ -412,6 +442,7 @@ class TestBalanceUpdatesOnPartialClose:
         settings = _make_settings(tmp_db_path, PORTFOLIO_SIZE=10000.0)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=130, atm_premium=1.70)
         opened = await trader.evaluate_and_trade(sig, signal_id=1)
@@ -475,6 +506,7 @@ class TestVinnyDCAInteraction:
         )
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=130, atm_premium=1.70)
         # Mock _get_current_price to return a price near entry (avoids anti-chase rejection)
@@ -482,8 +514,8 @@ class TestVinnyDCAInteraction:
             opened = await trader.evaluate_and_trade(sig, signal_id=1)
         assert opened is not None
 
-        # Flat 85% mult: slot=$1600, 85%=$1360, raw=8, pos_cap=20%→11 → 8
-        assert opened["contracts"] == 8
+        # Flat 85% × PUT 50%: slot=$1600, 85%×50%=$680, raw=4, pos_cap=20%→11 → 4
+        assert opened["contracts"] == 4
 
         # Verify DCA is skipped — dca_tranches_remaining should be 0
         async with aiosqlite.connect(tmp_db_path) as conn:
@@ -494,7 +526,7 @@ class TestVinnyDCAInteraction:
             )
             row = dict(await cursor.fetchone())
         assert row["dca_tranches_remaining"] == 0
-        assert row["dca_total_contracts"] == 8
+        assert row["dca_total_contracts"] == 4
 
     @pytest.mark.asyncio
     async def test_non_vinny_dca_still_works(self, tmp_db_path):
@@ -515,6 +547,7 @@ class TestVinnyDCAInteraction:
         )
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=130, atm_premium=1.70)
         opened = await trader.evaluate_and_trade(sig, signal_id=1)
@@ -545,16 +578,17 @@ class TestScaleOutRounding:
     @pytest.mark.asyncio
     async def test_scale_out_20pct_on_5_contracts(self, tmp_db_path):
         """5 contracts, close 20% → round(5*0.20)=1 contract closed, 4 remaining."""
-        # Flat 85%: $6300 × 80% / 5 = $1008, 85% = $856 / $170 = 5 contracts
+        # Flat 85% × PUT 50%: $12600 × 80% / 5 = $2016, 85%×50% = $856 / $170 = 5 contracts
         sig = _make_signal(score=150, atm_premium=1.70)
         settings_vinny = _make_settings(
             tmp_db_path,
             ENABLE_VINNY_STRATEGY=True,
             ENABLE_SCORE_SIZING=True,
-            PORTFOLIO_SIZE=6300.0,
+            PORTFOLIO_SIZE=12600.0,
         )
         trader_v = PaperTrader(settings_vinny)
         await trader_v.init()
+        _attach_mock_candle_cache(trader_v)
         with patch.object(trader_v, "_get_current_price", return_value=170.05):
             opened = await trader_v.evaluate_and_trade(sig, signal_id=1)
         assert opened is not None
@@ -588,6 +622,7 @@ class TestScaleOutRounding:
         )
         trader = PaperTrader(settings2)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=130, atm_premium=1.70)
         opened = await trader.evaluate_and_trade(sig, signal_id=1)
@@ -618,6 +653,7 @@ class TestScaleOutRounding:
         )
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=130, atm_premium=1.70)
         opened = await trader.evaluate_and_trade(sig, signal_id=1)

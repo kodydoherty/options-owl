@@ -31,6 +31,8 @@ def _make_settings(tmp_db_path: str, **overrides) -> Settings:
         "ENABLE_IV_FILTER": False,
         "ENABLE_VIX_FILTER": False,
         "ENABLE_ANALYST_FILTER": False,
+        "ENABLE_DIRECTIONAL_REGIME": False,
+        "ENABLE_PUT_TRADING": True,
     }
     defaults.update(overrides)
     return Settings(**defaults)

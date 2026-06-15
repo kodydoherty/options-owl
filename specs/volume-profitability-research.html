@@ -1,0 +1,1460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OptionsOwl — Volume &amp; Profitability Research + Isolated Test Plan</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text-muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --orange: #db6d28;
+    --purple: #bc8cff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 2rem;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+  h1 { color: #fff; font-size: 2rem; margin-bottom: 0.5rem; border-bottom: 2px solid var(--accent); padding-bottom: 0.5rem; }
+  h2 { color: var(--accent); font-size: 1.5rem; margin: 2rem 0 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+  h3 { color: var(--purple); font-size: 1.2rem; margin: 1.5rem 0 0.5rem; }
+  h4 { color: var(--yellow); font-size: 1rem; margin: 1rem 0 0.5rem; }
+  p, li { margin-bottom: 0.5rem; }
+  ul, ol { padding-left: 1.5rem; }
+  .subtitle { color: var(--text-muted); font-size: 1rem; margin-bottom: 2rem; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin: 1rem 0;
+  }
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1rem;
+    margin: 1rem 0;
+  }
+  .metric {
+    text-align: center;
+    padding: 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .metric .value { font-size: 2rem; font-weight: bold; }
+  .metric .label { color: var(--text-muted); font-size: 0.85rem; }
+  .green { color: var(--green); }
+  .red { color: var(--red); }
+  .yellow { color: var(--yellow); }
+  .orange { color: var(--orange); }
+  .accent { color: var(--accent); }
+  .purple { color: var(--purple); }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.9rem;
+  }
+  th {
+    background: #1c2128;
+    color: var(--accent);
+    text-align: left;
+    padding: 0.6rem 0.8rem;
+    border: 1px solid var(--border);
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+  }
+  td {
+    padding: 0.5rem 0.8rem;
+    border: 1px solid var(--border);
+  }
+  tr:nth-child(even) { background: rgba(255,255,255,0.02); }
+  tr:hover { background: rgba(88,166,255,0.05); }
+  .badge {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-weight: 600;
+  }
+  .badge-green { background: rgba(63,185,80,0.15); color: var(--green); }
+  .badge-red { background: rgba(248,81,73,0.15); color: var(--red); }
+  .badge-yellow { background: rgba(210,153,34,0.15); color: var(--yellow); }
+  .badge-blue { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .badge-purple { background: rgba(188,140,255,0.15); color: var(--purple); }
+  .highlight-box {
+    border-left: 4px solid var(--accent);
+    background: rgba(88,166,255,0.05);
+    padding: 1rem 1.5rem;
+    margin: 1rem 0;
+    border-radius: 0 8px 8px 0;
+  }
+  .warning-box {
+    border-left: 4px solid var(--yellow);
+    background: rgba(210,153,34,0.05);
+    padding: 1rem 1.5rem;
+    margin: 1rem 0;
+    border-radius: 0 8px 8px 0;
+  }
+  .danger-box {
+    border-left: 4px solid var(--red);
+    background: rgba(248,81,73,0.05);
+    padding: 1rem 1.5rem;
+    margin: 1rem 0;
+    border-radius: 0 8px 8px 0;
+  }
+  .success-box {
+    border-left: 4px solid var(--green);
+    background: rgba(63,185,80,0.05);
+    padding: 1rem 1.5rem;
+    margin: 1rem 0;
+    border-radius: 0 8px 8px 0;
+  }
+  .toc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin: 1.5rem 0;
+  }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .toc ol { counter-reset: toc; list-style: none; padding-left: 0; }
+  .toc ol li { counter-increment: toc; margin: 0.4rem 0; }
+  .toc ol li::before { content: counter(toc) ". "; color: var(--text-muted); font-weight: 600; }
+  .toc ol ol { padding-left: 1.5rem; }
+  .toc ol ol li::before { content: counter(toc, lower-alpha) ". "; }
+  code {
+    background: rgba(255,255,255,0.06);
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+  pre {
+    background: rgba(255,255,255,0.04);
+    padding: 1rem;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 0.85rem;
+    margin: 0.5rem 0;
+  }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  @media (max-width: 768px) { .two-col, .card-grid { grid-template-columns: 1fr; } }
+  .test-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin: 0.75rem 0;
+  }
+  .test-card h4 { margin-top: 0; }
+  .test-card .test-meta {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin: 0.5rem 0;
+    font-size: 0.85rem;
+  }
+  .test-card .test-meta span {
+    background: rgba(255,255,255,0.05);
+    padding: 0.2rem 0.6rem;
+    border-radius: 4px;
+  }
+  .checklist { list-style: none; padding-left: 0; }
+  .checklist li { padding: 0.3rem 0; padding-left: 1.5rem; position: relative; }
+  .checklist li::before { content: "☐"; position: absolute; left: 0; color: var(--text-muted); }
+  .checklist li.done::before { content: "☑"; color: var(--green); }
+</style>
+</head>
+<body>
+
+<h1>OptionsOwl &mdash; Volume &amp; Profitability Research</h1>
+<p class="subtitle">Isolated Variable Testing Plan &bull; May 28, 2026 &bull; All tests run on <code>backtest_gold_standard.py</code> / <code>backtest_combined.py</code> against ThetaData (46.2M bars, 14 tickers)</p>
+
+<div class="danger-box">
+  <strong>Ground Rules:</strong>
+  <ul style="margin-top:0.5rem;">
+    <li><strong>No Discord sourcing</strong> &mdash; all signal generation is self-sourced (ML models + scoring pipeline)</li>
+    <li><strong>No fabricated data</strong> &mdash; every number below is either from an actual backtest run or is explicitly marked as "TO BE TESTED"</li>
+    <li><strong>Unusual Whales was tested and lost money</strong> &mdash; removed from recommendations</li>
+    <li><strong>MSFT is a confirmed net loser</strong> &mdash; stays blocklisted</li>
+    <li><strong>Isolated testing</strong> &mdash; change ONE variable from gold standard baseline, measure impact, then combine winners</li>
+  </ul>
+</div>
+
+<div class="toc">
+  <strong>Table of Contents</strong>
+  <ol>
+    <li><a href="#baseline">Gold Standard Baseline (Control)</a></li>
+    <li><a href="#methodology">Testing Methodology</a></li>
+    <li><a href="#entry-tests">Entry Pipeline Tests (14 isolated variables)</a></li>
+    <li><a href="#exit-tests">Exit Engine Tests (8 isolated variables)</a></li>
+    <li><a href="#sourcing-tests">Sourcing &amp; Data Tests (6 isolated variables)</a></li>
+    <li><a href="#strategies">Strategy &amp; Creative Ideas to Test</a>
+      <ol>
+        <li><a href="#strategies">Premium Band Strategies (P1&ndash;P5)</a></li>
+        <li><a href="#strategies">Time-of-Day Strategies (T1&ndash;T5)</a></li>
+        <li><a href="#strategies">New Data Sources (D1&ndash;D5)</a></li>
+        <li><a href="#strategies">Ticker Expansion (K1&ndash;K3)</a></li>
+        <li><a href="#strategies">Alternative Strategy Modes (M1&ndash;M4)</a></li>
+        <li><a href="#strategies">Profit-Taking Combos (TP1&ndash;TP2)</a></li>
+      </ol>
+    </li>
+    <li><a href="#combination">Combination Testing (Phase 2)</a></li>
+    <li><a href="#known-facts">Known Facts from Prior Analysis</a></li>
+    <li><a href="#scripts">Test Scripts &amp; Commands</a></li>
+  </ol>
+</div>
+
+<!-- ==================== SECTION 1: BASELINE ==================== -->
+<h2 id="baseline">1. Gold Standard Baseline (Control)</h2>
+
+<p>Every test changes exactly ONE parameter from this baseline. This is the <strong>control group</strong>.</p>
+
+<div class="card">
+  <h3>Verified Gold Standard Results (60 days, <code>backtest_gold_standard.py</code>)</h3>
+  <div class="card-grid">
+    <div class="metric"><div class="value green">62</div><div class="label">Trades</div></div>
+    <div class="metric"><div class="value green">93.5%</div><div class="label">Win Rate</div></div>
+    <div class="metric"><div class="value green">+$57,138</div><div class="label">Total P&amp;L</div></div>
+    <div class="metric"><div class="value green">17.96</div><div class="label">Profit Factor</div></div>
+    <div class="metric"><div class="value green">15.80</div><div class="label">Sharpe Ratio</div></div>
+    <div class="metric"><div class="value green">10.0%</div><div class="label">Max Drawdown</div></div>
+  </div>
+  <p style="color:var(--text-muted); margin-top:0.5rem;">~1.03 trades/day average. This is the number to beat on BOTH profitability AND volume.</p>
+</div>
+
+<div class="card">
+  <h3>Baseline Configuration (Fixed Parameters)</h3>
+  <table>
+    <tr><th>Category</th><th>Parameter</th><th>Baseline Value</th><th>Source</th></tr>
+    <tr><td>ML Models</td><td>Pattern threshold</td><td><code>0.85</code></td><td>backtest_gold_standard.py:76</td></tr>
+    <tr><td>ML Models</td><td>Entry timing threshold</td><td><code>0.70</code></td><td>backtest_gold_standard.py:77</td></tr>
+    <tr><td>ML Models</td><td>Regime threshold</td><td><code>0.19</code></td><td>backtest_gold_standard.py:78</td></tr>
+    <tr><td>Scanning</td><td>Scan window</td><td><code>9:35 &ndash; 11:00 AM ET</code> (min 5&ndash;90)</td><td>backtest_gold_standard.py:79-81</td></tr>
+    <tr><td>Scanning</td><td>Scan interval</td><td><code>1 minute</code></td><td>backtest_gold_standard.py:81</td></tr>
+    <tr><td>Portfolio</td><td>Starting balance</td><td><code>$23,000</code></td><td>backtest_gold_standard.py:56</td></tr>
+    <tr><td>Portfolio</td><td>Max concurrent</td><td><code>4</code></td><td>backtest_gold_standard.py:57</td></tr>
+    <tr><td>Portfolio</td><td>Max position %</td><td><code>15%</code></td><td>backtest_gold_standard.py:58</td></tr>
+    <tr><td>Portfolio</td><td>Max risk %</td><td><code>75%</code></td><td>backtest_gold_standard.py:59</td></tr>
+    <tr><td>Filters</td><td>Premium cap</td><td><code>$6.00</code> (mid $7, high $9)</td><td>backtest_gold_standard.py:63-64</td></tr>
+    <tr><td>Filters</td><td>Spread gate</td><td><code>15%</code></td><td>backtest_gold_standard.py:64</td></tr>
+    <tr><td>Filters</td><td>Min premium floor</td><td><code>$0.20</code></td><td>backtest_gold_standard.py:68</td></tr>
+    <tr><td>Filters</td><td>Excluded tickers</td><td><code>{MSFT}</code></td><td>backtest_gold_standard.py:53</td></tr>
+    <tr><td>Filters</td><td>Max same direction</td><td><code>2</code></td><td>backtest_gold_standard.py:62</td></tr>
+    <tr><td>Filters</td><td>Max index concurrent</td><td><code>1</code></td><td>backtest_gold_standard.py:70</td></tr>
+    <tr><td>Filters</td><td>Min entry spacing</td><td><code>5 min</code></td><td>backtest_gold_standard.py:73</td></tr>
+    <tr><td>Filters</td><td>Max position dollars</td><td><code>$5,000</code></td><td>backtest_gold_standard.py:67</td></tr>
+    <tr><td>Circuit Breaker</td><td>Daily loss CB</td><td><code>15%</code></td><td>backtest_gold_standard.py:61</td></tr>
+    <tr><td>Circuit Breaker</td><td>Bad day threshold</td><td><code>0.90</code></td><td>backtest_gold_standard.py:74</td></tr>
+    <tr><td>Circuit Breaker</td><td>Loss count threshold</td><td><code>2</code></td><td>backtest_gold_standard.py:75</td></tr>
+    <tr><td>Exit (V5 FSM)</td><td>Per-ticker configs</td><td><code>ENABLE_V6_PER_TICKER_CONFIG=True</code></td><td>V6 settings</td></tr>
+    <tr><td>Exit (V5 FSM)</td><td>Breakeven ratchet</td><td><code>trigger at +20%</code></td><td>V6 settings</td></tr>
+    <tr><td>Exit (V5 FSM)</td><td>Scaleout</td><td><code>sell 1/3 at +20%, min 3 contracts</code></td><td>V6 settings</td></tr>
+    <tr><td>Exit (V5 FSM)</td><td>2PM tighten</td><td><code>0.7x trail after 2PM</code></td><td>V6 settings</td></tr>
+    <tr><td>Exit (V5 FSM)</td><td>Scalp target</td><td><code>25% target, 40% runner confirm</code></td><td>V6 settings</td></tr>
+    <tr><td>Direction</td><td>CALL only</td><td><code>--calls-only</code></td><td>Gold standard = CALL track</td></tr>
+    <tr><td>Data</td><td>Source</td><td>ThetaData (1-min option bars)</td><td>46.2M rows, 14 tickers</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Combined Baseline (CALL + PUT)</h3>
+  <div class="card-grid">
+    <div class="metric"><div class="value green">84</div><div class="label">Trades</div></div>
+    <div class="metric"><div class="value green">86.9%</div><div class="label">Win Rate</div></div>
+    <div class="metric"><div class="value green">+$95,161</div><div class="label">Total P&amp;L</div></div>
+    <div class="metric"><div class="value green">8.42</div><div class="label">Profit Factor</div></div>
+  </div>
+  <p style="color:var(--text-muted);">CALL: 58 trades, 96.6% WR, +$73K &bull; PUT: 26 trades, 64.3% WR, +$20K &bull; ~1.4 trades/day</p>
+</div>
+
+<!-- ==================== SECTION 2: METHODOLOGY ==================== -->
+<h2 id="methodology">2. Testing Methodology</h2>
+
+<div class="highlight-box">
+  <strong>Scientific Method:</strong> Change ONE variable at a time from the baseline. Run the SAME 60-day backtest window. Compare P&amp;L, WR, trades/day, Sharpe, and max drawdown. Only variables that improve results are candidates for combination testing.
+</div>
+
+<div class="card">
+  <h3>Test Execution Protocol</h3>
+  <ol>
+    <li><strong>Modify the single parameter</strong> in the backtest script (create a copy or use CLI flags)</li>
+    <li><strong>Run:</strong> <code>python scripts/backtest_gold_standard.py --days 60</code> (or <code>backtest_combined.py</code>)</li>
+    <li><strong>Record:</strong> Total P&amp;L, Win Rate, Trade Count, Trades/Day, PF, Sharpe, MaxDD</li>
+    <li><strong>Compare to baseline:</strong> Did it improve trades/day WITHOUT destroying WR/PF?</li>
+    <li><strong>Pass criteria:</strong>
+      <ul>
+        <li>P&amp;L &ge; baseline (or close, if volume increase is significant)</li>
+        <li>WR &ge; 75% (we accept WR degradation if PF stays &ge; 3.0)</li>
+        <li>Trades/day improvement is meaningful (&ge; 0.5 more trades/day)</li>
+      </ul>
+    </li>
+    <li><strong>Log result</strong> in the results table below</li>
+  </ol>
+</div>
+
+<div class="card">
+  <h3>Results Tracking Table (fill in as tests complete)</h3>
+  <table>
+    <tr>
+      <th>Test ID</th><th>Variable Changed</th><th>Value</th>
+      <th>Trades</th><th>T/Day</th><th>WR</th><th>P&amp;L</th><th>PF</th><th>Sharpe</th><th>MaxDD</th>
+      <th>Verdict</th>
+    </tr>
+    <tr style="background: rgba(63,185,80,0.08);">
+      <td>CTRL</td><td colspan="2"><em>Gold Standard Baseline (CALL)</em></td>
+      <td>62</td><td>1.03</td><td>93.5%</td><td>+$57,138</td><td>17.96</td><td>15.80</td><td>10.0%</td>
+      <td><span class="badge badge-blue">CONTROL</span></td>
+    </tr>
+    <tr style="background: rgba(63,185,80,0.08);">
+      <td>CTRL-C</td><td colspan="2"><em>Combined Baseline (CALL+PUT)</em></td>
+      <td>84</td><td>1.40</td><td>86.9%</td><td>+$95,161</td><td>8.42</td><td>&mdash;</td><td>&mdash;</td>
+      <td><span class="badge badge-blue">CONTROL</span></td>
+    </tr>
+    <tr><td>E1</td><td>Scan window extended</td><td>9:35&ndash;2:00 PM</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>E2</td><td>Scan window extended</td><td>9:35&ndash;3:45 PM</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>E3</td><td>Pattern threshold lowered</td><td>0.80</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>E4</td><td>Pattern threshold lowered</td><td>0.75</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>E5</td><td>Entry timing threshold lowered</td><td>0.60</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>E6</td><td>Entry timing removed</td><td>disabled</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>E7</td><td>Premium cap raised</td><td>$10.00</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>E8</td><td>Premium cap removed</td><td>$999</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>E9</td><td>Premium floor lowered</td><td>$0.05</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>E10</td><td>Spread gate widened</td><td>25%</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>E11</td><td>Max concurrent raised</td><td>6</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>E12</td><td>Max same direction raised</td><td>3</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>E13</td><td>Min entry spacing reduced</td><td>2 min</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>E14</td><td>Regime filter removed</td><td>disabled</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>X1</td><td>Scalp target raised</td><td>35%</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>X2</td><td>Scalp target raised</td><td>50%</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>X3</td><td>Scaleout trigger raised</td><td>35%</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>X4</td><td>Breakeven ratchet trigger</td><td>30%</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>X5</td><td>2PM tighten disabled</td><td>disabled</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>X6</td><td>Scaleout disabled</td><td>disabled</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>X7</td><td>General profit target added</td><td>50%</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>X8</td><td>General profit target added</td><td>100%</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>S1</td><td>Two-window scanning</td><td>9:35-11:00 + 2:30-3:45</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>S2</td><td>PUT track added</td><td>combined mode</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>S3</td><td>Sourcing scoring pipeline</td><td>5-tier scoring</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>S4</td><td>Scan interval reduced</td><td>every 30s</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>S5</td><td>OTM strike targeting</td><td>1-2 strikes OTM</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>S6</td><td>Ticker universe expanded</td><td>add COIN/SMCI</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td colspan="11" style="background:#1c2128; color:var(--purple); font-weight:600;">Premium Band Strategies</td></tr>
+    <tr><td>P1</td><td>Penny options only</td><td>$0.05-$0.50</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>P2</td><td>Sweet spot band</td><td>$0.50-$1.50</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>P3</td><td>Mid-range band</td><td>$1.50-$3.00</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>P4</td><td>Expensive + quick TP</td><td>$3.00-$10.00</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>P5</td><td>Premium-adaptive exit</td><td>all, variable TP</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td colspan="11" style="background:#1c2128; color:var(--yellow); font-weight:600;">Time-of-Day Strategies</td></tr>
+    <tr><td>T1</td><td>Tighter morning window</td><td>9:35-10:30</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>T2</td><td>Power hour only</td><td>2:30-3:45</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>T3</td><td>Three-window strategy</td><td>open+lunch+power</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>T4</td><td>Per-ticker time windows</td><td>custom per ticker</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>T5</td><td>Time-variable ML thresholds</td><td>loose PM thresholds</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td colspan="11" style="background:#1c2128; color:var(--accent); font-weight:600;">Data Sources &amp; Strategy Modes</td></tr>
+    <tr><td>D1</td><td>Trump/political signals</td><td>keyword→SPY/QQQ</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>D2</td><td>Elon/Twitter signals</td><td>tweets→TSLA</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>D3</td><td>Polygon news events</td><td>earnings/analyst</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>D4</td><td>VIX regime overlay</td><td>dynamic trail widths</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>D5</td><td>Volume surge detection</td><td>vol_ratio &ge; 3.0 gate</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>M1</td><td>Runner-hunter mode</td><td>wide stops, small size</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>M2</td><td>Scalp mode</td><td>+15% TP, high volume</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>M3</td><td>Hybrid (scalp→runner)</td><td>TP 30%, upgrade if fast</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>M4</td><td>Bear day PUT strategy</td><td>aggressive PUTs on red</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>TP1</td><td>Triple scaleout</td><td>1/3 @20/50/ride</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>TP2</td><td>Time-based TP</td><td>faster TP later in day</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+  </table>
+</div>
+
+<!-- ==================== SECTION 3: ENTRY TESTS ==================== -->
+<h2 id="entry-tests">3. Entry Pipeline Tests (14 Isolated Variables)</h2>
+
+<p>Each test modifies <strong>one parameter</strong> in the entry pipeline while keeping all exit and portfolio settings identical to baseline.</p>
+
+<!-- E1 -->
+<div class="test-card">
+  <h4>E1: Extend Scan Window to 2:00 PM</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> SCAN_END_MIN = 270 (was 90)</span>
+    <span><strong>Hypothesis:</strong> More scanning time = more entries</span>
+    <span class="badge badge-yellow">VOLUME TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Pattern model scans 9:35 AM &ndash; 2:00 PM instead of stopping at 11:00 AM. Same ML thresholds, same everything else.</p>
+  <p><strong>Risk:</strong> Midday chop (11:00&ndash;1:00) historically has lower win rates. Pattern model was trained on morning data &mdash; may not generalize to afternoon.</p>
+  <p><strong>Why test:</strong> The current 90-minute window is the #1 volume bottleneck. If afternoon signals have even moderate quality, this could double trade count.</p>
+  <pre>SCAN_END_MIN = 270  # was 90
+# Everything else identical to baseline</pre>
+</div>
+
+<!-- E2 -->
+<div class="test-card">
+  <h4>E2: Extend Scan Window to 3:45 PM (Full Day)</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> SCAN_END_MIN = 375 (was 90)</span>
+    <span><strong>Hypothesis:</strong> Power hour (2:30&ndash;3:45) has high volatility</span>
+    <span class="badge badge-yellow">VOLUME TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Full-day scanning. Tests whether power hour produces quality signals with our existing ML models.</p>
+  <p><strong>Risk:</strong> Gamma decay intensifies after 2PM for 0DTE. ML model trained on morning data.</p>
+  <p><strong>Why test:</strong> Power hour volatility is real &mdash; if the pattern model fires good signals there, we get a free second trading window.</p>
+  <pre>SCAN_END_MIN = 375  # was 90</pre>
+</div>
+
+<!-- E3 -->
+<div class="test-card">
+  <h4>E3: Lower Pattern Threshold to 0.80</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> PATTERN_THRESHOLD = 0.80 (was 0.85)</span>
+    <span><strong>Hypothesis:</strong> Looser filter lets in more good trades</span>
+    <span class="badge badge-yellow">VOLUME TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Pattern model accepts signals with 80%+ confidence instead of 85%+.</p>
+  <p><strong>Risk:</strong> 0.80&ndash;0.85 band may contain false positives that the entry timing model can't fully filter.</p>
+  <p><strong>Why test:</strong> This is the first ML gate &mdash; every signal it blocks is a trade we can't take. The entry timing model (second gate) may catch the bad ones.</p>
+  <pre>PATTERN_THRESHOLD = 0.80  # was 0.85</pre>
+</div>
+
+<!-- E4 -->
+<div class="test-card">
+  <h4>E4: Lower Pattern Threshold to 0.75</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> PATTERN_THRESHOLD = 0.75 (was 0.85)</span>
+    <span><strong>Hypothesis:</strong> Even more volume, testing limits</span>
+    <span class="badge badge-yellow">VOLUME TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Aggressive lowering. Should significantly increase trade count.</p>
+  <p><strong>Risk:</strong> May blow through WR floor. This tests the boundary of the model's predictive power.</p>
+  <pre>PATTERN_THRESHOLD = 0.75  # was 0.85</pre>
+</div>
+
+<!-- E5 -->
+<div class="test-card">
+  <h4>E5: Lower Entry Timing Threshold to 0.60</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> ENTRY_THRESHOLD = 0.60 (was 0.70)</span>
+    <span><strong>Hypothesis:</strong> Second gate is too strict</span>
+    <span class="badge badge-yellow">VOLUME TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Entry timing quality gate accepts 60%+ confidence. Pattern threshold stays at 0.85.</p>
+  <p><strong>Risk:</strong> Entry timing was the quality gate that separated gold from silver. Lowering it may let in trades with bad entry timing.</p>
+  <pre>ENTRY_THRESHOLD = 0.60  # was 0.70</pre>
+</div>
+
+<!-- E6 -->
+<div class="test-card">
+  <h4>E6: Remove Entry Timing Filter Entirely</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> use_entry_filter = False</span>
+    <span><strong>Hypothesis:</strong> Pattern model alone is sufficient</span>
+    <span class="badge badge-yellow">VOLUME TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Only pattern model gates entry. No entry timing quality check.</p>
+  <p><strong>Risk:</strong> Gold standard specifically showed entry timing adds value. But we need to quantify HOW MUCH value.</p>
+  <pre>python scripts/backtest_gold_standard.py --no-entry-filter --days 60</pre>
+</div>
+
+<!-- E7 -->
+<div class="test-card">
+  <h4>E7: Raise Premium Cap to $10</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> PREMIUM_CAP = 10.0 (was 6.0)</span>
+    <span><strong>Hypothesis:</strong> Premium cap blocks profitable trades</span>
+    <span class="badge badge-green">PROFITABILITY TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Allows entries on options priced up to $10 (was $6 base / $7 mid / $9 high).</p>
+  <p><strong>Why test:</strong> Premium cap was the #1 pipeline rejection reason in production. Some of our best live winners were in the $5-$8 range.</p>
+  <pre>PREMIUM_CAP = 10.0
+V6_PREMIUM_CAP = 10.0
+V6_PREMIUM_CAP_MID = 12.0
+V6_PREMIUM_CAP_HIGH = 15.0</pre>
+</div>
+
+<!-- E8 -->
+<div class="test-card">
+  <h4>E8: Remove Premium Cap Entirely</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> PREMIUM_CAP = 999.0</span>
+    <span><strong>Hypothesis:</strong> Let ML models decide, not arbitrary caps</span>
+    <span class="badge badge-green">PROFITABILITY TEST</span>
+  </div>
+  <p><strong>What changes:</strong> No premium cap at all. Position sizing still limits dollar exposure per trade.</p>
+  <p><strong>Risk:</strong> Expensive options have higher dollar risk per contract. But MAX_POSITION_DOLLARS ($5K) still caps total exposure.</p>
+  <pre>PREMIUM_CAP = 999.0
+V6_PREMIUM_CAP = 999.0
+ENABLE_V6_PREMIUM_CAP = False</pre>
+</div>
+
+<!-- E9 -->
+<div class="test-card">
+  <h4>E9: Lower Premium Floor to $0.05</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> MIN_PREMIUM_FLOOR = 0.05 (was 0.20)</span>
+    <span><strong>Hypothesis:</strong> Cheap OTM options have high convexity</span>
+    <span class="badge badge-yellow">VOLUME TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Allows penny options ($0.05+). These are deep OTM with massive leverage.</p>
+  <p><strong>Risk:</strong> Wide spreads, low liquidity, potential total loss. But if even 30% are runners, the math works.</p>
+  <pre>MIN_PREMIUM_FLOOR = 0.05  # was 0.20</pre>
+</div>
+
+<!-- E10 -->
+<div class="test-card">
+  <h4>E10: Widen Spread Gate to 25%</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> SPREAD_GATE_PCT = 25.0 (was 15.0)</span>
+    <span><strong>Hypothesis:</strong> Tight spread gate blocks cheap OTM options</span>
+    <span class="badge badge-yellow">VOLUME TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Accepts options with bid-ask spread up to 25% (was 15%).</p>
+  <p><strong>Why test:</strong> Cheap options naturally have wider spreads. At $0.50 premium, a $0.05 wide spread is 10% &mdash; already tight for options. At $0.30, even $0.05 spread = 17%.</p>
+  <pre>SPREAD_GATE_PCT = 25.0  # was 15.0
+V6_MAX_SPREAD_PCT = 25.0</pre>
+</div>
+
+<!-- E11 -->
+<div class="test-card">
+  <h4>E11: Raise Max Concurrent to 6</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> MAX_CONCURRENT = 6 (was 4)</span>
+    <span><strong>Hypothesis:</strong> Concurrent limit blocks good signals</span>
+    <span class="badge badge-yellow">VOLUME TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Can hold up to 6 simultaneous positions (was 4).</p>
+  <p><strong>Risk:</strong> More exposure during correlated selloffs. But if entries are quality (ML-filtered), correlation risk is lower.</p>
+  <pre>MAX_CONCURRENT = 6  # was 4</pre>
+</div>
+
+<!-- E12 -->
+<div class="test-card">
+  <h4>E12: Raise Max Same Direction to 3</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> MAX_SAME_DIRECTION = 3 (was 2)</span>
+    <span><strong>Hypothesis:</strong> Direction limit is too conservative</span>
+    <span class="badge badge-yellow">VOLUME TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Can hold 3 positions in same direction (e.g., 3 calls) instead of 2.</p>
+  <p><strong>Risk:</strong> High correlation &mdash; if the market reverses, all 3 lose together. This is the trade-off vs volume.</p>
+  <pre>MAX_SAME_DIRECTION = 3  # was 2</pre>
+</div>
+
+<!-- E13 -->
+<div class="test-card">
+  <h4>E13: Reduce Entry Spacing to 2 Minutes</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> MIN_ENTRY_SPACING_MIN = 2 (was 5)</span>
+    <span><strong>Hypothesis:</strong> 5min spacing misses rapid-fire signals</span>
+    <span class="badge badge-yellow">VOLUME TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Can enter a new trade 2 minutes after the previous entry (was 5 min).</p>
+  <p><strong>Risk:</strong> Entering multiple trades in the same 2-minute window could mean they're all the same move &mdash; correlated.</p>
+  <pre>MIN_ENTRY_SPACING_MIN = 2  # was 5</pre>
+</div>
+
+<!-- E14 -->
+<div class="test-card">
+  <h4>E14: Remove Regime Filter</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> use_regime = False</span>
+    <span><strong>Hypothesis:</strong> Regime filter kills volume on border days</span>
+    <span class="badge badge-green">PROFITABILITY TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Removes the daily regime classifier that skips entire chop days.</p>
+  <p><strong>Known impact:</strong> Gold standard showed regime filter skips 10 days and catches both worst losing days. PF went from 7.20 &rarr; 17.96. Removing it will add ~10 trading days but likely add losses.</p>
+  <p><strong>Why test anyway:</strong> We need to quantify exactly how many trades and dollars the regime filter saves vs costs. Maybe it's overfitting to the training window.</p>
+  <pre>python scripts/backtest_gold_standard.py --no-regime --days 60
+# OR: REGIME_THRESHOLD = 1.0 (always passes)</pre>
+</div>
+
+<!-- ==================== SECTION 4: EXIT TESTS ==================== -->
+<h2 id="exit-tests">4. Exit Engine Tests (8 Isolated Variables)</h2>
+
+<p>Each test modifies <strong>one exit parameter</strong> while keeping all entry filters and portfolio settings identical to baseline. Same entries, different exits.</p>
+
+<!-- X1 -->
+<div class="test-card">
+  <h4>X1: Raise Scalp Target to 35%</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> SCALP_TARGET_PCT = 35.0 (was 25.0)</span>
+    <span><strong>Hypothesis:</strong> Letting winners run a bit more captures bigger moves</span>
+    <span class="badge badge-green">PROFITABILITY TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Scalp target exits at +35% instead of +25%. Winners need to gain more before triggering the scalp exit.</p>
+  <p><strong>Risk:</strong> Trades that would have exited at +25% may reverse and give back gains.</p>
+  <pre>SCALP_TARGET_PCT = 35.0  # was 25.0</pre>
+</div>
+
+<!-- X2 -->
+<div class="test-card">
+  <h4>X2: Raise Scalp Target to 50%</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> SCALP_TARGET_PCT = 50.0 (was 25.0)</span>
+    <span><strong>Hypothesis:</strong> More room for runners</span>
+    <span class="badge badge-green">PROFITABILITY TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Same as X1 but more aggressive. Scalp won't fire until +50%.</p>
+  <pre>SCALP_TARGET_PCT = 50.0  # was 25.0</pre>
+</div>
+
+<!-- X3 -->
+<div class="test-card">
+  <h4>X3: Raise Scaleout Trigger to 35%</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> V6_SCALEOUT_GAIN_PCT = 35.0 (was 20.0)</span>
+    <span><strong>Hypothesis:</strong> Selling 1/3 at +20% may be too early</span>
+    <span class="badge badge-green">PROFITABILITY TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Scaleout (sell 1/3) triggers at +35% instead of +20%.</p>
+  <p><strong>Risk:</strong> More trades reverse before reaching +35%, so fewer trades get the benefit of partial profit lock.</p>
+  <pre>V6_SCALEOUT_GAIN_PCT = 35.0  # was 20.0</pre>
+</div>
+
+<!-- X4 -->
+<div class="test-card">
+  <h4>X4: Raise Breakeven Ratchet Trigger to 30%</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> V6_BREAKEVEN_TRIGGER_PCT = 30.0 (was 20.0)</span>
+    <span><strong>Hypothesis:</strong> Breakeven ratchet at +20% may force early exits</span>
+    <span class="badge badge-green">PROFITABILITY TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Breakeven floor only activates after +30% gain instead of +20%.</p>
+  <p><strong>Risk:</strong> More trades that peaked at +20-29% could go negative without the breakeven protection.</p>
+  <pre>V6_BREAKEVEN_TRIGGER_PCT = 30.0  # was 20.0</pre>
+</div>
+
+<!-- X5 -->
+<div class="test-card">
+  <h4>X5: Disable 2PM Trail Tightening</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> ENABLE_V6_2PM_TIGHTEN = False (was True)</span>
+    <span><strong>Hypothesis:</strong> Tighter trails after 2PM may cut runners short</span>
+    <span class="badge badge-green">PROFITABILITY TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Adaptive trails stay at normal width all day (no 30% tightening after 2PM ET).</p>
+  <p><strong>Risk:</strong> 0DTE options decay rapidly after 2PM. Without tightening, we may give back more gains.</p>
+  <pre>ENABLE_V6_2PM_TIGHTEN = False  # was True</pre>
+</div>
+
+<!-- X6 -->
+<div class="test-card">
+  <h4>X6: Disable Scaleout</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> ENABLE_V6_SCALEOUT = False (was True)</span>
+    <span><strong>Hypothesis:</strong> Scaleout reduces runner capture</span>
+    <span class="badge badge-green">PROFITABILITY TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Never sells 1/3 early. Full position rides until exit gate triggers.</p>
+  <p><strong>Risk:</strong> Bigger wins on runners, but bigger losses when trades reverse after scaling out would have locked profit.</p>
+  <pre>ENABLE_V6_SCALEOUT = False  # was True</pre>
+</div>
+
+<!-- X7 -->
+<div class="test-card">
+  <h4>X7: Add General Profit Target at 50%</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> profit_target_general_pct = 50.0 (was 0/disabled for CALLs)</span>
+    <span><strong>Hypothesis:</strong> Taking profit at +50% improves consistency</span>
+    <span class="badge badge-green">PROFITABILITY TEST</span>
+  </div>
+  <p><strong>What changes:</strong> All CALL trades exit at +50% gain, regardless of ticker or category. Currently only PUTs and INDEX 0DTE have profit targets.</p>
+  <p><strong>Risk:</strong> Kills all runner potential. Trades that would go +200% now exit at +50%.</p>
+  <pre># In V5Config or per-ticker config:
+profit_target_general_pct = 50.0  # was 0 (disabled)</pre>
+</div>
+
+<!-- X8 -->
+<div class="test-card">
+  <h4>X8: Add General Profit Target at 100%</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> profit_target_general_pct = 100.0</span>
+    <span><strong>Hypothesis:</strong> Doubler exit balances consistency + upside</span>
+    <span class="badge badge-green">PROFITABILITY TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Exit when premium doubles. Still captures significant gains but prevents give-backs from +150% trades.</p>
+  <pre>profit_target_general_pct = 100.0</pre>
+</div>
+
+<!-- ==================== SECTION 5: SOURCING TESTS ==================== -->
+<h2 id="sourcing-tests">5. Sourcing &amp; Data Tests (6 Isolated Variables)</h2>
+
+<p>These tests change HOW and WHERE we find signals &mdash; the data sources and scanning approach.</p>
+
+<!-- S1 -->
+<div class="test-card">
+  <h4>S1: Two-Window Scanning (Morning + Power Hour)</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> Two scan windows: 9:35-11:00 + 2:30-3:45</span>
+    <span><strong>Hypothesis:</strong> Power hour has real edge, midday is dead zone</span>
+    <span class="badge badge-yellow">VOLUME TEST</span>
+    <span class="badge badge-green">PROFITABILITY TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Pattern model runs in two bursts. Skips 11:00&ndash;2:30 PM entirely (the "dead zone"). This avoids the midday chop while capturing power hour momentum.</p>
+  <p><strong>Difference from E2:</strong> E2 scans all day including the dead zone. S1 specifically skips midday.</p>
+  <p><strong>Implementation:</strong> Modify scan loop to check <code>if minutes_since_open &lt;= 90 or minutes_since_open &gt;= 300</code></p>
+  <pre># Scan 9:35-11:00 (min 5-90) AND 2:30-3:45 (min 300-375)
+# Skip 11:00-2:30 (min 90-300)
+if minutes_since_open <= 90 or minutes_since_open >= 300:
+    # run pattern model
+else:
+    continue</pre>
+</div>
+
+<!-- S2 -->
+<div class="test-card">
+  <h4>S2: Add PUT Track (Combined Mode)</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> Enable PUT track alongside CALLs</span>
+    <span><strong>Hypothesis:</strong> PUTs add diversification and volume</span>
+    <span class="badge badge-yellow">VOLUME TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Run <code>backtest_combined.py</code> instead of <code>backtest_gold_standard.py</code>. Adds the PUT scalp track (1:00-2:30 PM, $0.05-$0.50, +50%/-60%, 60m max hold).</p>
+  <p><strong>Known result:</strong> Combined baseline = 84 trades, 86.9% WR, +$95,161. This is already verified &mdash; the question is whether it stacks with other improvements.</p>
+  <pre>python scripts/backtest_combined.py --days 60</pre>
+</div>
+
+<!-- S3 -->
+<div class="test-card">
+  <h4>S3: Use Sourcing Scoring Pipeline Instead of ML Pattern Model</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> Replace ML pattern model with 5-tier scoring engine</span>
+    <span><strong>Hypothesis:</strong> Rule-based scoring catches different patterns than ML</span>
+    <span class="badge badge-yellow">VOLUME TEST</span>
+    <span class="badge badge-purple">NEW SOURCING</span>
+  </div>
+  <p><strong>What changes:</strong> Instead of LightGBM pattern_entry model, use the <code>options_owl/sourcing/scoring/engine.py</code> 5-tier scoring pipeline (Direction + Timing + Amplifiers + Risk + Calibration). This is the system running in <code>owlet-sourcing</code> container.</p>
+  <p><strong>Why test:</strong> The scoring pipeline uses EMA/MACD/VWAP/RSI/volume &mdash; fundamentally different features than the ML pattern model (which uses premium action + greeks). They may find different trades. Eventually we could run both in parallel.</p>
+  <p><strong>Implementation:</strong> New backtest script variant that uses <code>compute_indicators()</code> + <code>compute_score()</code> from sourcing module against ThetaData stock candles, then looks up option entries.</p>
+  <pre># Requires new backtest script (backtest_sourcing_e2e.py)
+# Uses: indicator_engine.compute_indicators() → scoring.engine.compute_score()
+# Score threshold: 60+ (matching production sourcing config)
+# Then V5 FSM exits on option bars (same as gold standard)</pre>
+</div>
+
+<!-- S4 -->
+<div class="test-card">
+  <h4>S4: Reduce Scan Interval to 30 Seconds</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> SCAN_INTERVAL = 0.5 min (was 1 min)</span>
+    <span><strong>Hypothesis:</strong> Faster scanning catches more dip entries</span>
+    <span class="badge badge-yellow">VOLUME TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Pattern model checks every 30 seconds instead of every minute.</p>
+  <p><strong>Limitation:</strong> ThetaData has 1-minute bars, so this test can only be run on harvester data (~90s snapshots). May need to interpolate.</p>
+  <p><strong>Note:</strong> Production sourcing scanner already runs every 3 minutes. Gold standard backtests every 1 minute. This tests whether finer granularity matters.</p>
+  <pre>SCAN_INTERVAL = 0.5  # was 1 (minutes)</pre>
+</div>
+
+<!-- S5 -->
+<div class="test-card">
+  <h4>S5: Target OTM Strikes (1-2 Strikes Out)</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> Strike selection: 1-2 OTM instead of ATM</span>
+    <span><strong>Hypothesis:</strong> OTM has better risk/reward for runners</span>
+    <span class="badge badge-green">PROFITABILITY TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Instead of finding ATM options, target options 1-2 strikes OTM. For SPY ($1 intervals), that's $1-$2 OTM. For NVDA ($5 intervals), $5-$10 OTM.</p>
+  <p><strong>Why test:</strong> OTM options are cheaper (more contracts per dollar), have higher gamma (more explosive on moves), and historically have produced our biggest winners. The sweep showed $0.50-$1.50 OTM as the best premium band.</p>
+  <pre># Modify find_atm_strike() or add find_otm_strike(ticker, underlying, direction, strikes_out=1)
+# CALL: strike = underlying + (strikes_out * interval)
+# PUT: strike = underlying - (strikes_out * interval)</pre>
+</div>
+
+<!-- S6 -->
+<div class="test-card">
+  <h4>S6: Expand Ticker Universe</h4>
+  <div class="test-meta">
+    <span><strong>Variable:</strong> Add COIN, SMCI to ticker list</span>
+    <span><strong>Hypothesis:</strong> More high-vol tickers = more opportunities</span>
+    <span class="badge badge-yellow">VOLUME TEST</span>
+  </div>
+  <p><strong>What changes:</strong> Add COIN and SMCI to the scanning list. Both are already classified as HIGH_VOL in V5 config.</p>
+  <p><strong>Limitation:</strong> Need to check if these tickers have data in ThetaData DB. If not, this test requires new data download first.</p>
+  <p><strong>Risk:</strong> COIN and SMCI are extremely volatile &mdash; higher win potential but also higher loss magnitude.</p>
+  <pre>TICKERS = [..., "COIN", "SMCI"]  # add to existing 14
+# Check data: SELECT DISTINCT ticker FROM option_bars WHERE ticker IN ('COIN','SMCI')</pre>
+</div>
+
+<!-- ==================== SECTION 6: STRATEGY & CREATIVE IDEAS ==================== -->
+<h2 id="strategies">6. Strategy &amp; Creative Ideas to Test</h2>
+
+<p>These are higher-effort tests that require new code, new data sources, or fundamentally different approaches. Each is still testable in isolation against the gold standard baseline.</p>
+
+<!-- ── 6a: Premium Band Strategies ── -->
+<h3>6a. Premium Band Strategies</h3>
+<p>Different premium ranges may need entirely different exit strategies. Test each band in isolation.</p>
+
+<div class="test-card">
+  <h4>P1: Penny Options Only ($0.05&ndash;$0.50)</h4>
+  <div class="test-meta">
+    <span class="badge badge-purple">STRATEGY TEST</span>
+    <span><strong>Hypothesis:</strong> High convexity, massive leverage, runner-friendly</span>
+  </div>
+  <p><strong>What changes:</strong> Only enter when premium is $0.05&ndash;$0.50. These are deep OTM with 10-50x leverage. Let winners run with wide trails (moonshot tier).</p>
+  <p><strong>Exit config:</strong> No scalp target (let it run), wide adaptive trail, backstop at -80% (accept total loss on losers, size small).</p>
+  <p><strong>Sizing:</strong> Smaller position size (5-8% of portfolio) since total loss is expected on ~40% of trades. The math works if 1 in 5 is a 3x+ runner.</p>
+  <pre>MIN_PREMIUM_FLOOR = 0.05
+PREMIUM_CAP = 0.50
+SCALP_TARGET_PCT = 0  # disabled — let it run
+backstop_0dte_pct = 80  # accept near-total loss
+MAX_POSITION_PCT = 0.08  # smaller positions</pre>
+</div>
+
+<div class="test-card">
+  <h4>P2: Sweet Spot Band ($0.50&ndash;$1.50)</h4>
+  <div class="test-meta">
+    <span class="badge badge-purple">STRATEGY TEST</span>
+    <span><strong>Hypothesis:</strong> Best risk/reward from prior sweep (PF 1.57)</span>
+  </div>
+  <p><strong>What changes:</strong> Only enter $0.50&ndash;$1.50 premiums. The premium sweep showed this band had the highest PF across 768 configs. Test with ML filtering (should be even better than blind entries).</p>
+  <pre>MIN_PREMIUM_FLOOR = 0.50
+PREMIUM_CAP = 1.50
+# All other baseline settings unchanged</pre>
+</div>
+
+<div class="test-card">
+  <h4>P3: Mid-Range Band ($1.50&ndash;$3.00)</h4>
+  <div class="test-meta">
+    <span class="badge badge-purple">STRATEGY TEST</span>
+    <span><strong>Hypothesis:</strong> ATM options, good liquidity, moderate leverage</span>
+  </div>
+  <p><strong>What changes:</strong> Only enter $1.50&ndash;$3.00. These are near-ATM with tight spreads and good liquidity.</p>
+  <pre>MIN_PREMIUM_FLOOR = 1.50
+PREMIUM_CAP = 3.00</pre>
+</div>
+
+<div class="test-card">
+  <h4>P4: Expensive Options ($3.00&ndash;$10.00) with Quick TP</h4>
+  <div class="test-meta">
+    <span class="badge badge-purple">STRATEGY TEST</span>
+    <span><strong>Hypothesis:</strong> ITM options rarely double but often give +30-50%</span>
+  </div>
+  <p><strong>What changes:</strong> Only enter $3&ndash;$10 premiums. Use aggressive profit-taking (35-50% TP) since expensive options have lower convexity but more consistent small moves.</p>
+  <p><strong>Why test:</strong> Live production had winners at $5-$8 premiums. The current $6 cap blocks these. With a quick TP strategy, expensive options may be consistently profitable without needing runners.</p>
+  <pre>MIN_PREMIUM_FLOOR = 3.00
+PREMIUM_CAP = 10.00
+profit_target_general_pct = 40.0  # quick TP
+SCALP_TARGET_PCT = 30.0  # even quicker scalp</pre>
+</div>
+
+<div class="test-card">
+  <h4>P5: Premium-Adaptive Exit (different TP per band)</h4>
+  <div class="test-meta">
+    <span class="badge badge-purple">STRATEGY TEST</span>
+    <span><strong>Hypothesis:</strong> Cheap options should run, expensive should TP early</span>
+  </div>
+  <p><strong>What changes:</strong> Single backtest, all premiums allowed, but exit strategy varies by entry premium:</p>
+  <ul>
+    <li><strong>$0.05&ndash;$2.00:</strong> Let it run (V5 FSM adaptive trail, no TP cap)</li>
+    <li><strong>$2.00&ndash;$3.00:</strong> Combo &mdash; sell half at +50%, trail the rest</li>
+    <li><strong>$3.00+:</strong> Quick TP at +35-50%</li>
+  </ul>
+  <p><strong>Implementation:</strong> Modify <code>simulate_exit()</code> to check entry_premium and apply different V5Config overrides per band.</p>
+  <pre># In simulate_exit():
+if entry_premium < 2.0:
+    # standard V5 FSM (let it run)
+elif entry_premium < 3.0:
+    # combo: scaleout 50% at +50%, trail rest
+else:
+    # profit_target_general_pct = 40.0</pre>
+</div>
+
+<!-- ── 6b: Time-of-Day Strategies ── -->
+<h3>6b. Time-of-Day Strategies</h3>
+<p>The pattern model was trained on morning data (9:30&ndash;11:00). Different times may need different models or strategies.</p>
+
+<div class="test-card">
+  <h4>T1: Morning Momentum (9:35&ndash;10:30) &mdash; Current Strategy But Tighter Window</h4>
+  <div class="test-meta">
+    <span class="badge badge-yellow">TIME TEST</span>
+    <span><strong>Hypothesis:</strong> First hour is highest-quality, extending to 11:00 dilutes</span>
+  </div>
+  <p><strong>What changes:</strong> Reduce scan window from 90 min to 60 min (9:35&ndash;10:30). Fewer trades but potentially higher WR.</p>
+  <pre>SCAN_END_MIN = 60  # was 90</pre>
+</div>
+
+<div class="test-card">
+  <h4>T2: Power Hour Only (2:30&ndash;3:45 PM)</h4>
+  <div class="test-meta">
+    <span class="badge badge-yellow">TIME TEST</span>
+    <span><strong>Hypothesis:</strong> Gamma ramp near close creates high-quality setups</span>
+  </div>
+  <p><strong>What changes:</strong> ONLY scan 2:30&ndash;3:45 PM. No morning trading at all. Tests whether power hour alone is profitable with our ML models.</p>
+  <p><strong>Why:</strong> 0DTE gamma accelerates near close. Moves are directional (less chop than midday). Options are cheaper (theta decay), so more contracts per dollar.</p>
+  <pre>SCAN_START_MIN = 300  # 2:30 PM
+SCAN_END_MIN = 375    # 3:45 PM</pre>
+</div>
+
+<div class="test-card">
+  <h4>T3: Three-Window Strategy (Open + Lunch Reversal + Power Hour)</h4>
+  <div class="test-meta">
+    <span class="badge badge-yellow">TIME TEST</span>
+    <span><strong>Hypothesis:</strong> 11:30&ndash;12:30 has reversal setups that are different from momentum</span>
+  </div>
+  <p><strong>What changes:</strong> Three scan windows: 9:35&ndash;10:30 (momentum), 11:30&ndash;12:30 (mean reversion), 2:30&ndash;3:45 (gamma ramp). The midday window specifically looks for reversals of the morning move.</p>
+  <p><strong>Implementation:</strong> Midday window could use different ML features or a different pattern threshold (since the pattern model may trigger on "dip from morning high" signals).</p>
+  <pre># Window 1: 9:35-10:30 (morning momentum) — standard baseline
+# Window 2: 11:30-12:30 (lunch reversal) — maybe lower threshold, different direction logic
+# Window 3: 2:30-3:45 (power hour) — standard baseline</pre>
+</div>
+
+<div class="test-card">
+  <h4>T4: Per-Ticker Time Windows</h4>
+  <div class="test-meta">
+    <span class="badge badge-yellow">TIME TEST</span>
+    <span><strong>Hypothesis:</strong> Different tickers peak at different times</span>
+  </div>
+  <p><strong>What changes:</strong> Analyze ThetaData to find each ticker's optimal entry window, then only scan that ticker during its best time.</p>
+  <p><strong>Examples to investigate:</strong></p>
+  <ul>
+    <li>MSTR &mdash; crypto-correlated, may have best entries at open when BTC gaps</li>
+    <li>SPY/QQQ &mdash; may be best in power hour (institutional flow)</li>
+    <li>TSLA &mdash; Elon tweets can move it any time; morning gap plays</li>
+    <li>NVDA &mdash; AI narrative; may respond to pre-market catalysts</li>
+  </ul>
+  <p><strong>Implementation:</strong> Requires per-ticker analysis first (see analysis script below), then a <code>TICKER_WINDOWS</code> dict in config.</p>
+  <pre># Step 1: Analyze optimal windows
+# python scripts/analyze_ticker_timeofday.py  (TO BE WRITTEN)
+# Step 2: Apply per-ticker windows
+TICKER_WINDOWS = {
+    "MSTR": [(5, 45)],        # first 45 min
+    "SPY":  [(5, 60), (300, 375)],  # morning + power hour
+    "TSLA": [(5, 90)],        # full morning
+    # ... based on analysis results
+}</pre>
+</div>
+
+<div class="test-card">
+  <h4>T5: Different ML Thresholds by Time Window</h4>
+  <div class="test-meta">
+    <span class="badge badge-yellow">TIME TEST</span>
+    <span><strong>Hypothesis:</strong> Morning needs strict filters, power hour can be looser</span>
+  </div>
+  <p><strong>What changes:</strong> Use different pattern/entry thresholds for different time windows. Morning (trained window) uses strict 0.85/0.70. Afternoon uses looser thresholds since the ML model wasn't optimized for it but gamma provides a natural edge.</p>
+  <pre># Morning (9:35-11:00): PATTERN=0.85, ENTRY=0.70 (baseline)
+# Power hour (2:30-3:45): PATTERN=0.75, ENTRY=0.60 (looser)</pre>
+</div>
+
+<!-- ── 6c: New Data Sources ── -->
+<h3>6c. New Data Sources &amp; Signal Enrichment</h3>
+<p>These add new information to the entry decision. Each can be tested by adding a feature or gate to the existing backtest.</p>
+
+<div class="test-card">
+  <h4>D1: Trump/Political News Signal (Free via TrumpBot Discord)</h4>
+  <div class="test-meta">
+    <span class="badge badge-blue">DATA SOURCE</span>
+    <span><strong>Cost:</strong> $0 (Discord webhook)</span>
+    <span><strong>Hypothesis:</strong> Trump posts move SPY/QQQ 0.5-2% within minutes</span>
+  </div>
+  <p><strong>What it is:</strong> Real-time Trump social media posts via a free Discord bot. Tariff announcements, China trade talk, Fed comments &mdash; these move indexes predictably.</p>
+  <p><strong>How to test:</strong></p>
+  <ol>
+    <li><strong>Historical analysis first:</strong> Get Trump post timestamps from public archives (Truth Social has RSS/API scraping options, multiple free bots republish in real-time)</li>
+    <li><strong>Correlate with SPY moves:</strong> For each post, measure SPY/QQQ 5-min, 15-min, 30-min change</li>
+    <li><strong>Backtest:</strong> On days with tariff/trade keywords, simulate buying SPY PUTs (tariff threats) or CALLs (trade deal progress)</li>
+  </ol>
+  <p><strong>Integration path:</strong> Discord webhook listener (already have Discord infra) &rarr; keyword filter (tariff, China, trade, Fed, rate, ban) &rarr; direction inference (threat=PUT, deal=CALL) &rarr; immediate SPY/QQQ entry.</p>
+  <p><strong>Risk:</strong> High noise ratio. Posts at odd hours. NLP keyword matching may misfire. But when it works, the alpha is massive.</p>
+  <pre># Backtest approach: get historical Trump posts, match to SPY bar data
+# For each post with market-moving keywords:
+#   entry = SPY option at post_time + 1 min
+#   direction = PUT if "tariff"/"ban"/"China threat", CALL if "deal"/"agreement"/"great"
+#   exit = V5 FSM
+# Measure: WR, avg gain, total P&L</pre>
+</div>
+
+<div class="test-card">
+  <h4>D2: Twitter/X Elon Signal (for TSLA)</h4>
+  <div class="test-meta">
+    <span class="badge badge-blue">DATA SOURCE</span>
+    <span><strong>Cost:</strong> $0 (scrape) or $100/mo (API)</span>
+    <span><strong>Hypothesis:</strong> Elon tweets move TSLA 2-5% consistently</span>
+  </div>
+  <p><strong>What it is:</strong> Elon Musk tweets about TSLA, SpaceX, crypto, DOGE &mdash; these move TSLA stock predictably.</p>
+  <p><strong>How to test:</strong></p>
+  <ol>
+    <li>Get historical Elon tweet timestamps (many free datasets available on Kaggle/GitHub up to 2024, scraping for recent)</li>
+    <li>Correlate with TSLA 1-min bars from ThetaData</li>
+    <li>Simulate: entry on tweet + 1 min, TSLA CALL (positive sentiment) or PUT (negative), V5 FSM exit</li>
+  </ol>
+  <p><strong>Production integration:</strong> Free scraping via Nitter/RSS alternatives, or X API Basic ($100/mo) for real-time filtered stream on @elonmusk.</p>
+  <pre># Historical test: Elon tweets → TSLA option bars from ThetaData
+# Could also test: @realDonaldTrump → SPY, @FedReserve → SPY/QQQ</pre>
+</div>
+
+<div class="test-card">
+  <h4>D3: Polygon News Events (Already Have API)</h4>
+  <div class="test-meta">
+    <span class="badge badge-blue">DATA SOURCE</span>
+    <span><strong>Cost:</strong> $0 (included in Polygon subscription)</span>
+    <span><strong>Hypothesis:</strong> Earnings/analyst/FDA events create tradeable momentum</span>
+  </div>
+  <p><strong>What it is:</strong> We already pay for Polygon. Their news API covers earnings beats/misses, analyst upgrades/downgrades, FDA approvals, M&amp;A. Each is a catalyst that moves the underlying.</p>
+  <p><strong>How to test:</strong></p>
+  <ol>
+    <li>Pull historical news events from Polygon for our 14 tickers</li>
+    <li>Filter for high-impact types: earnings surprise, analyst upgrade/downgrade, FDA</li>
+    <li>Simulate: entry on event + 5 min, direction based on event type (beat=CALL, miss=PUT), V5 FSM exit</li>
+  </ol>
+  <p><strong>Why valuable:</strong> Catalyst-driven entries have a directional edge that pure technical analysis misses. An earnings beat isn't visible in the option premium until after the move starts.</p>
+  <pre># Use: from polygon import RESTClient; client.list_ticker_news(ticker, published_utc_gt=...)
+# Already have POLYGON_API_KEY for all agents</pre>
+</div>
+
+<div class="test-card">
+  <h4>D4: VIX/VVIX Regime Overlay</h4>
+  <div class="test-meta">
+    <span class="badge badge-blue">DATA SOURCE</span>
+    <span><strong>Cost:</strong> $0 (available via yfinance or Polygon)</span>
+    <span><strong>Hypothesis:</strong> High VIX = wider stops, low VIX = tighter stops</span>
+  </div>
+  <p><strong>What it is:</strong> Use VIX level to dynamically adjust FSM parameters. High VIX (&gt;25) means wider expected moves, so wider trails make sense. Low VIX (&lt;15) means tighter moves, so tighter trails lock profit.</p>
+  <p><strong>How to test:</strong> Load daily VIX from ThetaData or yfinance. For each backtest day, adjust V5Config trail widths by VIX_multiplier = VIX/20 (normalized to 1.0 at VIX=20).</p>
+  <pre># spec/active/02-vix-in-harvester.md already exists as a planned feature
+# Quick test: fetch VIX daily from yfinance, multiply trail widths by VIX/20</pre>
+</div>
+
+<div class="test-card">
+  <h4>D5: Options Volume/OI Surge Detection</h4>
+  <div class="test-meta">
+    <span class="badge badge-blue">DATA SOURCE</span>
+    <span><strong>Cost:</strong> $0 (ThetaData already has volume data)</span>
+    <span><strong>Hypothesis:</strong> Sudden volume spikes on specific strikes signal institutional activity</span>
+  </div>
+  <p><strong>What it is:</strong> Our ThetaData option bars already contain volume. A 5x+ volume surge on a specific strike (vs its 20-bar average) may indicate smart money accumulating. This is basically what Unusual Whales sells &mdash; but we can compute it ourselves from data we already have.</p>
+  <p><strong>How to test:</strong> In the pattern features, add <code>volume_surge_ratio = current_volume / avg_20_volume</code>. If this is already a feature (it is: <code>volume_ratio</code>), test whether adding a hard gate (volume_ratio &ge; 3.0) improves WR.</p>
+  <pre># Already in feature set: volume_ratio = volume_avg_5 / avg_20
+# Test: add hard gate requiring volume_ratio >= 3.0 before entry
+# This is our OWN version of "unusual activity" detection</pre>
+</div>
+
+<!-- ── 6d: Ticker Expansion ── -->
+<h3>6d. Ticker Expansion</h3>
+
+<div class="test-card">
+  <h4>K1: Add High-Vol Crypto Proxies (COIN, MARA, RIOT)</h4>
+  <div class="test-meta">
+    <span class="badge badge-orange">TICKER TEST</span>
+    <span><strong>Hypothesis:</strong> Crypto proxies have extreme vol = more runner potential</span>
+  </div>
+  <p><strong>What:</strong> COIN (Coinbase) is already in our V5 HIGH_VOL category. MARA and RIOT are Bitcoin miners with even higher beta to BTC. All have 0DTE on MWF.</p>
+  <p><strong>Requirement:</strong> Need to download ThetaData for these tickers first. Check availability and data quality.</p>
+  <p><strong>Risk:</strong> Extreme volatility means extreme losses too. Per-ticker config would need very wide stops.</p>
+  <pre># Step 1: Check ThetaData availability
+python scripts/download_thetadata.py --tickers COIN,MARA,RIOT --check
+# Step 2: Download if available
+python scripts/download_thetadata.py --tickers COIN,MARA,RIOT
+# Step 3: Run gold standard backtest with expanded ticker list</pre>
+</div>
+
+<div class="test-card">
+  <h4>K2: Add AI/Semiconductor Plays (ARM, CRWD, NFLX, MU)</h4>
+  <div class="test-meta">
+    <span class="badge badge-orange">TICKER TEST</span>
+    <span><strong>Hypothesis:</strong> AI narrative tickers have persistent momentum</span>
+  </div>
+  <p><strong>What:</strong> ARM (Arm Holdings) and MU (Micron) are AI semiconductor plays with high event-driven vol. CRWD (CrowdStrike) moves on security news. NFLX moves on subscriber numbers.</p>
+  <p><strong>Why these:</strong> Each has a clear catalyst cycle (earnings, product launches, AI news) that creates tradeable momentum. They're uncorrelated to our existing NVDA/AMD/AVGO cluster.</p>
+  <pre># Same steps as K1: check ThetaData → download → backtest</pre>
+</div>
+
+<div class="test-card">
+  <h4>K3: Index ETF Expansion (DIA, XLF, XLK, IYR)</h4>
+  <div class="test-meta">
+    <span class="badge badge-orange">TICKER TEST</span>
+    <span><strong>Hypothesis:</strong> Sector ETFs provide diversification + daily 0DTE</span>
+  </div>
+  <p><strong>What:</strong> DIA (Dow), XLF (Financials), XLK (Tech), IYR (Real Estate) &mdash; sector ETFs with 0DTE options. These are less volatile than individual stocks but have tighter spreads and more consistent pricing.</p>
+  <p><strong>Why:</strong> Our current INDEX category only has SPY/QQQ/IWM. Adding sector ETFs gives more index-like entries with different correlation profiles. When tech is flat, financials may be moving.</p>
+</div>
+
+<!-- ── 6e: Alternative Strategy Modes ── -->
+<h3>6e. Alternative Strategy Modes</h3>
+
+<div class="test-card">
+  <h4>M1: Runner-Hunter Mode (Wide Stops, Let Winners Run)</h4>
+  <div class="test-meta">
+    <span class="badge badge-green">STRATEGY MODE</span>
+    <span><strong>Hypothesis:</strong> A few big runners compensate for many small losses</span>
+  </div>
+  <p><strong>What:</strong> Completely different risk profile. Accept 40-45% WR but target 3:1+ reward:risk. Use very wide backstops (-75%), no scalp targets, moonshot adaptive trail.</p>
+  <p><strong>Best for:</strong> HIGH_VOL tickers (MSTR, TSLA, NVDA) where 3x-10x runners happen regularly.</p>
+  <p><strong>Sizing:</strong> Small positions (5% per trade) but higher concurrent (8-10 at once). Diversification is the risk management.</p>
+  <pre># Runner-hunter config overrides:
+SCALP_TARGET_PCT = 0  # disabled
+ENABLE_V6_SCALEOUT = False  # no partial exits
+backstop_0dte_pct = 75  # very wide
+adaptive_highvol_active = 60  # wider trail
+MAX_POSITION_PCT = 0.05  # small per trade
+MAX_CONCURRENT = 10  # many small bets</pre>
+</div>
+
+<div class="test-card">
+  <h4>M2: Scalp Mode (Tight TP, High Volume)</h4>
+  <div class="test-meta">
+    <span class="badge badge-green">STRATEGY MODE</span>
+    <span><strong>Hypothesis:</strong> Many small wins compound faster than few big wins</span>
+  </div>
+  <p><strong>What:</strong> Target +15-25% TP on every trade, tight -20% stop. High win rate, low reward per trade, but high volume (potentially 10-20+ trades/day).</p>
+  <p><strong>Best for:</strong> INDEX tickers (SPY, QQQ) with tight spreads and reliable small moves.</p>
+  <pre># Scalp mode overrides:
+SCALP_TARGET_PCT = 15.0  # quick scalp
+profit_target_general_pct = 25.0  # hard TP
+tight_stop_0dte_pct = 20.0  # tight stop
+backstop_0dte_pct = 30.0  # tight backstop
+PATTERN_THRESHOLD = 0.75  # looser entry (more signals)
+MAX_CONCURRENT = 8</pre>
+</div>
+
+<div class="test-card">
+  <h4>M3: Hybrid Mode (Scalp Most + Let Runners Run)</h4>
+  <div class="test-meta">
+    <span class="badge badge-green">STRATEGY MODE</span>
+    <span><strong>Hypothesis:</strong> Best of both worlds &mdash; consistent income + explosive upside</span>
+  </div>
+  <p><strong>What:</strong> Default to scalp behavior (TP at +30%), BUT if a trade hits +30% AND underlying is breaking a key level with high volume, switch to runner mode (remove TP, use wide adaptive trail). This is the "buy right before the run-up" strategy.</p>
+  <p><strong>Detection criteria for runner switch:</strong></p>
+  <ul>
+    <li>Premium gained +30% in &lt; 5 minutes (velocity)</li>
+    <li>Underlying broke VWAP or previous day high/low</li>
+    <li>Option volume surging (2x+ vs 20-bar avg)</li>
+  </ul>
+  <pre># Hybrid: start as scalp, upgrade to runner if criteria met
+# if gain >= 30% and hold_time < 5min and underlying_broke_level:
+#     switch to wide trail (runner mode)
+# else:
+#     TP at 30%</pre>
+</div>
+
+<div class="test-card">
+  <h4>M4: Bear Day Strategy (SPY Down &rarr; Aggressive PUTs)</h4>
+  <div class="test-meta">
+    <span class="badge badge-green">STRATEGY MODE</span>
+    <span><strong>Hypothesis:</strong> On bear days, skip CALLs and go heavy on PUTs</span>
+  </div>
+  <p><strong>What:</strong> Already partially implemented in <code>backtest_combined.py</code> as bear mode (SPY down 0.5%+ from open). Test the bear mode in isolation: on bear days, how does aggressive PUT trading perform?</p>
+  <p><strong>Variables to test within bear mode:</strong></p>
+  <ul>
+    <li>Bear mode threshold: -0.3% vs -0.5% vs -0.8%</li>
+    <li>PUT concurrent slots: 4 vs 6</li>
+    <li>PUT ticker list expansion (add back NVDA, AMZN in bear mode)</li>
+    <li>PUT premium cap: $0.50 vs $1.00 vs $2.00 in bear mode</li>
+  </ul>
+  <pre># Test: run combined backtest filtering only bear-mode days
+# Compare: bear-mode PUT P&L vs skipping bear days entirely</pre>
+</div>
+
+<!-- ── 6f: Combo TP Strategies ── -->
+<h3>6f. Profit-Taking Combination Strategies</h3>
+<p>Previous sweep showed "Combo 50%&rarr;runner / SL 40%" = +$101K. Test specific combo approaches.</p>
+
+<div class="test-card">
+  <h4>TP1: Triple Scaleout (1/3 at +20%, 1/3 at +50%, 1/3 rides)</h4>
+  <div class="test-meta">
+    <span class="badge badge-green">PROFITABILITY TEST</span>
+    <span><strong>Hypothesis:</strong> Graduated profit-taking captures more of the curve</span>
+  </div>
+  <p><strong>What:</strong> Sell 1/3 at +20% (lock quick profit), 1/3 at +50% (lock good profit), let final 1/3 ride with adaptive trail (capture runners).</p>
+  <p><strong>Note:</strong> Current scaleout only does one shot (1/3 at +20%). This tests a 3-tier approach.</p>
+  <pre># Modify ExitFSM to support multi-tier scaleout:
+# Tier 1: sell 1/3 at +20% (existing)
+# Tier 2: sell 1/3 at +50% (new)
+# Tier 3: trail remaining 1/3 with wide adaptive trail</pre>
+</div>
+
+<div class="test-card">
+  <h4>TP2: Time-Based TP (faster TP as day progresses)</h4>
+  <div class="test-meta">
+    <span class="badge badge-green">PROFITABILITY TEST</span>
+    <span><strong>Hypothesis:</strong> Theta decay means later entries should take profit faster</span>
+  </div>
+  <p><strong>What:</strong> 0DTE options entered at 10:00 AM have 6 hours of life. Entered at 2:30 PM, only 1.5 hours. TP should tighten as time-to-close decreases.</p>
+  <pre># Morning entries (9:35-11:00): standard V5 FSM (let it run)
+# Midday entries (11:00-2:00): TP at +50%
+# Power hour entries (2:30-3:45): TP at +30% (take money fast before gamma death)</pre>
+</div>
+
+<hr>
+
+<!-- ==================== SECTION 7: COMBINATION ==================== -->
+<!-- ==================== SECTION 7: COMBINATION ==================== -->
+<h2 id="combination">7. Combination Testing (Phase 2)</h2>
+
+<div class="highlight-box">
+  <strong>After all isolated tests complete:</strong> Take every test that PASSED (improved results without destroying quality) and combine them. Test in pairs first, then the full winning combination.
+</div>
+
+<div class="card">
+  <h3>Combination Protocol</h3>
+  <ol>
+    <li><strong>Rank isolated winners</strong> by impact on trades/day (primary) and P&amp;L preservation (secondary)</li>
+    <li><strong>Pair test:</strong> Combine the top 2 winners. Does the improvement stack or cancel?</li>
+    <li><strong>Triple test:</strong> Add the 3rd winner. Diminishing returns?</li>
+    <li><strong>Full combo:</strong> All winners together. This is the candidate production config.</li>
+    <li><strong>Stress test:</strong> Run full combo over 90 days (not just 60) to check robustness</li>
+  </ol>
+</div>
+
+<div class="card">
+  <h3>Expected High-Impact Combinations</h3>
+  <p style="color:var(--text-muted);">These are hypotheses to test, NOT predictions:</p>
+  <table>
+    <tr><th>Combo</th><th>Tests</th><th>Hypothesis</th></tr>
+    <tr><td><strong>Volume Combo</strong></td><td>E1 or S1 + E3 + E11</td><td>Extended window + looser pattern + more concurrent = 3-4x volume</td></tr>
+    <tr><td><strong>Profitability Combo</strong></td><td>E7 + X1 or X2 + S5</td><td>Higher premium cap + delayed scalp + OTM strikes = bigger winners</td></tr>
+    <tr><td><strong>Full Stack</strong></td><td>Best of Volume + Profitability + S2</td><td>Everything together including PUT track</td></tr>
+    <tr><td><strong>Two-Source</strong></td><td>S3 (scoring pipeline) + gold standard ML</td><td>Run BOTH sourcing methods in parallel for maximum coverage</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Combination Results Table</h3>
+  <table>
+    <tr>
+      <th>Combo ID</th><th>Tests Combined</th>
+      <th>Trades</th><th>T/Day</th><th>WR</th><th>P&amp;L</th><th>PF</th><th>MaxDD</th>
+      <th>Verdict</th>
+    </tr>
+    <tr style="background: rgba(63,185,80,0.08);">
+      <td>CTRL</td><td><em>Baseline</em></td>
+      <td>62</td><td>1.03</td><td>93.5%</td><td>+$57,138</td><td>17.96</td><td>10.0%</td>
+      <td><span class="badge badge-blue">CONTROL</span></td>
+    </tr>
+    <tr><td>C1</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>C2</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>C3</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    <tr><td>C4</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+  </table>
+</div>
+
+<!-- ==================== SECTION 7: KNOWN FACTS ==================== -->
+<h2 id="known-facts">7. Known Facts from Prior Analysis</h2>
+
+<div class="warning-box">
+  <strong>These are verified facts, not hypotheses.</strong> Reference these when interpreting test results.
+</div>
+
+<div class="card">
+  <h3>Verified Backtest Results</h3>
+  <table>
+    <tr><th>Config</th><th>Period</th><th>Trades</th><th>WR</th><th>P&amp;L</th><th>PF</th><th>Sharpe</th></tr>
+    <tr><td>Gold Standard CALL-only</td><td>60 days</td><td>62</td><td>93.5%</td><td>+$57,138</td><td>17.96</td><td>15.80</td></tr>
+    <tr><td>Gold Standard + PUT</td><td>60 days</td><td>84</td><td>86.9%</td><td>+$95,161</td><td>8.42</td><td>&mdash;</td></tr>
+    <tr><td>V5 Production (Discord)</td><td>Apr-May</td><td>247</td><td>32.8%</td><td>+$121,728</td><td>1.52</td><td>2.84</td></tr>
+    <tr><td>ML E2E (ThetaData)</td><td>60 days</td><td>27</td><td>55.6%</td><td>+$69,798</td><td>2.17</td><td>4.09</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Known Losers (Do NOT Re-test)</h3>
+  <ul>
+    <li><strong>MSFT</strong> &mdash; confirmed net loser across all backtests. Stays blocklisted.</li>
+    <li><strong>Unusual Whales flow signals</strong> &mdash; tested and lost money. Do not integrate as signal source.</li>
+    <li><strong>PUT on PLTR</strong> &mdash; -$48K over 3 years. Stays PUT-excluded.</li>
+    <li><strong>PUT on AMD</strong> &mdash; -$9K over 3 years. Stays PUT-excluded.</li>
+    <li><strong>Score-weighted sizing</strong> &mdash; backtested 2026-05-20: scores don't predict outcomes. Flat 85% is optimal.</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>Known Wins (Already in Baseline)</h3>
+  <ul>
+    <li><strong>Regime filter at 0.19</strong> &mdash; PF 7.20 &rarr; 17.96. Skips 10 chop days, catches both worst losing days.</li>
+    <li><strong>Entry timing at 0.70</strong> &mdash; Added from gold standard evaluation. Filters low-quality entries.</li>
+    <li><strong>Per-ticker V5 configs</strong> &mdash; MSTR tight+quick, NVDA early profit, TSLA long grace, etc.</li>
+    <li><strong>PUT scalp config</strong> &mdash; 50% target, 60% stop, 60m max hold. Profitable on SPY/QQQ/TSLA/META/IWM.</li>
+    <li><strong>Breakeven ratchet</strong> &mdash; Once +20%, stop floor = entry. Prevents giving back gains.</li>
+    <li><strong>DCA</strong> &mdash; Auto-doubles when premium dips 15-35%. Improves blended entry.</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>Key Observations from Prior Sweeps</h3>
+  <ul>
+    <li><strong>OTM calls consistently outperform ATM</strong> &mdash; verified in ThetaData backtests (test S5)</li>
+    <li><strong>$0.50&ndash;$1.50 premium band</strong> &mdash; showed highest PF (1.57) in sweep, but that sweep used blind morning entries without ML filtering. With ML, results should be better.</li>
+    <li><strong>Winners are fast</strong> &mdash; 13/20 top winners in production closed in &le;12 minutes</li>
+    <li><strong>Power hour has real edge</strong> &mdash; verified from SPY intraday volatility analysis. Gamma acceleration drives big moves 2:30&ndash;3:45 PM.</li>
+    <li><strong>Midday is a dead zone</strong> &mdash; 11:00 AM &ndash; 1:30 PM has lowest volatility and worst WR in production data</li>
+    <li><strong>Afternoon danger zone (1:30-3:00 PM)</strong> &mdash; sourcing pipeline already blocks this (36% WR vs 72% in kill zone). But 2:30-3:45 may be different (closer to close, gamma ramp).</li>
+  </ul>
+</div>
+
+<!-- ==================== SECTION 8: SCRIPTS ==================== -->
+<h2 id="scripts">8. Test Scripts &amp; Commands</h2>
+
+<div class="card">
+  <h3>Quick Reference: Running Each Test</h3>
+  <pre>
+# ═══════════════════════════════════════════════════════════════
+# BASELINE (control)
+# ═══════════════════════════════════════════════════════════════
+python scripts/backtest_gold_standard.py --days 60
+python scripts/backtest_combined.py --days 60
+
+# ═══════════════════════════════════════════════════════════════
+# TIER 1: Constant-change tests (just modify a number, run)
+# These can ALL be automated in a single sweep script
+# ═══════════════════════════════════════════════════════════════
+
+# Entry pipeline (E1-E14)
+# E1:  SCAN_END_MIN = 270          (extend to 2:00 PM)
+# E2:  SCAN_END_MIN = 375          (extend to 3:45 PM)
+# E3:  PATTERN_THRESHOLD = 0.80    (lower pattern gate)
+# E4:  PATTERN_THRESHOLD = 0.75    (even lower)
+# E5:  ENTRY_THRESHOLD = 0.60      (lower entry timing gate)
+# E6:  --no-entry-filter            (remove entry timing entirely)
+# E7:  PREMIUM_CAP = 10.0          (raise premium cap)
+# E8:  PREMIUM_CAP = 999.0         (remove premium cap)
+# E9:  MIN_PREMIUM_FLOOR = 0.05    (allow pennies)
+# E10: SPREAD_GATE_PCT = 25.0      (widen spread gate)
+# E11: MAX_CONCURRENT = 6          (more concurrent)
+# E12: MAX_SAME_DIRECTION = 3      (more same direction)
+# E13: MIN_ENTRY_SPACING_MIN = 2   (faster entries)
+# E14: --no-regime                  (remove regime filter)
+
+# Exit engine (X1-X8)
+# X1: SCALP_TARGET_PCT = 35.0
+# X2: SCALP_TARGET_PCT = 50.0
+# X3: V6_SCALEOUT_GAIN_PCT = 35.0
+# X4: V6_BREAKEVEN_TRIGGER_PCT = 30.0
+# X5: ENABLE_V6_2PM_TIGHTEN = False
+# X6: ENABLE_V6_SCALEOUT = False
+# X7: profit_target_general_pct = 50.0
+# X8: profit_target_general_pct = 100.0
+
+# Premium bands (P1-P5)
+# P1: MIN_PREMIUM_FLOOR=0.05, PREMIUM_CAP=0.50    (pennies only)
+# P2: MIN_PREMIUM_FLOOR=0.50, PREMIUM_CAP=1.50    (sweet spot)
+# P3: MIN_PREMIUM_FLOOR=1.50, PREMIUM_CAP=3.00    (mid-range)
+# P4: MIN_PREMIUM_FLOOR=3.00, PREMIUM_CAP=10.00, profit_target=40%  (expensive+quick TP)
+# P5: premium-adaptive exit (requires code: different TP per entry price)
+
+# Time-of-day (T1-T5)
+# T1: SCAN_END_MIN = 60            (tighter morning: 9:35-10:30)
+# T2: SCAN_START_MIN=300, SCAN_END_MIN=375  (power hour only: 2:30-3:45)
+# T3: three-window (requires code: skip 10:30-11:30 AND 12:30-14:30)
+# T4: per-ticker windows (requires analysis + code)
+# T5: time-variable thresholds (requires code: looser in PM)
+
+# ═══════════════════════════════════════════════════════════════
+# TIER 2: Code-change tests (small modifications needed)
+# ═══════════════════════════════════════════════════════════════
+
+# S1: Two-window scan (if min &lt;= 90 or min &gt;= 300)
+# S2: python scripts/backtest_combined.py --days 60   (PUT track)
+# S5: OTM strike targeting (modify find_atm_strike)
+# D5: Volume surge gate (add volume_ratio &gt;= 3.0 check)
+# M2: Scalp mode config override (tight TP, loose entry)
+# M1: Runner-hunter config override (wide stops, small size)
+# TP1: Triple scaleout (modify ExitFSM scaleout logic)
+# TP2: Time-based TP (check minutes_to_close, adjust TP)
+
+# ═══════════════════════════════════════════════════════════════
+# TIER 3: New data / new scripts needed
+# ═══════════════════════════════════════════════════════════════
+
+# S3: Sourcing scoring pipeline backtest (new script needed)
+# S6: Ticker expansion (download ThetaData for COIN/SMCI/ARM)
+# D1: Trump/political signals (get historical posts, correlate with SPY)
+# D2: Elon tweets → TSLA (get tweet history, match to bars)
+# D3: Polygon news events (pull news API, match to entries)
+# D4: VIX overlay (fetch VIX daily, multiply trail widths)
+# K1-K3: New tickers (download data first)
+# M3: Hybrid scalp→runner (requires runner detection code)
+# M4: Bear day strategy (filter combined backtest to red days)
+  </pre>
+</div>
+
+<div class="card">
+  <h3>Suggested Execution Order</h3>
+  <p><strong>Phase A (automated sweep, ~30 tests):</strong> All Tier 1 constant-change tests. Build one sweep script, run overnight.</p>
+  <p><strong>Phase B (small code changes, ~8 tests):</strong> Two-window scan, OTM strikes, volume gate, scalp/runner modes.</p>
+  <p><strong>Phase C (new data, ~8 tests):</strong> Trump/Elon signals, Polygon news, new tickers, VIX overlay.</p>
+  <p><strong>Phase D (combinations):</strong> Take winners from A+B+C and combine.</p>
+</div>
+
+<div class="card">
+  <h3>Automation: Full Sweep Script</h3>
+  <p>All Tier 1 tests (constant changes) will be automated in <code>scripts/sweep_isolated_tests.py</code>. This script imports the gold standard backtest as a function, overrides one parameter per run, and collects results.</p>
+  <pre>
+# scripts/sweep_isolated_tests.py — runs all 30+ isolated variable tests
+TESTS = {
+    # ── Entry Pipeline ──
+    "E1":  {"SCAN_END_MIN": 270},
+    "E2":  {"SCAN_END_MIN": 375},
+    "E3":  {"PATTERN_THRESHOLD": 0.80},
+    "E4":  {"PATTERN_THRESHOLD": 0.75},
+    "E5":  {"ENTRY_THRESHOLD": 0.60},
+    "E6":  {"use_entry_filter": False},
+    "E7":  {"PREMIUM_CAP": 10.0},
+    "E8":  {"PREMIUM_CAP": 999.0},
+    "E9":  {"MIN_PREMIUM_FLOOR": 0.05},
+    "E10": {"SPREAD_GATE_PCT": 25.0},
+    "E11": {"MAX_CONCURRENT": 6},
+    "E12": {"MAX_SAME_DIRECTION": 3},
+    "E13": {"MIN_ENTRY_SPACING_MIN": 2},
+    "E14": {"use_regime": False},
+
+    # ── Exit Engine ──
+    "X1":  {"SCALP_TARGET_PCT": 35.0},
+    "X2":  {"SCALP_TARGET_PCT": 50.0},
+    "X3":  {"V6_SCALEOUT_GAIN_PCT": 35.0},
+    "X4":  {"V6_BREAKEVEN_TRIGGER_PCT": 30.0},
+    "X5":  {"ENABLE_V6_2PM_TIGHTEN": False},
+    "X6":  {"ENABLE_V6_SCALEOUT": False},
+    "X7":  {"profit_target_general_pct": 50.0},
+    "X8":  {"profit_target_general_pct": 100.0},
+
+    # ── Premium Bands ──
+    "P1":  {"MIN_PREMIUM_FLOOR": 0.05, "PREMIUM_CAP": 0.50},
+    "P2":  {"MIN_PREMIUM_FLOOR": 0.50, "PREMIUM_CAP": 1.50},
+    "P3":  {"MIN_PREMIUM_FLOOR": 1.50, "PREMIUM_CAP": 3.00},
+    "P4":  {"MIN_PREMIUM_FLOOR": 3.00, "PREMIUM_CAP": 10.00, "profit_target_general_pct": 40.0},
+
+    # ── Time Windows ──
+    "T1":  {"SCAN_END_MIN": 60},
+    "T2":  {"SCAN_START_MIN": 300, "SCAN_END_MIN": 375},
+}
+
+# Each test: run full 60-day backtest with ONE override, compare to CTRL
+# Output: CSV + formatted table with all metrics
+# Runtime estimate: ~5-8 min per test × 30 tests = 2.5-4 hours total
+  </pre>
+</div>
+
+<hr>
+
+<h2>Summary: What We're Trying to Find</h2>
+
+<div class="success-box">
+  <strong>Goal:</strong> A configuration that achieves <strong>4-6+ trades/day</strong> while maintaining <strong>PF &ge; 3.0</strong> and <strong>WR &ge; 75%</strong>, using only our own sourcing (no Discord dependency).
+  <br><br>
+  <strong>Method:</strong> 47 isolated tests across 7 categories &rarr; rank winners &rarr; combine top performers &rarr; validate on 90 days.
+  <br><br>
+  <strong>Categories:</strong> Entry pipeline (E1-E14) &bull; Exit engine (X1-X8) &bull; Sourcing (S1-S6) &bull; Premium bands (P1-P5) &bull; Time-of-day (T1-T5) &bull; Data sources (D1-D5) &bull; Strategy modes (M1-M4, TP1-TP2)
+</div>
+
+<hr>
+<p style="color: var(--text-muted); text-align: center; margin-top: 2rem;">
+  OptionsOwl Research &bull; May 28, 2026 &bull; All tests use ThetaData (46.2M bars, 14 tickers, Jan 2023 &ndash; May 2026)
+</p>
+
+</body>
+</html>

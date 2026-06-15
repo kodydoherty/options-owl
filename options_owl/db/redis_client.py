@@ -13,6 +13,7 @@ warnings and return safe defaults so trading is never blocked by Redis.
 
 from __future__ import annotations
 
+import json
 import time
 
 from loguru import logger
@@ -240,7 +241,7 @@ async def add_daily_loss(agent_id: str, amount: float) -> float:
         pipe = _redis.pipeline()
         pipe.hincrbyfloat(key, field, amount)
         pipe.expire(key, _TTL_DAILY)
-        results = await pipe.execute()
+        await pipe.execute()
         # Return total across all agents
         return await get_total_daily_loss()
     except Exception as exc:
@@ -274,3 +275,382 @@ async def reset_daily_losses() -> None:
         await _redis.delete(key)
     except Exception as exc:
         logger.warning(f"Redis reset_daily_losses failed: {exc}")
+
+
+# ── Real-time flow data sharing ─────────────────────────────────────────────
+
+_PFX_FLOW = "owl:flow:"
+_PFX_PRICE = "owl:price:"
+_PFX_OPTION = "owl:option:"
+_PFX_SNAPSHOT = "owl:snapshot:"
+_PFX_SIGNAL_DATA = "owl:ml_signal:"
+_PFX_CANDLE = "owl:candle:"
+_FLOW_CHANNEL = "owl:flow:bars"
+_SIGNAL_CHANNEL = "owl:signals"
+
+
+async def publish_signal(signal_dict: dict) -> None:
+    """Publish a sourcing signal to all trading bots via Redis pub/sub."""
+    if _redis is None:
+        return
+    try:
+
+        # Pub/sub for instant notification
+        await _redis.publish(_SIGNAL_CHANNEL, json.dumps(signal_dict))
+        # Also cache as latest signal for the ticker
+        ticker = signal_dict.get("ticker", "")
+        if ticker:
+            key = f"{_PFX_SIGNAL_DATA}{ticker}"
+            await _redis.set(key, json.dumps(signal_dict), ex=300)  # 5 min TTL
+    except Exception as exc:
+        logger.debug(f"Redis publish_signal failed: {exc}")
+
+
+async def get_latest_signal(ticker: str) -> dict | None:
+    """Read the latest sourcing signal for a ticker."""
+    if _redis is None:
+        return None
+    try:
+
+        key = f"{_PFX_SIGNAL_DATA}{ticker}"
+        data = await _redis.get(key)
+        return json.loads(data) if data else None
+    except Exception:
+        return None
+
+
+async def publish_price(ticker: str, price: float) -> None:
+    """Publish a stock price update. All agents can read via get_price()."""
+    if _redis is None:
+        return
+    try:
+        key = f"{_PFX_PRICE}{ticker}"
+        await _redis.set(
+            key,
+            json.dumps({"price": price, "t": time.time()}),
+            ex=120,  # 2 min TTL
+        )
+    except Exception as exc:
+        logger.debug(f"Redis publish_price failed: {exc}")
+
+
+async def get_price(ticker: str, max_age: float = 120) -> tuple[float, float] | None:
+    """Read latest stock price from Redis (set by harvester).
+
+    Returns (price, age_seconds) or None if missing/expired.
+    """
+    if _redis is None:
+        return None
+    try:
+        key = f"{_PFX_PRICE}{ticker}"
+        val = await _redis.get(key)
+        if not val:
+            return None
+        data = json.loads(val)
+        age = time.time() - data.get("t", 0)
+        if age > max_age:
+            return None
+        return (data["price"], age)
+    except Exception:
+        return None
+
+
+async def publish_spy_change(change_pct: float, open_price: float, last_price: float) -> None:
+    """Publish SPY change-from-open so all bots share the same value."""
+    if _redis is None:
+        return
+    try:
+        await _redis.set(
+            "owl:spy_change",
+            json.dumps({
+                "change_pct": change_pct,
+                "open": open_price,
+                "last": last_price,
+                "t": time.time(),
+            }),
+            ex=120,
+        )
+    except Exception as exc:
+        logger.debug(f"Redis publish_spy_change failed: {exc}")
+
+
+async def get_spy_change(max_age: float = 120) -> dict | None:
+    """Read SPY change-from-open published by the harvester.
+
+    Returns {"change_pct": float, "open": float, "last": float} or None.
+    """
+    if _redis is None:
+        return None
+    try:
+        val = await _redis.get("owl:spy_change")
+        if not val:
+            return None
+        data = json.loads(val)
+        age = time.time() - data.get("t", 0)
+        if age > max_age:
+            return None
+        return data
+    except Exception:
+        return None
+
+
+async def publish_candle_bars(ticker: str, timeframe: str, bars_json: list[dict]) -> None:
+    """Publish candle bars from harvester so all bots share the same data.
+
+    bars_json: list of {"t": timestamp_ms, "o": open, "h": high, "l": low, "c": close, "v": volume, "vw": vwap}
+    """
+    if _redis is None:
+        return
+    try:
+        key = f"{_PFX_CANDLE}{ticker}:{timeframe}"
+        await _redis.set(
+            key,
+            json.dumps({"bars": bars_json, "t": time.time()}),
+            ex=300,  # 5 min TTL
+        )
+    except Exception as exc:
+        logger.debug(f"Redis publish_candle_bars failed: {exc}")
+
+
+async def get_candle_bars(ticker: str, timeframe: str, max_age: float = 300) -> list[dict] | None:
+    """Read candle bars published by the harvester. Returns list of bar dicts or None."""
+    if _redis is None:
+        return None
+    try:
+        key = f"{_PFX_CANDLE}{ticker}:{timeframe}"
+        val = await _redis.get(key)
+        if not val:
+            return None
+        data = json.loads(val)
+        age = time.time() - data.get("t", 0)
+        if age > max_age:
+            return None
+        return data.get("bars")
+    except Exception:
+        return None
+
+
+def _normalize_contract_key(contract_key: str) -> str:
+    """Normalize contract key to lowercase option_type for consistent lookups."""
+    parts = contract_key.split(":")
+    if len(parts) >= 2:
+        parts[1] = parts[1].lower()
+    return ":".join(parts)
+
+
+async def publish_option_premium(
+    contract_key: str, bid: float, ask: float, mid: float,
+) -> None:
+    """Publish an option premium update. contract_key = ticker:type:strike:expiry."""
+    if _redis is None:
+        return
+    try:
+        contract_key = _normalize_contract_key(contract_key)
+        key = f"{_PFX_OPTION}{contract_key}"
+        await _redis.set(
+            key,
+            json.dumps({"bid": bid, "ask": ask, "mid": mid, "t": time.time()}),
+            ex=300,  # 5 min — survives 2-3 harvester poll failures
+        )
+    except Exception as exc:
+        logger.debug(f"Redis publish_option_premium failed: {exc}")
+
+
+async def publish_option_snapshot(
+    contract_key: str, snapshot: dict,
+) -> None:
+    """Publish a FULL option snapshot (bid/ask/greeks/volume/underlying) for ML models.
+
+    contract_key = ticker:type:strike:expiry (e.g. NVDA:call:130:2026-05-27)
+    snapshot keys: bid, ask, mid, iv, delta, gamma, theta, vega, volume,
+                   open_interest, underlying_price, bid_size, ask_size
+    """
+    if _redis is None:
+        return
+    try:
+        contract_key = _normalize_contract_key(contract_key)
+        key = f"{_PFX_SNAPSHOT}{contract_key}"
+        snapshot["t"] = time.time()
+        await _redis.set(key, json.dumps(snapshot), ex=120)
+    except Exception as exc:
+        logger.debug(f"Redis publish_option_snapshot failed: {exc}")
+
+
+async def get_option_snapshot(contract_key: str) -> dict | None:
+    """Read full option snapshot from Redis (set by harvester).
+
+    Returns dict with bid, ask, mid, iv, delta, theta, vega, volume,
+    underlying_price, bid_size, ask_size, t — or None.
+    """
+    if _redis is None:
+        return None
+    try:
+        contract_key = _normalize_contract_key(contract_key)
+        key = f"{_PFX_SNAPSHOT}{contract_key}"
+        val = await _redis.get(key)
+        return json.loads(val) if val else None
+    except Exception:
+        return None
+
+
+async def get_option_snapshots_for_ticker(
+    ticker: str, expiry: str | None = None,
+) -> list[dict]:
+    """Read all option snapshots for a ticker (optionally filtered by expiry).
+
+    Returns list of snapshot dicts, each including 'contract_key' for identification.
+    """
+    if _redis is None:
+        return []
+    try:
+        pattern = f"{_PFX_SNAPSHOT}{ticker.upper()}:*"
+        results = []
+        async for key in _redis.scan_iter(match=pattern):
+            if expiry:
+                # key format: owl:snapshot:TICKER:type:strike:expiry
+                parts = key.split(":")
+                if len(parts) >= 6 and parts[5] != expiry:
+                    continue
+            val = await _redis.get(key)
+            if val:
+                snap = json.loads(val)
+                # Extract contract info from key
+                contract_key = key.replace(_PFX_SNAPSHOT, "")
+                snap["contract_key"] = contract_key
+                results.append(snap)
+        return results
+    except Exception as exc:
+        logger.debug(f"Redis get_option_snapshots_for_ticker failed: {exc}")
+        return []
+
+
+async def get_option_premium(contract_key: str) -> dict | None:
+    """Read latest option premium from Redis (set by harvester).
+
+    Returns {"bid": float, "ask": float, "mid": float, "t": float} or None.
+    """
+    if _redis is None:
+        return None
+    try:
+        contract_key = _normalize_contract_key(contract_key)
+        key = f"{_PFX_OPTION}{contract_key}"
+        val = await _redis.get(key)
+        return json.loads(val) if val else None
+    except Exception:
+        return None
+
+
+async def publish_flow_bar(bar_dict: dict) -> None:
+    """Publish a 5-minute flow bar to all agents via Redis pub/sub.
+
+    Fire-and-forget — never blocks trading if Redis is down.
+    """
+    if _redis is None:
+        return
+    try:
+
+        await _redis.publish(_FLOW_CHANNEL, json.dumps(bar_dict))
+    except Exception as exc:
+        logger.debug(f"Redis publish_flow_bar failed: {exc}")
+
+
+async def set_latest_flow(ticker: str, bar_dict: dict) -> None:
+    """Cache the latest flow bar per ticker so new agents can read immediately."""
+    if _redis is None:
+        return
+    try:
+
+        key = f"{_PFX_FLOW}{ticker}"
+        await _redis.set(key, json.dumps(bar_dict), ex=600)  # 10 min TTL
+    except Exception as exc:
+        logger.debug(f"Redis set_latest_flow failed: {exc}")
+
+
+async def get_latest_flow(ticker: str) -> dict | None:
+    """Read the latest flow bar for a ticker from Redis cache."""
+    if _redis is None:
+        return None
+    try:
+
+        key = f"{_PFX_FLOW}{ticker}"
+        data = await _redis.get(key)
+        return json.loads(data) if data else None
+    except Exception as exc:
+        logger.debug(f"Redis get_latest_flow failed: {exc}")
+        return None
+
+
+async def get_all_latest_flow() -> dict[str, dict]:
+    """Read latest flow bars for all tickers from Redis cache."""
+    if _redis is None:
+        return {}
+    try:
+
+        result = {}
+        async for key in _redis.scan_iter(match=f"{_PFX_FLOW}*"):
+            ticker = key.replace(_PFX_FLOW, "")
+            data = await _redis.get(key)
+            if data:
+                result[ticker] = json.loads(data)
+        return result
+    except Exception as exc:
+        logger.debug(f"Redis get_all_latest_flow failed: {exc}")
+        return {}
+
+
+# ── WS Health status (published by harvester watchdog) ────────────────────
+
+
+async def get_ws_health() -> dict | None:
+    """Read WS health status published by the harvester watchdog.
+
+    Returns dict with: healthy, issues, candle_ws, flow_ws, t — or None.
+    """
+    if _redis is None:
+        return None
+    try:
+        val = await _redis.get("owl:ws_health")
+        return json.loads(val) if val else None
+    except Exception:
+        return None
+
+
+# ── Dashboard controls (paper mode, kill switch) ─────────────────────────
+
+_PFX_CONTROL = "owl:control:"
+
+
+async def get_control(agent_id: str, key: str) -> bool | None:
+    """Read a dashboard control value. Returns True/False or None if not set."""
+    if _redis is None:
+        return None
+    try:
+        val = await _redis.get(f"{_PFX_CONTROL}{agent_id}:{key}")
+        if val is None:
+            return None
+        return val == "true"
+    except Exception:
+        return None
+
+
+async def set_control(agent_id: str, key: str, value: bool) -> None:
+    """Write a dashboard control value."""
+    if _redis is None:
+        return
+    try:
+        await _redis.set(
+            f"{_PFX_CONTROL}{agent_id}:{key}",
+            "true" if value else "false",
+        )
+    except Exception as exc:
+        logger.debug(f"Redis set_control failed: {exc}")
+
+
+async def get_paper_mode(agent_id: str) -> bool | None:
+    """Check if paper mode is overridden via dashboard. None = use env."""
+    return await get_control(agent_id, "paper_mode")
+
+
+async def get_kill_switch(agent_id: str) -> bool | None:
+    """Check if kill switch is overridden via dashboard. None = use env."""
+    return await get_control(agent_id, "kill_switch")

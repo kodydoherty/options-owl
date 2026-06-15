@@ -46,7 +46,7 @@ class TestFSMStateTransitions:
     def test_starts_in_grace(self):
         fsm = ExitFSM(V5Config())
         state = _make_state()
-        result = fsm.evaluate(state, 1.00, 1.00, 1.10, _now_et(10, 0) + timedelta(seconds=30))
+        fsm.evaluate(state, 1.00, 1.00, 1.10, _now_et(10, 0) + timedelta(seconds=30))
         assert state.state == FSMState.GRACE
 
     def test_grace_lasts_5_minutes(self):

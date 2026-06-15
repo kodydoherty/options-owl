@@ -69,6 +69,33 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Step 1c: Safety check — PAPER_TRADE and KILL_SWITCH in docker-compose.yml
+# Prevents accidental deploys that switch live bots to paper mode.
+# ---------------------------------------------------------------------------
+echo "=== Step 1c: Verifying docker-compose.yml safety flags ==="
+KODY_PAPER=$(grep -A15 'owlet-kody:' "$LOCAL_DIR/docker-compose.yml" | grep 'PAPER_TRADE=' | head -1 | sed 's/.*PAPER_TRADE=//')
+KODY_KILL=$(grep -A15 'owlet-kody:' "$LOCAL_DIR/docker-compose.yml" | grep 'WEBULL_KILL_SWITCH=' | head -1 | sed 's/.*WEBULL_KILL_SWITCH=//')
+if [ "$KODY_PAPER" = "true" ] || [ "$KODY_KILL" = "true" ]; then
+  echo ""
+  echo "DEPLOY BLOCKED: owlet-kody has PAPER_TRADE=$KODY_PAPER WEBULL_KILL_SWITCH=$KODY_KILL"
+  echo "This would switch LIVE trading to paper mode on deploy."
+  echo "If intentional, edit docker-compose.yml first, then re-run."
+  exit 1
+fi
+echo "owlet-kody: PAPER_TRADE=$KODY_PAPER WEBULL_KILL_SWITCH=$KODY_KILL — OK"
+
+DENNIS_PAPER=$(grep -A15 'owlet-dennis:' "$LOCAL_DIR/docker-compose.yml" | grep 'PAPER_TRADE=' | head -1 | sed 's/.*PAPER_TRADE=//')
+DENNIS_KILL=$(grep -A15 'owlet-dennis:' "$LOCAL_DIR/docker-compose.yml" | grep 'WEBULL_KILL_SWITCH=' | head -1 | sed 's/.*WEBULL_KILL_SWITCH=//')
+if [ "$DENNIS_PAPER" = "true" ] || [ "$DENNIS_KILL" = "true" ]; then
+  echo ""
+  echo "DEPLOY BLOCKED: owlet-dennis has PAPER_TRADE=$DENNIS_PAPER WEBULL_KILL_SWITCH=$DENNIS_KILL"
+  echo "This would switch LIVE trading to paper mode on deploy."
+  echo "If intentional, edit docker-compose.yml first, then re-run."
+  exit 1
+fi
+echo "owlet-dennis: PAPER_TRADE=$DENNIS_PAPER WEBULL_KILL_SWITCH=$DENNIS_KILL — OK"
+
+# ---------------------------------------------------------------------------
 # Step 2: Sync code to droplet
 # ---------------------------------------------------------------------------
 echo "=== Step 2: Syncing code to droplet ($DROPLET_IP) ==="
@@ -87,7 +114,7 @@ if [ -n "$TARGET" ]; then
   echo "=== Step 3: Rebuilding $TARGET (no cache) ==="
   ssh -i "$SSH_KEY" "$DROPLET" "cd $REMOTE_DIR && docker compose build --no-cache $TARGET"
   echo "=== Step 4: Restarting $TARGET ==="
-  ssh -i "$SSH_KEY" "$DROPLET" "cd $REMOTE_DIR && docker compose restart $TARGET"
+  ssh -i "$SSH_KEY" "$DROPLET" "cd $REMOTE_DIR && docker compose up -d $TARGET"
 else
   echo "=== Step 3: Rebuilding ALL images (no cache) ==="
   ssh -i "$SSH_KEY" "$DROPLET" "cd $REMOTE_DIR && docker compose build --no-cache"
@@ -96,10 +123,28 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Step 4b: Prune Docker build cache (prevents 100GB+ buildup)
+# ---------------------------------------------------------------------------
+echo "=== Step 4b: Pruning Docker build cache ==="
+ssh -i "$SSH_KEY" "$DROPLET" "docker builder prune --all -f 2>/dev/null || true"
+
+# ---------------------------------------------------------------------------
 # Step 5: Verify
 # ---------------------------------------------------------------------------
 echo "=== Step 5: Verifying ==="
 ssh -i "$SSH_KEY" "$DROPLET" "cd $REMOTE_DIR && docker compose ps"
+
+# Post-deploy: verify owlet-kody is LIVE (not accidentally paper)
+echo ""
+echo "=== Step 6: Verifying owlet-kody is LIVE ==="
+LIVE_PAPER=$(ssh -i "$SSH_KEY" "$DROPLET" "docker exec owlet-kody env 2>/dev/null | grep PAPER_TRADE= | head -1" || echo "PAPER_TRADE=UNKNOWN")
+LIVE_KILL=$(ssh -i "$SSH_KEY" "$DROPLET" "docker exec owlet-kody env 2>/dev/null | grep WEBULL_KILL_SWITCH= | head -1" || echo "WEBULL_KILL_SWITCH=UNKNOWN")
+echo "  $LIVE_PAPER"
+echo "  $LIVE_KILL"
+if echo "$LIVE_PAPER" | grep -q "true"; then
+  echo ""
+  echo "WARNING: owlet-kody is running in PAPER mode! Check docker-compose.yml."
+fi
 
 echo ""
 echo "=== Deploy complete ==="

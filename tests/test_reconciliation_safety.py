@@ -29,8 +29,6 @@ class TestEmptyWebullSkipsPhantom:
     @pytest.mark.asyncio
     async def test_empty_webull_does_not_close_trades(self, monkeypatch):
         """If Webull API returns empty, no trades should be phantom-closed."""
-        closed_ids = []
-
         # Patch the DB and Webull calls
         async def fake_get_open_option_positions():
             return []  # Webull returns nothing

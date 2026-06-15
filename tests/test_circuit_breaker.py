@@ -24,6 +24,7 @@ def _make_settings(tmp_db_path: str, **overrides) -> Settings:
         "CB_OPENING_BUFFER_MINUTES": 10,
         "CB_CLOSING_BUFFER_MINUTES": 15,
         "CB_INTRADAY_LOSS_HALT_PCT": 5.0,
+        "ENABLE_PUT_TRADING": True,
     }
     defaults.update(overrides)
     return Settings(**defaults)

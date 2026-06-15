@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Approach A: Dual-Chain PUT Scanning &mdash; Feed Correct Data to ML</title>
+    <style>
+        :root {
+            --primary: #7c3aed;
+            --primary-light: #ede9fe;
+            --danger: #dc2626;
+            --warning: #f59e0b;
+            --success: #16a34a;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-600: #4b5563;
+            --gray-800: #1f2937;
+            --gray-900: #111827;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: var(--gray-800); line-height: 1.6; max-width: 960px; margin: 0 auto; padding: 2rem; background: #fff; }
+        header { border-bottom: 3px solid var(--primary); padding-bottom: 1.5rem; margin-bottom: 2rem; }
+        header h1 { font-size: 1.75rem; color: var(--gray-900); }
+        .meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.5rem 2rem; margin-top: 1rem; font-size: 0.875rem; color: var(--gray-600); }
+        .meta dt { font-weight: 600; display: inline; }
+        .meta dd { display: inline; margin-left: 0.25rem; }
+        .status-badge { display: inline-block; padding: 0.125rem 0.625rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+        .status-active { background: var(--primary-light); color: var(--primary); }
+        section { margin-bottom: 2rem; }
+        section > h2 { font-size: 1.25rem; color: var(--primary); border-bottom: 1px solid var(--gray-200); padding-bottom: 0.5rem; margin-bottom: 1rem; }
+        section > h3 { font-size: 1rem; margin: 1rem 0 0.5rem; color: var(--gray-900); }
+        ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+        li { margin-bottom: 0.25rem; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 1rem; font-size: 0.875rem; }
+        th, td { text-align: left; padding: 0.5rem 0.75rem; border: 1px solid var(--gray-200); }
+        th { background: var(--gray-50); font-weight: 600; }
+        pre { background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 0.375rem; padding: 1rem; overflow-x: auto; font-size: 0.8125rem; line-height: 1.5; margin-bottom: 1rem; }
+        code { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: 0.8125rem; }
+        .callout { padding: 0.75rem 1rem; border-left: 4px solid var(--primary); background: var(--primary-light); border-radius: 0 0.375rem 0.375rem 0; margin-bottom: 1rem; font-size: 0.875rem; }
+        .callout.warning { border-left-color: var(--warning); background: #fffbeb; }
+        .callout.danger { border-left-color: var(--danger); background: #fef2f2; }
+        .callout.success { border-left-color: var(--success); background: #dcfce7; }
+        footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--gray-200); font-size: 0.75rem; color: var(--gray-600); }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Approach A: Dual-Chain PUT Scanning</h1>
+    <div class="meta">
+        <div><dt>Spec ID:</dt><dd>put-dual-chain-scanning</dd></div>
+        <div><dt>Status:</dt><dd><span class="status-badge status-active">Active</span></dd></div>
+        <div><dt>Project:</dt><dd>OptionsOwl</dd></div>
+        <div><dt>Category:</dt><dd>pipeline</dd></div>
+        <div><dt>Created:</dt><dd>2026-06-05</dd></div>
+        <div><dt>Version:</dt><dd>v1</dd></div>
+        <div><dt>Parent:</dt><dd>put-entry-accuracy-research</dd></div>
+    </div>
+</header>
+
+<section>
+    <h2>1. Problem</h2>
+    <p>
+        Production ML scanner feeds <strong>CALL chain data</strong> to the pattern model, then relabels
+        the signal as PUT based on underlying direction. The backtest correctly uses PUT chain data.
+        This means production PUT signals have incoherent ML features (CALL premium/IV/delta/greeks
+        when the signal is bearish).
+    </p>
+</section>
+
+<section>
+    <h2>2. Solution</h2>
+    <p>
+        Maintain a <strong>separate PUT <code>TickerScanState</code></strong> per ticker, populated from
+        Redis PUT snapshots. When underlying direction is bearish, run the pattern model on PUT chain
+        features instead of CALL features. This matches what the backtest does.
+    </p>
+</section>
+
+<section>
+    <h2>3. Implementation Tasks</h2>
+    <table>
+        <thead><tr><th>#</th><th>Task</th><th>File</th><th>Status</th></tr></thead>
+        <tbody>
+            <tr>
+                <td>3.1</td>
+                <td>Add <code>_resolve_atm_put_from_redis()</code> — find ATM PUT strike</td>
+                <td><code>bot_runner.py</code></td>
+                <td>Todo</td>
+            </tr>
+            <tr>
+                <td>3.2</td>
+                <td>Add <code>put_ticker_states: dict[str, TickerScanState]</code> in scan loop</td>
+                <td><code>bot_runner.py:_run_ml_scan_loop()</code></td>
+                <td>Todo</td>
+            </tr>
+            <tr>
+                <td>3.3</td>
+                <td>Fetch PUT snapshots from Redis each scan cycle (parallel to CALL fetch)</td>
+                <td><code>bot_runner.py:_run_ml_scan_loop()</code></td>
+                <td>Todo</td>
+            </tr>
+            <tr>
+                <td>3.4</td>
+                <td>Rewrite <code>_run_ml_for_ticker()</code> to accept direction + use correct state</td>
+                <td><code>bot_runner.py:_run_ml_for_ticker()</code></td>
+                <td>Todo</td>
+            </tr>
+            <tr>
+                <td>3.5</td>
+                <td>Direction decision: check underlying bearish BEFORE running ML, pick correct state</td>
+                <td><code>bot_runner.py:_run_ml_scan_loop()</code></td>
+                <td>Todo</td>
+            </tr>
+            <tr>
+                <td>3.6</td>
+                <td>Remove post-hoc premium swap (lines 734-750) — no longer needed</td>
+                <td><code>bot_runner.py:_run_ml_for_ticker()</code></td>
+                <td>Todo</td>
+            </tr>
+            <tr>
+                <td>3.7</td>
+                <td>Set <code>ENABLE_PUT_TRADING=true</code> in <code>.env</code></td>
+                <td><code>.env</code> on droplet</td>
+                <td>Todo</td>
+            </tr>
+            <tr>
+                <td>3.8</td>
+                <td>Tests: verify PUT state gets PUT data, CALL state gets CALL data</td>
+                <td><code>tests/test_put_dual_chain.py</code></td>
+                <td>Todo</td>
+            </tr>
+            <tr>
+                <td>3.9</td>
+                <td>Run PUT baseline backtest: <code>--puts-only --days 90</code></td>
+                <td>N/A</td>
+                <td>Todo</td>
+            </tr>
+        </tbody>
+    </table>
+</section>
+
+<section>
+    <h2>4. Architecture (Before vs After)</h2>
+    <h3>Before (broken):</h3>
+    <pre><code>per ticker:
+  1 TickerScanState (CALL chain data)
+  → pattern_model(CALL_features) → if underlying down → label "PUT"
+  → swap PUT premium from Redis at the end</code></pre>
+
+    <h3>After (correct):</h3>
+    <pre><code>per ticker:
+  call_state = TickerScanState(CALL chain data from Redis)
+  put_state  = TickerScanState(PUT chain data from Redis)
+
+  # Determine direction from underlying price action
+  direction = "PUT" if underlying down 0.3%+ else "CALL"
+
+  # Run ML on the CORRECT chain data
+  if direction == "CALL":
+      signal = _run_ml_for_ticker(ticker, call_state, direction="CALL")
+  else:
+      signal = _run_ml_for_ticker(ticker, put_state, direction="PUT")</code></pre>
+</section>
+
+<section>
+    <h2>5. Key Design Decisions</h2>
+    <ul>
+        <li><strong>Both states accumulate every minute</strong> — we don't know direction in advance, so we build both CALL and PUT timeseries. Only one is used for ML scoring per scan.</li>
+        <li><strong>PUT state uses same ATM logic</strong> — find PUT strike closest to underlying price (ATM PUT, not OTM).</li>
+        <li><strong>Direction threshold raised to -0.3%</strong> (from -0.15%) — stronger bearish confirmation, fewer false PUTs on choppy days.</li>
+        <li><strong><code>entry_emitted</code> is per-direction</strong> — can emit one CALL and one PUT per ticker per day (different states).</li>
+        <li><strong>PUT still goes through PutBearishConfirmGate</strong> — the candle/VWAP/RSI gate is an additional safety layer on top of correct ML data.</li>
+    </ul>
+</section>
+
+<section>
+    <h2>6. Safety &amp; Rollback</h2>
+    <ul>
+        <li>All existing PUT safety gates remain: PutBearishConfirmGate, PUT_BUDGET_MULTIPLIER=0.50, no DCA, PUT_SCALP_CONFIG, SPY bear gate, excluded tickers, 2/4 slot limits.</li>
+        <li><strong>Rollback:</strong> Set <code>ENABLE_PUT_TRADING=false</code> — zero code changes needed.</li>
+        <li><strong>Feature flag:</strong> <code>ENABLE_PUT_DUAL_CHAIN=true</code> — if false, falls back to old behavior (CALL data + premium swap).</li>
+    </ul>
+</section>
+
+<section>
+    <h2>7. Changelog</h2>
+    <dl>
+        <dt>v1 — 2026-06-05</dt>
+        <dd>Initial spec created.</dd>
+    </dl>
+</section>
+
+<footer>OptionsOwl — Spec | 2026-06-05</footer>
+</body>
+</html>

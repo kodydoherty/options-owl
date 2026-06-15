@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OptionsOwl — First Live Session: Bugs &amp; Fixes (2026-06-15)</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --ink: #1c2128;
+    --ink-soft: #404954;
+    --muted: #6b7480;
+    --border: #dfe3e8;
+    --accent: #2563eb;
+    --code-bg: #eef1f5;
+    --code-ink: #b11a2b;
+    --green: #1a7f37;
+    --green-bg: #e6f4ea;
+    --blue: #1f5fbf;
+    --blue-bg: #e7eefb;
+    --amber: #9a6700;
+    --amber-bg: #fbf3da;
+    --crit: #b11a2b;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header.sticky {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: rgba(255,255,255,0.96);
+    backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 28px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  header.sticky h1 {
+    margin: 0;
+    font-size: 18px;
+    letter-spacing: -0.01em;
+  }
+  header.sticky .sub {
+    margin: 2px 0 0;
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+  .wrap {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 28px;
+  }
+  .hero {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 32px;
+    margin-bottom: 26px;
+  }
+  .hero h2 {
+    margin: 0 0 4px;
+    font-size: 26px;
+    letter-spacing: -0.02em;
+  }
+  .hero .lede {
+    color: var(--ink-soft);
+    font-size: 15px;
+  }
+  .hero .meta {
+    margin-top: 14px;
+    font-size: 13px;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+  }
+  .hero .meta b { color: var(--ink-soft); font-weight: 600; }
+
+  .badge {
+    display: inline-block;
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 2px 9px;
+    border-radius: 999px;
+    vertical-align: middle;
+    white-space: nowrap;
+  }
+  .badge.fixed { color: var(--green); background: var(--green-bg); border: 1px solid #bfe2c8; }
+  .badge.validated { color: var(--blue); background: var(--blue-bg); border: 1px solid #c4d6f4; }
+  .badge.watch { color: var(--amber); background: var(--amber-bg); border: 1px solid #ecdcb0; }
+  .badge.crit { color: #fff; background: var(--crit); border: 1px solid var(--crit); margin-left: 4px; }
+
+  nav.toc {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 26px;
+  }
+  nav.toc h3 {
+    margin: 0 0 12px;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+  }
+  nav.toc ol {
+    margin: 0;
+    padding-left: 22px;
+    columns: 2;
+    column-gap: 36px;
+  }
+  nav.toc li { margin-bottom: 6px; break-inside: avoid; }
+  nav.toc a { color: var(--accent); text-decoration: none; }
+  nav.toc a:hover { text-decoration: underline; }
+  nav.toc .extra { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--border); }
+  nav.toc .extra ul { margin: 0; padding-left: 22px; }
+
+  section.item, section.note {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px 28px;
+    margin-bottom: 22px;
+    scroll-margin-top: 84px;
+  }
+  section.item h3, section.note h3 {
+    margin: 0 0 14px;
+    font-size: 19px;
+    letter-spacing: -0.01em;
+    line-height: 1.35;
+  }
+  section.item h3 .num {
+    color: var(--muted);
+    font-weight: 700;
+    margin-right: 8px;
+  }
+  .field {
+    margin: 12px 0;
+  }
+  .field .label {
+    display: inline-block;
+    min-width: 96px;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    vertical-align: top;
+  }
+  .field .body {
+    display: inline;
+  }
+  .field.block .body { display: block; margin-top: 4px; }
+
+  code, .mono {
+    font-family: "SF Mono", ui-monospace, Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: 13px;
+  }
+  code {
+    background: var(--code-bg);
+    color: var(--code-ink);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+  pre {
+    background: #1f2530;
+    color: #e6e9ef;
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    line-height: 1.5;
+    margin: 10px 0;
+  }
+  pre code { background: none; color: inherit; padding: 0; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 13.5px;
+  }
+  th, td {
+    text-align: left;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+  td.mono, th.mono { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 12.5px; }
+
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: #f0f4fb;
+    padding: 10px 16px;
+    border-radius: 0 8px 8px 0;
+    margin: 12px 0;
+    font-size: 14px;
+  }
+  .callout.warn { border-left-color: var(--amber); background: var(--amber-bg); }
+  .callout.crit { border-left-color: var(--crit); background: #fbe9eb; }
+
+  ul.tight { margin: 8px 0; padding-left: 22px; }
+  ul.tight li { margin-bottom: 5px; }
+
+  .divider {
+    border: none;
+    border-top: 2px solid var(--border);
+    margin: 34px 0 26px;
+  }
+  .section-head {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin: 0 0 14px;
+    font-weight: 700;
+  }
+  footer {
+    text-align: center;
+    color: var(--muted);
+    font-size: 12.5px;
+    padding: 30px 0 50px;
+  }
+  a.back { font-size: 12px; color: var(--muted); text-decoration: none; float: right; }
+  a.back:hover { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header class="sticky">
+  <h1>OptionsOwl — First Live Session: Bugs &amp; Fixes <span style="color:var(--muted);font-weight:500;">(2026-06-15)</span></h1>
+  <p class="sub">First live trading day of the V7 + UW flow system — the flow book had never placed a live trade until these fixes.</p>
+</header>
+
+<div class="wrap">
+
+  <div class="hero">
+    <h2>First Live Session — Bugs &amp; Fixes</h2>
+    <p class="lede">
+      <strong>2026-06-15</strong> was the first real live-market day for the V7&nbsp;+&nbsp;UW&nbsp;flow system.
+      The flow book — the new high-conviction Unusual Whales sweep source deployed the day before — had
+      <em>never placed a single live trade</em> before this session.
+    </p>
+
+    <div class="callout">
+      <strong>Executive summary.</strong> The flow system was deployed <b>2026-06-14</b>, but on the first live day it
+      placed zero flow trades: a chain of independent gates was <em>silently</em> rejecting every flow signal — the WS
+      decoder dropped 100% of alerts, the stop-price gate hard-rejected stop-less flow signals, the ML-CALL morning
+      cutoff killed all-day flow calls, and the score-floor neutralized the deployed <code>0.62</code> ML threshold.
+      On <b>2026-06-15</b> each blocker was found and fixed <em>in sequence</em>, and the flow book placed its
+      first-ever live trade, <strong>#266</strong> (SPY put). That trade then surfaced two more bugs — flow was
+      trading the whale's far-dated expiry instead of nearest-DTE, and strike resolution was hammering Polygon
+      directly — both now fixed. Alongside the flow chain, several ML/data fixes shipped: a Polygon-expiry fallback
+      for ML scans, a GEX <code>DataError</code>, and ML-scan false timeouts.
+    </div>
+
+    <div class="meta">
+      <span><b>Date:</b> 2026-06-15</span>
+      <span><b>Branch:</b> <span class="mono">fix/owl-review-bugfixes</span></span>
+      <span><b>Live bots:</b> kody, dennis</span>
+      <span><b>Paper bots:</b> adam, vinny, yank</span>
+      <span><b>First live flow trade:</b> #266 (SPY put)</span>
+      <span><b>Deploy gate:</b> ~2545 tests + staggered restart</span>
+    </div>
+  </div>
+
+  <nav class="toc">
+    <h3>Contents</h3>
+    <ol>
+      <li><a href="#f1">Score-floor neutralized the 0.62 gate</a></li>
+      <li><a href="#f2">ML scan Polygon fallback used wrong expiry</a></li>
+      <li><a href="#f3">UW flow WS dropped 100% of alerts</a></li>
+      <li><a href="#f4">stop_price gate blocked 100% of flow</a></li>
+      <li><a href="#f5">Morning cutoff blocked flow CALLs after 11:00 ET</a></li>
+      <li><a href="#f6">Flow traded the whale's far-dated expiry</a></li>
+      <li><a href="#f7">Selective OTM strike strategy</a></li>
+      <li><a href="#f8">SPY added to UW_FLOW_PUT_TICKERS</a></li>
+      <li><a href="#f9">Flow strike resolution → Redis-first</a></li>
+      <li><a href="#f10">GEX DataError</a></li>
+      <li><a href="#f11">ML scan false timeouts</a></li>
+    </ol>
+    <div class="extra">
+      <ul>
+        <li><a href="#case266">Case study: trade #266 — first live flow trade</a></li>
+        <li><a href="#parity">Gold-standard parity</a></li>
+        <li><a href="#dataflow">Data-flow architecture note</a></li>
+        <li><a href="#deploy">Deploy &amp; validation</a></li>
+        <li><a href="#followups">Follow-ups / watch-items</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <!-- ===================== FIX 1 ===================== -->
+  <section class="item" id="f1">
+    <a class="back" href="#">↑ top</a>
+    <h3><span class="num">1.</span>Score-floor neutralized the 0.62 gate <span class="badge fixed">Fixed</span></h3>
+
+    <div class="field block"><span class="label">Symptom</span><span class="body">
+      The deployed <code>ML_PATTERN_THRESHOLD=0.62</code> was supposed to admit ML signals in the 0.62–0.75 band
+      (≈1.8× volume), but those signals were never actually traded — they were silently rejected downstream during
+      position sizing.
+    </span></div>
+
+    <div class="field block"><span class="label">Root cause</span><span class="body">
+      <code>score_to_contracts</code> in <code>risk/vinny_strategy.py</code> carried its own independent floors:
+      <code>_SCORE_FLOOR=75</code> (≈ pattern&nbsp;0.75) and <code>_MIN_ML_CONFIDENCE=0.70</code>. Any signal admitted
+      by the 0.62 pattern gate but scoring below these floors was dropped before a contract count was ever computed.
+      The two thresholds were set in different places and fell out of sync when 0.62 was deployed.
+    </span></div>
+
+    <div class="field block"><span class="label">Fix</span><span class="body">
+      Aligned the sizing floors with the deployed gate: <code>_SCORE_FLOOR=62</code> and
+      <code>_MIN_ML_CONFIDENCE=0.62</code> in <code>score_to_contracts</code>
+      (<code>risk/vinny_strategy.py</code>). The PUT confidence floor stays at <code>0.65</code> (PUTs are
+      structurally worse and keep the tighter floor).
+    </span></div>
+
+    <div class="field block"><span class="label">Status</span><span class="body">
+      <span class="badge fixed">Fixed</span> &mdash; Deployed mid-session, but <em>after</em> the 90-minute CALL
+      scan window (5–90&nbsp;min after open) had already closed, so the payoff is realized at the <strong>next
+      open</strong>, not this session.
+    </span></div>
+  </section>
+
+  <!-- ===================== FIX 2 ===================== -->
+  <section class="item" id="f2">
+    <a class="back" href="#">↑ top</a>
+    <h3><span class="num">2.</span>ML scan Polygon fallback used the wrong expiry <span class="badge fixed">Fixed</span></h3>
+
+    <div class="field block"><span class="label">Symptom</span><span class="body">
+      Several names returned <strong>0 contracts</strong> on the ML scan and were effectively blind:
+      JPM, MSTR, NFLX, PLTR, AMD, SMCI, BA.
+    </span></div>
+
+    <div class="field block"><span class="label">Root cause</span><span class="body">
+      <code>fetch_live_option_chain</code> in <code>sourcing/ml_pipeline.py</code> only queried today and tomorrow
+      for an expiry. Names that don't have a Monday 0DTE (weekly-only or MWF tickers off-schedule) had no contract
+      in that 2-day window, so the chain fetch returned zero rows.
+    </span></div>
+
+    <div class="field block"><span class="label">Fix</span><span class="body">
+      Added a bounded near-expiry fallback in <code>fetch_live_option_chain</code> that walks forward ~5 business
+      days until it finds a tradeable expiry — the same near-expiry pattern smart-entry already uses.
+    </span></div>
+
+    <div class="field block"><span class="label">Status</span><span class="body">
+      <span class="badge fixed">Fixed</span> &mdash; the previously-blind weekly/off-schedule names now resolve a chain.
+    </span></div>
+  </section>
+
+  <!-- ===================== FIX 3 ===================== -->
+  <section class="item" id="f3">
+    <a class="back" href="#">↑ top</a>
+    <h3><span class="num">3.</span>UW flow WebSocket dropped 100% of alerts <span class="badge fixed">Fixed</span><span class="badge crit">Critical</span></h3>
+
+    <div class="field block"><span class="label">Symptom</span><span class="body">
+      Every live UW flow alert was rejected at decode time — zero flow signals ever reached the pipeline. The
+      backtest had run clean, so this never surfaced until the live WS was connected.
+    </span></div>
+
+    <div class="field block"><span class="label">Root cause</span><span class="body">
+      The <strong>live flow WebSocket</strong> message has <em>no</em> <code>type</code>, <code>strike</code>, or
+      <code>expiry</code> fields — they're encoded inside the OCC <code>option_chain</code> symbol, e.g.
+      <code>MSTR260618C00115000</code>. The backtest used the UW <strong>REST</strong> endpoint, whose payload
+      <em>does</em> include a <code>type</code> field, so the discrepancy was invisible offline.
+      <code>evaluate_flow_alert</code> did <code>if opt_type not in ("put","call"): return None</code> — with
+      <code>type</code> absent, <code>opt_type</code> was empty and <strong>every alert</strong> was rejected.
+    </span></div>
+
+    <div class="field block"><span class="label">Fix</span><span class="body">
+      When <code>type</code> is absent, parse the OCC <code>option_chain</code> symbol via
+      <code>parse_occ_ticker</code> to recover option type / strike / expiry
+      (<code>collectors/uw_flow_collector.py</code>, <code>evaluate_flow_alert</code>).
+    </span></div>
+
+    <div class="field block"><span class="label">Status</span><span class="body">
+      <span class="badge fixed">Fixed</span> &mdash; live WS alerts now decode into TradeSignals. This unblocked the
+      <em>first</em> gate in the chain; alerts then hit fixes&nbsp;#4 and&nbsp;#5 downstream.
+    </span></div>
+  </section>
+
+  <!-- ===================== FIX 4 ===================== -->
+  <section class="item" id="f4">
+    <a class="back" href="#">↑ top</a>
+    <h3><span class="num">4.</span>stop_price gate blocked 100% of flow <span class="badge fixed">Fixed</span><span class="badge crit">Critical</span></h3>
+
+    <div class="callout crit">
+      This was <strong>THE</strong> reason the flow book never placed a trade. The <code>flow</code> column in
+      <code>paper_trades</code> was <code>0</code> on <em>every prior day</em> because of this gate.
+    </div>
+
+    <div class="field block"><span class="label">Symptom</span><span class="body">
+      Even flow alerts that decoded correctly and were affordable were rejected at entry-pipeline gate&nbsp;3.
+      Example: an <strong>$896k META call at 14.3% risk</strong> died on the stop-price gate.
+    </span></div>
+
+    <div class="field block"><span class="label">Root cause</span><span class="body">
+      Flow signals carried <code>stop_price=None</code>. <code>StopPriceGate</code> in <code>risk/pipeline.py</code>
+      (and a second guard in <code>paper_trader.py</code>) hard-reject any signal without a stop. ML signals pass
+      this gate only because <code>bot_runner</code> assigns them a stop — <code>entry×0.995</code> (call) /
+      <code>entry×1.005</code> (put) — but flow signals never had a stop assigned.
+    </span></div>
+
+    <div class="field block"><span class="label">Fix</span><span class="body">
+      <code>_on_flow_signal</code> now assigns flow signals the same 0.5% underlying stop computed from the resolved
+      spot price (call: spot×0.995, put: spot×1.005), so they clear <code>StopPriceGate</code>. The stop is nominal —
+      flow positions still exit via the <strong>V7 FSM</strong>, not the underlying stop.
+    </span></div>
+
+    <div class="field block"><span class="label">Status</span><span class="body">
+      <span class="badge fixed">Fixed</span> &mdash; flow signals now pass gate&nbsp;3. Combined with #3 and #5, this
+      is what let trade&nbsp;#266 reach Webull.
+    </span></div>
+  </section>
+
+  <!-- ===================== FIX 5 ===================== -->
+  <section class="item" id="f5">
+    <a class="back" href="#">↑ top</a>
+    <h3><span class="num">5.</span>Morning cutoff blocked flow CALLs after 11:00 ET <span class="badge fixed">Fixed</span></h3>
+
+    <div class="field block"><span class="label">Symptom</span><span class="body">
+      Flow CALL signals after 11:00&nbsp;ET were rejected. Live proof: a <strong>$6.25M SPY whale call at
+      12:42&nbsp;ET</strong> was killed by the morning cutoff.
+    </span></div>
+
+    <div class="field block"><span class="label">Root cause</span><span class="body">
+      <code>TimeOfDayGate</code> has a morning cutoff that only admits ML CALLs placed before 11:00&nbsp;ET — an
+      <em>ML-CALL-specific</em> rule (backtested: only pre-11:00 ML calls are profitable). But flow is an
+      <strong>all-day</strong> source (whale sweeps fire anytime), and the cutoff was being applied to flow calls too.
+    </span></div>
+
+    <div class="field block"><span class="label">Fix</span><span class="body">
+      Flow signals now <strong>bypass</strong> the morning cutoff and the early-morning score bump in
+      <code>TimeOfDayGate</code> (consistent with the existing flow gate-bypass set). The hard
+      <strong>EOD 3:55&nbsp;PM</strong> cutoff still applies to flow — flow does not trade into the close.
+    </span></div>
+
+    <div class="field block"><span class="label">Status</span><span class="body">
+      <span class="badge fixed">Fixed</span> &mdash; regression covered in
+      <code>tests/test_scalp_target_and_morning_cutoff.py</code> (flow-bypass cases).
+    </span></div>
+  </section>
+
+  <!-- ===================== FIX 6 ===================== -->
+  <section class="item" id="f6">
+    <a class="back" href="#">↑ top</a>
+    <h3><span class="num">6.</span>Flow traded the whale's far-dated expiry instead of nearest-DTE <span class="badge fixed">Fixed</span><span class="badge validated">Validated</span></h3>
+
+    <div class="field block"><span class="label">Symptom</span><span class="body">
+      Trade&nbsp;#266 (the first live flow trade) was a <strong>45-DTE SPY put</strong> that barely moved — low gamma,
+      almost no premium response to the underlying. The V7 exits are tuned for 0DTE / short-DTE convexity and had
+      nothing to work with.
+    </span></div>
+
+    <div class="field block"><span class="label">Root cause</span><span class="body">
+      <code>_resolve_flow_strike</code> used <code>fs.expiry</code> — the whale's OCC expiry, which is frequently
+      far-dated (whales buy time). The backtest always used nearest-DTE (<code>dte0 = min DTE</code> across the
+      chain), so it never exercised the far-dated path. Multi-day expiries were never tested at all because the
+      thetadata backtest DB only contained <strong>0–4 DTE</strong>.
+    </span></div>
+
+    <div class="field block"><span class="label">Fix</span><span class="body">
+      Flow now <strong>ignores the whale's expiry entirely</strong> and walks today → next business days to the
+      nearest <em>tradeable</em> expiry. If it can't resolve one, it <strong>skips</strong> the signal — it never
+      falls back to the whale's far-dated contract.
+    </span></div>
+
+    <div class="field block"><span class="label">Validation</span><span class="body">
+      Downloaded and backtested the whale's <em>actual</em> multi-day contracts to prove the call:
+      <ul class="tight">
+        <li><code>scripts/download_multiday_flow.py</code> — 495k bars across 646 multi-day contracts.</li>
+        <li><code>scripts/backtest_multiday_flow.py</code> — multi-day flow is a <strong>decisive loser</strong>.</li>
+      </ul>
+      <table>
+        <thead><tr><th>Strategy</th><th>PUT PF</th><th>PUT return</th></tr></thead>
+        <tbody>
+          <tr><td>Multi-day (whale expiry)</td><td class="mono">0.69</td><td class="mono">−2.5%</td></tr>
+          <tr><td>Nearest-DTE</td><td class="mono">1.39</td><td class="mono">+5.1%</td></tr>
+        </tbody>
+      </table>
+      Performance degrades monotonically with DTE — PF by bucket:
+      <table>
+        <thead><tr><th>DTE bucket</th><th>0–1</th><th>2–7</th><th>8–30</th><th>31+</th></tr></thead>
+        <tbody><tr><td class="mono">PF</td><td class="mono">1.03</td><td class="mono">0.60</td><td class="mono">0.65</td><td class="mono">0.44</td></tr></tbody>
+      </table>
+    </span></div>
+
+    <div class="field block"><span class="label">Status</span><span class="body">
+      <span class="badge fixed">Fixed</span> <span class="badge validated">Validated</span> &mdash; nearest-DTE is
+      both correct (matches backtest) and provably better on the real whale contracts.
+    </span></div>
+  </section>
+
+  <!-- ===================== FIX 7 ===================== -->
+  <section class="item" id="f7">
+    <a class="back" href="#">↑ top</a>
+    <h3><span class="num">7.</span>Selective OTM strike strategy <span class="badge validated">Validated</span><span class="badge watch">Watch</span></h3>
+
+    <div class="field block"><span class="label">Summary</span><span class="body">
+      An A/B backtest (<code>scripts/backtest_flow_otm_test.py</code>) compared ATM vs cheaper OTM strikes on the
+      <em>same</em> whale alerts and the <em>same</em> V7 exits.
+    </span></div>
+
+    <div class="field block"><span class="label">Selector</span><span class="body">
+      A per-ticker + per-month filter (must beat ATM PF, ≥60% of months positive, n≥15) was applied. Result: deploy
+      OTM <strong>only</strong> for:
+      <ul class="tight">
+        <li><strong>Calls:</strong> AMD, INTC, META, SPY</li>
+        <li><strong>Puts:</strong> TSLA</li>
+      </ul>
+    </span></div>
+
+    <div class="field block"><span class="label">Wiring</span><span class="body">
+      Gated behind <code>ENABLE_FLOW_OTM_STRIKE</code> (true on all bots), with
+      <code>FLOW_OTM_CALL_TICKERS</code> / <code>FLOW_OTM_PUT_TICKERS</code> and
+      <code>FLOW_OTM_TARGET_PREMIUM=2.0</code>. The selection is a pure, tested function:
+      <code>bot_runner.select_flow_strike</code>.
+    </span></div>
+
+    <div class="callout warn">
+      <strong>CAVEAT (WATCH).</strong> The backtest prices off <code>close</code> with a 3% haircut and does
+      <em>not</em> model OTM's wider bid-ask spread — so live OTM <strong>fills will be worse</strong> than the
+      backtest implies. The <code>v6_spread_gate</code> (&gt;15%) protects against the worst OTM spreads and will
+      reduce OTM trade count. <strong>MU OTM was a net loser → stays ATM</strong> (MU remains in the whitelist,
+      auto-gated by per-trade risk as the account grows).
+    </div>
+
+    <div class="field block"><span class="label">Status</span><span class="body">
+      <span class="badge validated">Validated</span> (backtest) <span class="badge watch">Watch</span> (real fills) &mdash; deployed for the 5 selected ticker/side combos.
+    </span></div>
+  </section>
+
+  <!-- ===================== FIX 8 ===================== -->
+  <section class="item" id="f8">
+    <a class="back" href="#">↑ top</a>
+    <h3><span class="num">8.</span>SPY added to UW_FLOW_PUT_TICKERS <span class="badge fixed">Fixed</span></h3>
+
+    <div class="field block"><span class="label">Symptom</span><span class="body">
+      SPY puts — the <strong>#2 flow contributor</strong> in the gold-standard backtest (n=365,
+      <strong>+$16,758</strong>) — were missing from the production PUT whitelist.
+    </span></div>
+
+    <div class="field block"><span class="label">Root cause</span><span class="body">
+      The gold-standard put universe is <code>CUR_PUT | {SPY}</code>, but prod's
+      <code>UW_FLOW_PUT_TICKERS</code> had dropped SPY.
+    </span></div>
+
+    <div class="field block"><span class="label">Fix</span><span class="body">
+      <code>UW_FLOW_PUT_TICKERS</code> is now <code>META,AMZN,AAPL,TSLA,MU,SPY</code>.
+    </span></div>
+
+    <div class="field block"><span class="label">Status</span><span class="body">
+      <span class="badge fixed">Fixed</span> &mdash; prod put universe now matches gold-standard.
+    </span></div>
+  </section>
+
+  <!-- ===================== FIX 9 ===================== -->
+  <section class="item" id="f9">
+    <a class="back" href="#">↑ top</a>
+    <h3><span class="num">9.</span>Flow strike resolution moved to Redis-first <span class="badge fixed">Deployed</span><span class="badge watch">Watch</span></h3>
+
+    <div class="field block"><span class="label">Symptom</span><span class="body">
+      Flow was hitting Polygon directly on every signal — a congestion source, and the direct cause of trade
+      <strong>#266's chain-fetch timeout</strong>.
+    </span></div>
+
+    <div class="field block"><span class="label">Root cause</span><span class="body">
+      Flow strike resolution called <code>polygon_option_chain</code> + <code>fetch_live_underlying_price</code> on
+      each signal, bypassing the harvester's already-cached data and adding load to a Polygon endpoint that was
+      already congested during the live session.
+    </span></div>
+
+    <div class="field block"><span class="label">Fix</span><span class="body">
+      Strike resolution now reads <strong>spot + chain from the harvester's Redis</strong>: <code>get_price</code>
+      for spot and <code>get_option_snapshots_for_ticker</code> for the chain (ATM ± 10%, via
+      <code>HARVEST_STRIKE_WINDOW=5</code>). Polygon is only hit on a Redis <em>miss</em>. Webull 429s are a
+      <em>separate</em> problem — per-account order-status polling, which can't be centralized.
+    </span></div>
+
+    <div class="field block"><span class="label">Status</span><span class="body">
+      <span class="badge fixed">Deployed</span> <span class="badge watch">Watch</span> &mdash; validates at the
+      <strong>next open</strong> when the harvester repopulates Redis with fresh snapshots.
+    </span></div>
+  </section>
+
+  <!-- ===================== FIX 10 ===================== -->
+  <section class="item" id="f10">
+    <a class="back" href="#">↑ top</a>
+    <h3><span class="num">10.</span>GEX DataError <span class="badge fixed">Fixed</span></h3>
+
+    <div class="field block"><span class="label">Symptom</span><span class="body">
+      GEX regime features silently defaulted to <code>0</code> — <strong>128 warnings</strong> before the fix,
+      <strong>0</strong> after. The underlying <code>gex_ticks</code> table was healthy (55k rows), so this was not
+      a data-availability problem.
+    </span></div>
+
+    <div class="field block"><span class="label">Root cause</span><span class="body">
+      <code>regime_features._load_serving_gex</code> passed a <strong>string</strong> as the query parameter for a
+      <code>timestamptz</code> column (<code>captured_at</code>). asyncpg raised a <code>DataError</code>, which the
+      function's generic <code>except</code> caught and mislabeled as "table unavailable" — so GEX features fell back
+      to 0 even though the table was fine.
+    </span></div>
+
+    <div class="field block"><span class="label">Fix</span><span class="body">
+      Pass a <code>datetime</code> (not a string) for the <code>captured_at</code> timestamptz param in
+      <code>_load_serving_gex</code>.
+    </span></div>
+
+    <div class="field block"><span class="label">Status</span><span class="body">
+      <span class="badge fixed">Fixed</span> &mdash; GEX regime features now populate from the live table; warning
+      count dropped 128 → 0.
+    </span></div>
+  </section>
+
+  <!-- ===================== FIX 11 ===================== -->
+  <section class="item" id="f11">
+    <a class="back" href="#">↑ top</a>
+    <h3><span class="num">11.</span>ML scan false timeouts <span class="badge fixed">Fixed</span></h3>
+
+    <div class="field block"><span class="label">Symptom</span><span class="body">
+      ML scans for MSTR / PLTR / NFLX were killed by an outer timeout even when the underlying Polygon fetches were
+      succeeding — successful work was being thrown away.
+    </span></div>
+
+    <div class="field block"><span class="label">Root cause</span><span class="body">
+      A Redis-miss ticker performs <strong>2 sequential</strong> Polygon snapshot fetches at up to 10s each. Two
+      successful 10s fetches sum past the <code>_scan_ticker_safe</code> outer timeout of <strong>15s</strong>, so
+      the wrapper aborted the whole scan even though both fetches would have completed.
+    </span></div>
+
+    <div class="field block"><span class="label">Fix</span><span class="body">
+      Raised the <code>_scan_ticker_safe</code> outer timeout <strong>15s → 25s</strong>, giving room for two
+      sequential 10s fetches plus overhead. The inner 10s per-fetch caps remain, so a genuinely hung call still
+      can't stall the loop.
+    </span></div>
+
+    <div class="field block"><span class="label">Status</span><span class="body">
+      <span class="badge fixed">Fixed</span> &mdash; Redis-miss tickers complete their scans instead of being
+      falsely timed out.
+    </span></div>
+  </section>
+
+  <hr class="divider" />
+  <p class="section-head">Case Study</p>
+
+  <!-- ===================== CASE 266 ===================== -->
+  <section class="note" id="case266">
+    <a class="back" href="#">↑ top</a>
+    <h3>Trade #266 — the first live flow trade</h3>
+
+    <p>
+      <strong>#266 was the flow book's first-ever live trade</strong> — and the proof that the gate chain (#3, #4, #5)
+      had finally been cleared. It was also the trade that surfaced fixes <a href="#f6">#6</a> and
+      <a href="#f9">#9</a>.
+    </p>
+
+    <table>
+      <tbody>
+        <tr><td><strong>Instrument</strong></td><td>SPY put</td></tr>
+        <tr><td><strong>Whale alert</strong></td><td>sweep, <span class="mono">$584k</span>, 100% ask-side</td></tr>
+        <tr><td><strong>Signal</strong></td><td>flow signal emitted (decode now works — fix #3)</td></tr>
+        <tr><td><strong>Strike re-anchor</strong></td><td><strong>TIMED OUT</strong> — Polygon congestion, empty <code>TimeoutError</code> (motivated fix #9)</td></tr>
+        <tr><td><strong>Expiry fallback</strong></td><td>fell back to the whale's <strong>45-DTE July-31</strong> contract (the bug — motivated fix #6)</td></tr>
+        <tr><td><strong>Stop</strong></td><td>assigned from spot <span class="mono">$758.54</span> (fix #4 — flow now gets a stop)</td></tr>
+        <tr><td><strong>Pipeline</strong></td><td>passed (stop_price now present, so gate 3 cleared)</td></tr>
+        <tr><td><strong>Sizing</strong></td><td>conviction sizing applied the <strong>index-hedge inversion</strong> (×0.5) → <strong>1 contract, $930</strong></td></tr>
+        <tr><td><strong>Fill</strong></td><td>Webull chase ladder filled @ <span class="mono">$9.28</span></td></tr>
+        <tr><td><strong>Outcome</strong></td><td>barely moved (45-DTE OTM, low gamma) — exposed the nearest-DTE bug</td></tr>
+        <tr><td><strong>Close</strong></td><td>user closed manually (~breakeven); reconciled in DB as <code>exit_source=manual</code></td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout">
+      The strike re-anchor <strong>timed out</strong> against a congested Polygon, fell through to the whale's
+      far-dated 45-DTE contract, and the V7 exits — built for 0DTE/short-DTE convexity — had nothing to act on.
+      Both root causes (far-dated fallback + direct-Polygon congestion) are now fixed (#6, #9). This single trade is
+      the reason both fixes exist.
+    </div>
+  </section>
+
+  <hr class="divider" />
+  <p class="section-head">Architecture &amp; Parity</p>
+
+  <!-- ===================== PARITY ===================== -->
+  <section class="note" id="parity">
+    <a class="back" href="#">↑ top</a>
+    <h3>Gold-standard parity</h3>
+
+    <p>
+      After this session, <strong>production matches the gold-standard V7 flow logic</strong>:
+    </p>
+    <ul class="tight">
+      <li><strong>Nearest-DTE</strong> strike/expiry resolution (whale expiry ignored).</li>
+      <li><strong>Whitelists</strong> aligned (incl. SPY in the put universe — fix #8).</li>
+      <li><strong>Conviction sizing</strong> with <code>p_runner=None</code> (runner tilt still off pending live feature validation).</li>
+      <li><strong>All-day flow</strong> (morning cutoff bypassed for flow — fix #5).</li>
+      <li><strong>V7 exits</strong> on flow positions.</li>
+    </ul>
+
+    <p>Two <strong>intentional</strong> differences from the backtest remain:</p>
+    <ol>
+      <li><strong>OTM layer</strong> — a validated <em>addition</em> on top of the gold standard (fix #7), not present in the base backtest.</li>
+      <li><strong>Account-scaled sizing</strong> — prod sizes off the live account balance, vs the backtest's fixed-$750-per-trade <em>edge measure</em>.</li>
+    </ol>
+
+    <p>
+      <code>scripts/flow_gold_standard_report.py</code> was updated to mirror prod — it now uses
+      <code>select_flow_strike</code> + the OTM layer and documents the account-scaled vs fixed-$ sizing difference,
+      so the report and the live bots compute the same way.
+    </p>
+  </section>
+
+  <!-- ===================== DATAFLOW ===================== -->
+  <section class="note" id="dataflow">
+    <a class="back" href="#">↑ top</a>
+    <h3>Data-flow architecture note</h3>
+
+    <p>
+      The intended architecture centralizes market data in the <strong>harvester</strong>:
+    </p>
+    <pre><code>harvester  →  prices / premiums / option snapshots / candles  →  Redis  →  bots read</code></pre>
+    <p>
+      The gap exposed this session was that two paths bypassed the harvester and hit <strong>Polygon directly</strong>:
+      the <strong>flow</strong> strike-resolution path and <strong>smart-entry</strong>. Flow is now fixed to be
+      Redis-first (fix #9), reading spot via <code>get_price</code> and chain via
+      <code>get_option_snapshots_for_ticker</code>, with Polygon only on a miss. <strong>Webull</strong> remains
+      inherently per-account (order-status polling can't be centralized), so Webull 429s are tracked separately from
+      the Polygon-congestion class of problem.
+    </p>
+  </section>
+
+  <hr class="divider" />
+  <p class="section-head">Closeout</p>
+
+  <!-- ===================== DEPLOY ===================== -->
+  <section class="note" id="deploy">
+    <a class="back" href="#">↑ top</a>
+    <h3>Deploy &amp; validation</h3>
+
+    <ul class="tight">
+      <li>Every fix shipped via <code>scripts/rebuild.sh</code> — full <strong>~2545-test</strong> gate then staggered restart (15s between bots to avoid Webull 429).</li>
+      <li><strong>Live:</strong> kody, dennis. &nbsp; <strong>Paper:</strong> adam, vinny, yank. Identical code/config; only <code>PAPER_TRADE</code> differs.</li>
+      <li>Regression tests added:
+        <ul class="tight">
+          <li><code>tests/test_flow_strike_selection.py</code> — nearest-DTE resolution + OTM selector (<code>select_flow_strike</code>).</li>
+          <li><code>tests/test_scalp_target_and_morning_cutoff.py</code> — flow-bypass of the morning cutoff.</li>
+        </ul>
+      </li>
+    </ul>
+  </section>
+
+  <!-- ===================== FOLLOWUPS ===================== -->
+  <section class="note" id="followups">
+    <a class="back" href="#">↑ top</a>
+    <h3>Follow-ups / watch-items</h3>
+    <ul class="tight">
+      <li><span class="badge watch">Watch</span> <strong>Confirm live flow fills tomorrow</strong> — verify flow places and fills clean at the next open with the full gate chain cleared.</li>
+      <li><span class="badge watch">Watch</span> <strong>OTM real-fill edge unproven</strong> — the backtest overstates OTM edge (prices off <code>close</code>+3% haircut, no spread model). Confirm live OTM fills don't erase the advantage; <code>v6_spread_gate</code> is the backstop.</li>
+      <li><span class="badge watch">Watch</span> <strong>Call-side multi-day test pending</strong> — the multi-day backtest was put-focused; the UW download was 429-truncated, so the call-side multi-day comparison is still outstanding.</li>
+      <li><span class="badge watch">Watch</span> <strong>API congestion</strong> — monitor Polygon congestion (Redis-first should relieve it) and the separate per-account Webull 429 polling.</li>
+    </ul>
+  </section>
+
+  <footer>
+    OptionsOwl — First Live Session post-mortem · 2026-06-15 · V7 + UW flow system ·
+    branch <span class="mono">fix/owl-review-bugfixes</span>
+  </footer>
+
+</div>
+</body>
+</html>

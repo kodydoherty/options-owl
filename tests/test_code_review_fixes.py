@@ -19,12 +19,7 @@ Covers:
 
 from __future__ import annotations
 
-import ast
-import asyncio
 import inspect
-import textwrap
-from datetime import datetime, time, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -271,11 +266,12 @@ class TestHarvesterFixes:
         source = inspect.getsource(h)
         assert "asyncio.to_thread" in source
 
-    def test_persist_rows_has_busy_timeout(self):
-        """_persist_rows should set PRAGMA busy_timeout."""
+    def test_persist_rows_uses_pg(self):
+        """_persist_rows should write to PostgreSQL (not SQLite)."""
         import options_owl.harvester as h
-        source = inspect.getsource(h)
-        assert "busy_timeout" in source
+        source = inspect.getsource(h._persist_rows)
+        assert "write_option_ticks_batch" in source
+        assert "aiosqlite" not in source
 
 
 # ---------------------------------------------------------------------------
@@ -395,23 +391,23 @@ class TestDiscordSignalsDisabled:
         """All trading bots in docker-compose should have ENABLE_DISCORD_SIGNALS=false."""
         from pathlib import Path
         dc = Path("/Users/kody/dev/options-owl/docker-compose.yml").read_text()
-        # Count occurrences: should be 4 (one per trading bot)
+        # Count occurrences: should be 5 (one per trading bot: kody, dennis, adam, vinny, yank)
         count = dc.count("ENABLE_DISCORD_SIGNALS=false")
-        assert count == 4, f"Expected 4 bots with ENABLE_DISCORD_SIGNALS=false, got {count}"
+        assert count == 5, f"Expected 5 bots with ENABLE_DISCORD_SIGNALS=false, got {count}"
 
-    def test_docker_compose_all_bots_paper_trade(self):
-        """All trading bots should have PAPER_TRADE=true."""
+    def test_docker_compose_paper_bots_paper_trade(self):
+        """Paper-only bots should have PAPER_TRADE=true (adam, vinny, yank)."""
         from pathlib import Path
         dc = Path("/Users/kody/dev/options-owl/docker-compose.yml").read_text()
         count = dc.count("PAPER_TRADE=true")
-        assert count == 4, f"Expected 4 bots with PAPER_TRADE=true, got {count}"
+        assert count == 3, f"Expected 3 paper bots with PAPER_TRADE=true, got {count}"
 
-    def test_docker_compose_all_bots_kill_switch(self):
-        """All trading bots should have WEBULL_KILL_SWITCH=true."""
+    def test_docker_compose_paper_bots_kill_switch(self):
+        """Paper-only bots should have WEBULL_KILL_SWITCH=true (adam, vinny, yank)."""
         from pathlib import Path
         dc = Path("/Users/kody/dev/options-owl/docker-compose.yml").read_text()
         count = dc.count("WEBULL_KILL_SWITCH=true")
-        assert count == 4, f"Expected 4 bots with WEBULL_KILL_SWITCH=true, got {count}"
+        assert count == 3, f"Expected 3 paper bots with WEBULL_KILL_SWITCH=true, got {count}"
 
 
 # ---------------------------------------------------------------------------
@@ -482,8 +478,11 @@ class TestConfidenceTierOrdering:
         # 0.75 → 0.70+ tier → 1.00 mult (sweet spot)
         mult, _ = _ml_confidence_to_mult(0.75)
         assert mult == 1.00
-        # 0.65 → below min → 0.0 (rejected)
+        # 0.65 → above the 0.62 CALL floor (2026-06-15 align) → 1.00 (lowest tier; was rejected at 0.70)
         mult, _ = _ml_confidence_to_mult(0.65)
+        assert mult == 1.00
+        # 0.61 → below the 0.62 CALL floor → 0.0 (rejected)
+        mult, _ = _ml_confidence_to_mult(0.61)
         assert mult == 0.0
         # None → fallback
         mult, _ = _ml_confidence_to_mult(None)

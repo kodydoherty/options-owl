@@ -12,6 +12,9 @@ from datetime import datetime
 import numpy as np
 from loguru import logger
 
+from options_owl.sourcing import db
+from options_owl.sourcing.scoring.types import SignalContext
+
 
 class _NumpyEncoder(json.JSONEncoder):
     """Handle numpy types that json.dumps can't serialize natively."""
@@ -24,9 +27,6 @@ class _NumpyEncoder(json.JSONEncoder):
         if isinstance(o, np.ndarray):
             return o.tolist()
         return super().default(o)
-
-from options_owl.sourcing import db
-from options_owl.sourcing.scoring.types import SignalContext
 
 
 async def emit_signal_db(ctx: SignalContext) -> int | None:
@@ -144,6 +144,23 @@ async def emit_signal_db(ctx: SignalContext) -> int | None:
             f"SIGNAL DB: #{signal_id} {ctx.ticker} {ctx.direction.value if ctx.direction else '?'} "
             f"score={ctx.score_total}"
         )
+
+        # Publish to Redis for instant delivery to all trading bots
+        try:
+            from options_owl.db import redis_client
+            if redis_client.is_connected():
+                await redis_client.publish_signal({
+                    "id": signal_id,
+                    "ticker": ctx.ticker,
+                    "direction": ctx.direction.value if ctx.direction else None,
+                    "score": ctx.score_total,
+                    "premium": ctx.premium,
+                    "strike": ctx.strike,
+                    "emitted_at": str(emitted_at),
+                })
+        except Exception:
+            pass  # fire-and-forget
+
         return signal_id
 
     except Exception:

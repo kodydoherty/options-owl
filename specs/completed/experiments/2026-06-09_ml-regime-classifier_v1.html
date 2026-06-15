@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ML Regime Classifier — Replace Rule-Based Detection with Trained Model</title>
+    <style>
+        :root {
+            --primary: #7c3aed;
+            --primary-light: #ede9fe;
+            --danger: #dc2626;
+            --warning: #f59e0b;
+            --success: #16a34a;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-600: #4b5563;
+            --gray-800: #1f2937;
+            --gray-900: #111827;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            color: var(--gray-800);
+            line-height: 1.6;
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 2rem;
+            background: #fff;
+        }
+        header {
+            border-bottom: 3px solid var(--primary);
+            padding-bottom: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        header h1 { font-size: 1.75rem; color: var(--gray-900); }
+        .meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.5rem 2rem;
+            margin-top: 1rem;
+            font-size: 0.875rem;
+            color: var(--gray-600);
+        }
+        .meta dt { font-weight: 600; display: inline; }
+        .meta dd { display: inline; margin-left: 0.25rem; }
+        .status-badge {
+            display: inline-block;
+            padding: 0.125rem 0.625rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .status-todo { background: var(--gray-200); color: var(--gray-600); }
+        .experiment-type {
+            display: inline-block;
+            padding: 0.125rem 0.625rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            background: var(--primary-light);
+            color: var(--primary);
+        }
+        section { margin-bottom: 2rem; }
+        section > h2 {
+            font-size: 1.25rem;
+            color: var(--primary);
+            border-bottom: 1px solid var(--gray-200);
+            padding-bottom: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        section > h3 { font-size: 1rem; margin: 1rem 0 0.5rem; color: var(--gray-900); }
+        ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+        li { margin-bottom: 0.25rem; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1rem;
+            font-size: 0.875rem;
+        }
+        th, td {
+            text-align: left;
+            padding: 0.5rem 0.75rem;
+            border: 1px solid var(--gray-200);
+        }
+        th { background: var(--gray-50); font-weight: 600; }
+        td.positive { color: var(--success); font-weight: 600; }
+        td.negative { color: var(--danger); font-weight: 600; }
+        pre {
+            background: var(--gray-50);
+            border: 1px solid var(--gray-200);
+            border-radius: 0.375rem;
+            padding: 1rem;
+            overflow-x: auto;
+            font-size: 0.8125rem;
+            line-height: 1.5;
+            margin-bottom: 1rem;
+        }
+        code { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: 0.8125rem; }
+        .callout {
+            padding: 0.75rem 1rem;
+            border-left: 4px solid var(--primary);
+            background: var(--primary-light);
+            border-radius: 0 0.375rem 0.375rem 0;
+            margin-bottom: 1rem;
+            font-size: 0.875rem;
+        }
+        .callout.warning { border-left-color: var(--warning); background: #fffbeb; }
+        .callout.danger { border-left-color: var(--danger); background: #fef2f2; }
+        .callout.success { border-left-color: var(--success); background: #dcfce7; }
+        .verdict {
+            padding: 1rem;
+            border: 2px solid var(--gray-200);
+            border-radius: 0.5rem;
+            margin-top: 1rem;
+            font-size: 1rem;
+        }
+        .changelog { font-size: 0.875rem; }
+        .changelog dt { font-weight: 600; margin-top: 0.5rem; }
+        .changelog dd { margin-left: 1rem; color: var(--gray-600); }
+        footer {
+            margin-top: 3rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--gray-200);
+            font-size: 0.75rem;
+            color: var(--gray-600);
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>ML Regime Classifier — Replace Rule-Based Detection with Trained Model</h1>
+    <div class="meta">
+        <div><dt>Spec ID:</dt><dd>ml-regime-classifier</dd></div>
+        <div><dt>Type:</dt><dd><span class="experiment-type">Experiment</span></dd></div>
+        <div><dt>Status:</dt><dd><span class="status-badge status-rejected" style="background:#fef2f2;color:#dc2626;">Rejected</span></dd></div>
+        <div><dt>Project:</dt><dd>OptionsOwl</dd></div>
+        <div><dt>Category:</dt><dd>experiments</dd></div>
+        <div><dt>Created:</dt><dd>2026-06-09</dd></div>
+        <div><dt>Updated:</dt><dd>2026-06-09</dd></div>
+        <div><dt>Version:</dt><dd>v1</dd></div>
+        <div><dt>Author:</dt><dd>Kody / Claude</dd></div>
+    </div>
+</header>
+
+<section>
+    <h2>1. Hypothesis</h2>
+    <p>A LightGBM classifier trained on SPY intraday features can predict market regime
+    (BULLISH/BEARISH/CHOPPY) with &gt;80% directional accuracy within the first 30 minutes
+    of trading, enabling earlier and more accurate CALL/PUT slot allocation than the
+    current rule-based EMA/RSI/ADX detector.</p>
+    <div class="callout">
+        <strong>Expected outcome:</strong> Directional accuracy at 10:00 AM improves from
+        57% (rule-based) to &gt;75%, and at 10:30 AM from 74% to &gt;85%. This translates to
+        blocking $1,500+ in counter-trend losses per crash day while preserving winning
+        trend-aligned trades.
+    </div>
+</section>
+
+<section>
+    <h2>2. Background &amp; Motivation</h2>
+    <p>On 2026-06-09 (SPY -2.7%), the bot fired 5 CALL trades into a bear market, losing
+    $1,595 on AMZN and GOOGL CALLs that had no chance. The regime detector exists but was
+    disabled because:</p>
+    <ul>
+        <li>The EMA/RSI/ADX classifier needs 22 five-minute bars (~110min) for warmup,
+            making it useless for the critical 9:35-10:30 AM CALL window</li>
+        <li>Gap detection (opening gap vs prior close) tested at only 48% accuracy —
+            worse than a coin flip because gaps frequently reverse intraday</li>
+        <li>First-15-min direction predicts at 69% — decent but noisy</li>
+    </ul>
+    <p>Current rule-based accuracy over 126 days (Dec 2025 – Jun 2026):</p>
+    <table>
+        <thead>
+            <tr><th>Checkpoint</th><th>Directional Accuracy</th><th>Choppy %</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>10:00 AM (30 min)</td><td>62.7%</td><td>60%</td></tr>
+            <tr><td>10:30 AM (60 min)</td><td>73.6%</td><td>58%</td></tr>
+            <tr><td>11:00 AM (90 min)</td><td>84.9%</td><td>58%</td></tr>
+            <tr><td>1:00 PM (210 min)</td><td>89.7%</td><td>69%</td></tr>
+        </tbody>
+    </table>
+    <p>The gap between 10:00 (63%) and 11:00 (85%) is the problem zone. An ML model that
+    extracts more signal from early price action could close this gap.</p>
+</section>
+
+<section>
+    <h2>3. Methodology</h2>
+
+    <h3>3.1 Control (Baseline)</h3>
+    <p>Current rule-based regime detector: EMA9 vs EMA21 crossover, RSI above/below 50,
+    price vs VWAP, ADX trending filter. Needs 22 bars warmup. Available
+    <code>options_owl/risk/regime_detector.py</code>.</p>
+    <pre><code># Current rule-based logic
+if adx < 20: return CHOPPY
+signals = [price_vs_vwap, ema9_vs_ema21, rsi_vs_50]
+if bullish_count >= 2: return BULLISH
+if bearish_count >= 2: return BEARISH
+return CHOPPY</code></pre>
+
+    <h3>3.2 Test (Experiment)</h3>
+    <p>LightGBM classifier trained to predict daily regime from early-session features.
+    Three output classes: BULLISH (SPY EOD return &gt; +0.3%), BEARISH (EOD &lt; -0.3%),
+    CHOPPY (in between). Predictions at multiple checkpoints (15min, 30min, 60min, 90min).</p>
+    <pre><code># Proposed ML features (40+)
+# -- Pre-market / overnight (available at 9:30 AM) --
+gap_pct                    # (open - prev_close) / prev_close
+prev_day_return            # yesterday's full-day return
+prev_day_range             # (high - low) / open
+prev_day_close_vs_vwap     # close above/below VWAP
+prev_3day_return           # 3-day cumulative return
+prev_5day_return           # 5-day cumulative return
+prev_day_volume_ratio      # vol vs 20-day avg
+day_of_week                # Mon=0..Fri=4 (Mon/Fri more volatile)
+days_since_last_big_move   # days since |return| > 1%
+
+# -- First N minutes (incremental, updated each checkpoint) --
+first_N_return             # (bar_N_close - open) / open
+first_N_range              # (max_high - min_low) / open
+first_N_volume_ratio       # volume vs avg first-N volume
+first_N_vwap_slope         # VWAP trend direction
+first_N_rsi                # RSI on available bars
+first_N_bar_direction      # count of green vs red bars
+first_N_max_drawdown       # worst intrabar decline
+opening_drive_size         # first 5min candle size (abs)
+opening_drive_direction    # first 5min candle direction
+
+# -- Market context --
+vix_level                  # VIX at open (if available via Polygon)
+vix_change_1d              # VIX change from prior close
+spy_5day_ema_slope         # trend direction of 5-day EMA
+spy_20day_ema_slope        # trend direction of 20-day EMA
+recent_volatility          # 5-day ATR / price</code></pre>
+
+    <h3>3.3 Data Source &amp; Period</h3>
+    <table>
+        <tr><th>Data Source</th><td>ThetaData SPY 1-min candles in <code>journal/thetadata_options.db</code> (stock_ohlc table)</td></tr>
+        <tr><th>Date Range</th><td>Dec 8, 2025 – Jun 9, 2026 (126 trading days)</td></tr>
+        <tr><th>Sample Size</th><td>126 days × 4 checkpoints = 504 labeled examples</td></tr>
+        <tr><th>Validation</th><td>Walk-forward: train on first 80%, validate on last 20%. 5-fold time-series CV.</td></tr>
+        <tr><th>Script/Command</th><td><code>python scripts/train_regime_model.py</code></td></tr>
+    </table>
+
+    <div class="callout warning">
+        <strong>Data limitation:</strong> Only 126 trading days available. This is marginal
+        for training a 3-class classifier with 40+ features. Consider downloading additional
+        historical SPY candle data from ThetaData (2023-2025) to increase to 500+ days.
+        Alternatively, use a simpler model (logistic regression) or fewer features to avoid
+        overfitting.
+    </div>
+
+    <h3>3.4 Metrics</h3>
+    <ul>
+        <li><strong>Primary:</strong> Directional accuracy at 10:00 AM (must beat 63% baseline)</li>
+        <li><strong>Secondary:</strong> Directional accuracy at 10:30 AM (must beat 74% baseline),
+            false BEARISH rate (&lt;20%), false BULLISH rate (&lt;15%),
+            AUC for BEARISH class specifically (crash day detection)</li>
+        <li><strong>Business metric:</strong> Simulated P&amp;L impact — replay 126 days with
+            ML regime gating vs no gating vs rule-based gating</li>
+    </ul>
+</section>
+
+<section>
+    <h2>4. Implementation</h2>
+
+    <h3>4.1 Training Pipeline</h3>
+    <table>
+        <thead>
+            <tr><th>Step</th><th>File</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>1. Feature extraction</td>
+                <td><code>scripts/train_regime_model.py</code></td>
+                <td>Load SPY candles from thetadata.db, compute features at each checkpoint, label by EOD return</td>
+            </tr>
+            <tr>
+                <td>2. Model training</td>
+                <td><code>scripts/train_regime_model.py</code></td>
+                <td>LightGBM multiclass (3 classes), walk-forward validation, hyperparameter tuning via Optuna</td>
+            </tr>
+            <tr>
+                <td>3. Model evaluation</td>
+                <td><code>scripts/eval_regime_detector.py</code></td>
+                <td>Compare ML vs rule-based on same 126 days, per-checkpoint accuracy tables</td>
+            </tr>
+            <tr>
+                <td>4. Integration</td>
+                <td><code>options_owl/risk/regime_detector.py</code></td>
+                <td>Add <code>MLRegimeDetector</code> class that loads trained model, replaces rule-based <code>_classify()</code></td>
+            </tr>
+            <tr>
+                <td>5. Feature gating</td>
+                <td><code>options_owl/config/settings.py</code></td>
+                <td>Add <code>ENABLE_ML_REGIME=false</code>, <code>ML_REGIME_MODEL_PATH</code></td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>4.2 Production Integration</h3>
+    <pre><code># In regime_detector.py
+class MLRegimeDetector(RegimeDetector):
+    """ML-based regime classifier, replaces rule-based _classify()."""
+
+    def __init__(self, model_path: str, **kwargs):
+        super().__init__(**kwargs)
+        self._model = lgb.Booster(model_file=model_path)
+        self._feature_buffer = []  # rolling feature accumulator
+
+    def _classify(self, indicators: dict) -> RegimeState:
+        # Build feature vector from indicators + accumulated history
+        features = self._extract_features(indicators)
+        probs = self._model.predict([features])[0]
+        # probs = [p_bullish, p_bearish, p_choppy]
+        max_idx = probs.argmax()
+        confidence = probs[max_idx]
+
+        # Only commit if confidence > threshold (otherwise CHOPPY)
+        if confidence < 0.6:
+            return RegimeState.CHOPPY
+
+        return [RegimeState.BULLISH, RegimeState.BEARISH, RegimeState.CHOPPY][max_idx]
+
+# In bot_runner.py — swap in ML detector when enabled
+if getattr(settings, "ENABLE_ML_REGIME", False):
+    model_path = getattr(settings, "ML_REGIME_MODEL_PATH", "journal/models/ml_v3/regime_v1.lgb")
+    from options_owl.risk.regime_detector import MLRegimeDetector
+    regime_detector = MLRegimeDetector(model_path=model_path, ...)</code></pre>
+
+    <h3>4.3 Model Files</h3>
+    <table>
+        <tr><th>File</th><th>Location</th><th>Size (est.)</th></tr>
+        <tr><td>regime_v1.lgb</td><td>journal/models/ml_v3/</td><td>~100KB</td></tr>
+        <tr><td>regime_v1_meta.json</td><td>journal/models/ml_v3/</td><td>~5KB (feature list, thresholds, training metrics)</td></tr>
+    </table>
+
+    <div class="callout danger">
+        <strong>Model files not synced by rebuild.sh.</strong> After training, manually SCP:
+        <code>scp journal/models/ml_v3/regime_v1* root@129.212.138.145:/root/options-owl/journal/models/ml_v3/</code>
+    </div>
+
+    <h3>4.4 Fallback Strategy</h3>
+    <ul>
+        <li>If ML model file missing: fall back to rule-based detector (current behavior)</li>
+        <li>If ML prediction fails: return CHOPPY (no direction commitment)</li>
+        <li>If ML accuracy degrades in production: set <code>ENABLE_ML_REGIME=false</code> to revert</li>
+    </ul>
+</section>
+
+<section>
+    <h2>5. Data Requirements</h2>
+
+    <h3>5.1 Minimum Viable Dataset</h3>
+    <ul>
+        <li><strong>Current:</strong> 126 days (Dec 2025 – Jun 2026) — marginal</li>
+        <li><strong>Recommended:</strong> 500+ trading days (2 years) — robust</li>
+        <li><strong>Ideal:</strong> 750+ days (3 years) — captures different market regimes</li>
+    </ul>
+
+    <h3>5.2 Historical Data Download</h3>
+    <p>Use ThetaData to backfill SPY 1-min candles for 2023-2025:</p>
+    <pre><code># Download 2 years of additional SPY candle data
+python scripts/download_thetadata.py --ticker SPY --start 2024-01-01 --end 2025-12-07
+
+# Verify data coverage
+sqlite3 journal/thetadata_options.db \
+  "SELECT MIN(date(timestamp)), MAX(date(timestamp)), COUNT(DISTINCT date(timestamp)) \
+   FROM stock_ohlc WHERE ticker='SPY'"</code></pre>
+
+    <h3>5.3 Label Definition</h3>
+    <table>
+        <thead>
+            <tr><th>Label</th><th>Definition</th><th>Expected Distribution</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>BULLISH</td><td>SPY intraday return (close - open) / open &gt; +0.3%</td><td>~35%</td></tr>
+            <tr><td>BEARISH</td><td>SPY intraday return &lt; -0.3%</td><td>~25%</td></tr>
+            <tr><td>CHOPPY</td><td>SPY intraday return between -0.3% and +0.3%</td><td>~40%</td></tr>
+        </tbody>
+    </table>
+</section>
+
+<section>
+    <h2>6. Results</h2>
+    <h3>6.1 Summary</h3>
+    <table>
+        <thead>
+            <tr><th>Metric</th><th>Rule-Based</th><th>ML Model</th><th>Delta</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>Dir. accuracy @ 15 min (9:45 AM)</td><td>50.9%</td><td>36.8%</td><td class="negative">-14.1%</td></tr>
+            <tr><td>Dir. accuracy @ 30 min (10:00 AM)</td><td>56.2%</td><td>36.8%</td><td class="negative">-19.4%</td></tr>
+            <tr><td>Dir. accuracy @ 60 min (10:30 AM)</td><td>70.8%</td><td>35.0%</td><td class="negative">-35.8%</td></tr>
+            <tr><td>Dir. accuracy @ 90 min (11:00 AM)</td><td>87.2%</td><td>45.9%</td><td class="negative">-41.3%</td></tr>
+            <tr><td>Dir. accuracy @ 120 min (11:30 AM)</td><td>75.6%</td><td>45.9%</td><td class="negative">-29.7%</td></tr>
+            <tr><td>Dir. accuracy @ 180 min (12:30 PM)</td><td>79.5%</td><td>51.4%</td><td class="negative">-28.1%</td></tr>
+        </tbody>
+    </table>
+
+    <h3>6.2 Walk-Forward Validation (5 folds, 560 days)</h3>
+    <table>
+        <thead>
+            <tr><th>Fold</th><th>Train Days</th><th>Test Days</th><th>Dir Accuracy</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>1</td><td>93</td><td>93</td><td>33.1%</td></tr>
+            <tr><td>2</td><td>186</td><td>93</td><td>39.1%</td></tr>
+            <tr><td>3</td><td>279</td><td>93</td><td>29.6%</td></tr>
+            <tr><td>4</td><td>372</td><td>93</td><td>34.4%</td></tr>
+            <tr><td>5</td><td>465</td><td>93</td><td>42.7%</td></tr>
+        </tbody>
+    </table>
+    <p>All folds performed worse than the rule-based baseline. More training data did not
+    improve accuracy meaningfully (Fold 5 with 465 days: 42.7% vs rule-based 87.2% at 90min).</p>
+
+    <h3>6.3 Why ML Failed</h3>
+    <ul>
+        <li><strong>Markets are efficient:</strong> Early price action (gap, opening drive, prior returns)
+            doesn't predict daily direction with >50% accuracy because these signals are already priced in.</li>
+        <li><strong>Rule-based is reactive, not predictive:</strong> The EMA/RSI/VWAP detector reads what IS
+            happening (trend already established), while the ML model tries to PREDICT what WILL happen.</li>
+        <li><strong>Overfitting:</strong> Even with heavy regularization (max_depth=4, min_child_samples=50,
+            L1/L2=1.0), the model memorizes training patterns that don't generalize.</li>
+        <li><strong>Gap detection is noise:</strong> Gap-down days reversed intraday 52% of the time
+            (March 2026: three -1% gaps all ended +1% up). Gaps are mean-reverting, not directional.</li>
+    </ul>
+
+    <h3>6.4 Data Used</h3>
+    <ul>
+        <li>560 trading days of SPY 1-min candles (Apr 2024 – Jun 2026)</li>
+        <li>Sources: Polygon (historical_0dte.db, 509 days) + ThetaData (126 days)</li>
+        <li>Backfilled 422,911 real 1-min bars from Polygon into unified thetadata_options.db</li>
+    </ul>
+</section>
+
+<section>
+    <h2>7. Risks &amp; Mitigations</h2>
+    <ul>
+        <li><strong>Overfitting on 126 days:</strong> Mitigate with walk-forward validation,
+            simpler model (fewer trees), regularization, and downloading more historical data</li>
+        <li><strong>Regime shift:</strong> Model trained on Dec 2025 – Jun 2026 may not generalize
+            to different market conditions. Retrain quarterly with fresh data.</li>
+        <li><strong>Feature leakage:</strong> Ensure no features peek at EOD data. All features
+            must use data available at the checkpoint time.</li>
+        <li><strong>Latency:</strong> Model must predict in &lt;100ms. LightGBM inference is
+            sub-millisecond — not a concern.</li>
+        <li><strong>False BEARISH on gap reversals:</strong> March 2026 had multiple gap-down days
+            that reversed +1%. The model must learn that gaps alone are not predictive (48% accuracy)
+            and should weight intraday price action more heavily.</li>
+    </ul>
+</section>
+
+<section>
+    <h2>8. Task Plan</h2>
+    <table>
+        <thead>
+            <tr><th>#</th><th>Task</th><th>Status</th><th>Est. Time</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>1</td><td>Download additional SPY historical data (2024-2025) from ThetaData</td><td>Todo</td><td>30min</td></tr>
+            <tr><td>2</td><td>Write feature extraction pipeline (<code>scripts/train_regime_model.py</code>)</td><td>Todo</td><td>2h</td></tr>
+            <tr><td>3</td><td>Train LightGBM classifier with walk-forward validation</td><td>Todo</td><td>1h</td></tr>
+            <tr><td>4</td><td>Evaluate vs rule-based baseline using <code>eval_regime_detector.py</code></td><td>Todo</td><td>30min</td></tr>
+            <tr><td>5</td><td>If accuracy improvement &gt;10%: integrate into <code>regime_detector.py</code></td><td>Todo</td><td>1h</td></tr>
+            <tr><td>6</td><td>Add <code>ENABLE_ML_REGIME</code> feature flag + fallback logic</td><td>Todo</td><td>30min</td></tr>
+            <tr><td>7</td><td>Test with full test suite + backtest gold standard</td><td>Todo</td><td>1h</td></tr>
+            <tr><td>8</td><td>Deploy to production (SCP model + rebuild)</td><td>Todo</td><td>15min</td></tr>
+            <tr><td>9</td><td>Monitor live accuracy for 5 trading days, fill results section</td><td>Todo</td><td>5 days</td></tr>
+        </tbody>
+    </table>
+</section>
+
+<section>
+    <h2>9. Changelog</h2>
+    <dl class="changelog">
+        <dt>v1 — 2026-06-09</dt>
+        <dd>Initial experiment spec created. Includes baseline evaluation data from
+            126-day rule-based regime detector analysis. Gap detection tested and rejected
+            (48% accuracy). Slot-based throttling deployed as interim solution.</dd>
+    </dl>
+</section>
+
+<footer>
+    OptionsOwl — Experiment Specification | 2026-06-09
+</footer>
+
+</body>
+</html>

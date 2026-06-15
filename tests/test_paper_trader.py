@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import pytest
+from unittest.mock import AsyncMock
 
+from options_owl.collectors.candle_cache import CandleBar
 from options_owl.config.settings import Settings
 from options_owl.execution.paper_trader import PaperTrader, _select_trade_premium, get_open_trades, get_portfolio, init_paper_db
 from options_owl.models.signals import (
@@ -31,9 +33,34 @@ def _make_settings(tmp_db_path: str, **overrides) -> Settings:
         "ENABLE_VINNY_STRATEGY": False,
         "ENABLE_SCORE_SIZING": False,
         "ENABLE_SMART_ENTRY": False,
+        "ENABLE_PUT_TRADING": True,
+        "ENABLE_DIRECTIONAL_REGIME": False,
+        "CB_CLOSING_BUFFER_MINUTES": 0,
     }
     defaults.update(overrides)
     return Settings(**defaults)
+
+
+def _attach_mock_candle_cache(trader: PaperTrader) -> None:
+    """Attach a mock candle cache with bearish data so PUT gates pass.
+
+    Provides: 6 bearish bars (close < open, close < vwap), RSI < 45, ema9 < ema21.
+    This satisfies PutMarketDirectionGate (SPY green) and PutBearishConfirmGate.
+    """
+    bearish_bars = [
+        CandleBar(0, 522.0, 522.5, 519.0, 519.5, 1000, vwap=521.0),
+        CandleBar(0, 520.0, 520.5, 518.0, 518.5, 1000, vwap=520.0),
+        CandleBar(0, 519.0, 519.5, 517.0, 517.5, 1000, vwap=519.0),
+        CandleBar(0, 518.0, 518.5, 516.0, 516.5, 1000, vwap=518.0),
+        CandleBar(0, 517.0, 517.5, 515.0, 515.5, 1000, vwap=517.0),
+        CandleBar(0, 516.0, 516.5, 514.0, 514.5, 1000, vwap=516.0),
+    ]
+    mock_cc = AsyncMock()
+    mock_cc.get_candle_data = AsyncMock(return_value={
+        "5m": bearish_bars,
+        "indicators": {"5m": {"rsi": 38.0, "ema9": 515.0, "ema21": 518.0}},
+    })
+    trader._candle_cache = mock_cc
 
 
 def _make_signal(**overrides) -> TradeSignal:
@@ -128,6 +155,7 @@ class TestEvaluateAndTrade:
         settings = _make_settings(tmp_db_path)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=130, atm_premium=1.70)
         result = await trader.evaluate_and_trade(sig, signal_id=1)
@@ -146,6 +174,7 @@ class TestEvaluateAndTrade:
         settings = _make_settings(tmp_db_path, MIN_SCORE=75)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=50)
         result = await trader.evaluate_and_trade(sig, signal_id=1)
@@ -156,6 +185,7 @@ class TestEvaluateAndTrade:
         settings = _make_settings(tmp_db_path, MAX_CONCURRENT=2)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         # Open two trades (hit the limit) — use tickers that allow PUTs
         sig1 = _make_signal(ticker="NVDA", score=130, atm_premium=1.70)
@@ -175,6 +205,7 @@ class TestEvaluateAndTrade:
         settings = _make_settings(tmp_db_path, PORTFOLIO_SIZE=2000.0, DAILY_LOSS_LIMIT_PCT=10.0)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         # Open and close a trade with a big loss to trigger the daily loss limit
         # With $2k portfolio, 5% max position = $100, so 1 contract at $0.90 = $90
@@ -211,6 +242,7 @@ class TestEvaluateAndTrade:
         settings = _make_settings(tmp_db_path)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig1 = _make_signal(ticker="NVDA", score=130, atm_premium=1.70)
         r1 = await trader.evaluate_and_trade(sig1, signal_id=1)
@@ -227,6 +259,7 @@ class TestEvaluateAndTrade:
         settings = _make_settings(tmp_db_path, PORTFOLIO_SIZE=10.0, MAX_POSITION_PCT=100.0)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         # 1 contract costs 1.70 * 100 = $170, far exceeds $10 balance
         sig = _make_signal(score=130, atm_premium=1.70)
@@ -238,6 +271,7 @@ class TestEvaluateAndTrade:
         settings = _make_settings(tmp_db_path)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(
             ticker="TSLA",
@@ -262,6 +296,7 @@ class TestCloseTrade:
         settings = _make_settings(tmp_db_path, PORTFOLIO_SIZE=10000.0)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=130, atm_premium=1.70)
         opened = await trader.evaluate_and_trade(sig, signal_id=1)
@@ -284,6 +319,7 @@ class TestCloseTrade:
         settings = _make_settings(tmp_db_path, PORTFOLIO_SIZE=10000.0)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=130, atm_premium=1.70)
         opened = await trader.evaluate_and_trade(sig, signal_id=1)
@@ -305,6 +341,7 @@ class TestCloseTrade:
         settings = _make_settings(tmp_db_path, PORTFOLIO_SIZE=10000.0)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=130, atm_premium=1.70)
         opened = await trader.evaluate_and_trade(sig, signal_id=1)
@@ -332,6 +369,7 @@ class TestCloseTrade:
         settings = _make_settings(tmp_db_path, PORTFOLIO_SIZE=50000.0)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         # Open and close a winning trade
         sig1 = _make_signal(ticker="NVDA", score=130, atm_premium=1.70)
@@ -371,6 +409,7 @@ class TestPositionSizing:
         settings = _make_settings(tmp_db_path, PORTFOLIO_SIZE=10000.0, MAX_POSITION_PCT=20.0)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         # Max position = 10000 * 20% = $2000
         # Cost per contract = 1.70 * 100 = $170
@@ -388,6 +427,7 @@ class TestPositionSizing:
         settings = _make_settings(tmp_db_path, PORTFOLIO_SIZE=500.0, MAX_POSITION_PCT=1.0)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         # Max position = 500 * 1% = $5
         # Cost per contract = 1.70 * 100 = $170
@@ -421,6 +461,7 @@ class TestGetStatus:
         settings = _make_settings(tmp_db_path, PORTFOLIO_SIZE=10000.0)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(ticker="NVDA", score=130, atm_premium=1.70)
         await trader.evaluate_and_trade(sig, signal_id=1)
@@ -441,6 +482,7 @@ class TestHelpers:
         settings = _make_settings(tmp_db_path, PORTFOLIO_SIZE=50000.0)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(ticker="NVDA", score=130, atm_premium=1.70)
         await trader.evaluate_and_trade(sig, signal_id=1)

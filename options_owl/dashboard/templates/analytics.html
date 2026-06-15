@@ -1,0 +1,400 @@
+{% extends "base.html" %}
+{% block title %}Analytics — OptionsOwl{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-xl font-bold text-white">Analytics</h1>
+    <div class="flex gap-2">
+        {% for d in [7, 14, 30, 60, 90] %}
+        <a href="/analytics?days={{ d }}"
+           class="px-3 py-1 rounded text-sm transition
+           {% if days == d %}bg-owl-accent text-white{% else %}bg-gray-700 text-gray-300 hover:bg-gray-600{% endif %}">
+            {{ d }}d
+        </a>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- Summary Stats Row -->
+<div class="grid grid-cols-2 md:grid-cols-6 gap-3 mb-6">
+    <div class="bg-owl-card border border-owl-border rounded-lg p-4">
+        <div class="text-xs text-gray-500 uppercase tracking-wide">Total P&L</div>
+        <div class="text-xl font-bold {{ stats.total_pnl | pnl_class }}">{{ stats.total_pnl | money }}</div>
+    </div>
+    <div class="bg-owl-card border border-owl-border rounded-lg p-4">
+        <div class="text-xs text-gray-500 uppercase tracking-wide">Win Rate</div>
+        <div class="text-xl font-bold text-white">{{ stats.win_rate }}%</div>
+        <div class="text-xs text-gray-500">{{ stats.total_wins }}W / {{ stats.total_losses }}L</div>
+    </div>
+    <div class="bg-owl-card border border-owl-border rounded-lg p-4">
+        <div class="text-xs text-gray-500 uppercase tracking-wide">Trades</div>
+        <div class="text-xl font-bold text-white">{{ stats.total_trades }}</div>
+    </div>
+    <div class="bg-owl-card border border-owl-border rounded-lg p-4">
+        <div class="text-xs text-gray-500 uppercase tracking-wide">Avg Trade</div>
+        <div class="text-xl font-bold {{ (duration.avg_trade or 0) | pnl_class }}">
+            {{ (duration.avg_trade or 0) | money }}
+        </div>
+    </div>
+    <div class="bg-owl-card border border-owl-border rounded-lg p-4">
+        <div class="text-xs text-gray-500 uppercase tracking-wide">Best Trade</div>
+        <div class="text-xl font-bold text-green-400">{{ (duration.best_trade or 0) | money }}</div>
+    </div>
+    <div class="bg-owl-card border border-owl-border rounded-lg p-4">
+        <div class="text-xs text-gray-500 uppercase tracking-wide">Worst Trade</div>
+        <div class="text-xl font-bold text-red-400">{{ (duration.worst_trade or 0) | money }}</div>
+    </div>
+</div>
+
+<!-- Charts Row 1: P&L Curve + Daily P&L Bars -->
+<div class="grid md:grid-cols-2 gap-4 mb-6">
+    <div class="bg-owl-card border border-owl-border rounded-lg p-4">
+        <h3 class="text-sm font-semibold text-white mb-3">Cumulative P&L</h3>
+        <canvas id="pnl-curve" height="220"></canvas>
+    </div>
+    <div class="bg-owl-card border border-owl-border rounded-lg p-4">
+        <h3 class="text-sm font-semibold text-white mb-3">Daily P&L</h3>
+        <canvas id="daily-pnl" height="220"></canvas>
+    </div>
+</div>
+
+<!-- Charts Row 2: Exit Distribution + Ticker Performance -->
+<div class="grid md:grid-cols-2 gap-4 mb-6">
+    <div class="bg-owl-card border border-owl-border rounded-lg p-4">
+        <h3 class="text-sm font-semibold text-white mb-3">Exit Gate Distribution</h3>
+        <canvas id="exit-dist" height="220"></canvas>
+    </div>
+    <div class="bg-owl-card border border-owl-border rounded-lg p-4">
+        <h3 class="text-sm font-semibold text-white mb-3">Ticker P&L</h3>
+        <canvas id="ticker-pnl" height="220"></canvas>
+    </div>
+</div>
+
+<!-- Charts Row 3: Hourly Performance + Hold Time -->
+<div class="grid md:grid-cols-2 gap-4 mb-6">
+    <div class="bg-owl-card border border-owl-border rounded-lg p-4">
+        <h3 class="text-sm font-semibold text-white mb-3">Performance by Hour (ET)</h3>
+        <canvas id="hourly-perf" height="220"></canvas>
+    </div>
+    <div class="bg-owl-card border border-owl-border rounded-lg p-4">
+        <h3 class="text-sm font-semibold text-white mb-3">Win/Loss Averages</h3>
+        <div class="grid grid-cols-2 gap-4 mt-4">
+            <div class="text-center">
+                <div class="text-xs text-gray-500 uppercase mb-1">Avg Win Hold</div>
+                <div class="text-2xl font-bold text-green-400">{{ "%.0f" | format(duration.avg_win_hold or 0) }}m</div>
+                <div class="text-sm text-gray-400 mt-1">Avg +{{ "%.1f" | format(duration.avg_win_pct or 0) }}%</div>
+            </div>
+            <div class="text-center">
+                <div class="text-xs text-gray-500 uppercase mb-1">Avg Loss Hold</div>
+                <div class="text-2xl font-bold text-red-400">{{ "%.0f" | format(duration.avg_loss_hold or 0) }}m</div>
+                <div class="text-sm text-gray-400 mt-1">Avg {{ "%.1f" | format(duration.avg_loss_pct or 0) }}%</div>
+            </div>
+        </div>
+
+        <!-- Exit Reason Breakdown Table -->
+        <div class="mt-6 overflow-y-auto max-h-48 scrollbar-thin">
+            <table class="w-full text-xs">
+                <thead>
+                    <tr class="text-gray-500 uppercase">
+                        <th class="text-left py-1">Exit Gate</th>
+                        <th class="text-right py-1">Count</th>
+                        <th class="text-right py-1">P&L</th>
+                        <th class="text-right py-1">Avg</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for e in exits %}
+                    <tr class="border-t border-owl-border/50">
+                        <td class="py-1 text-gray-300">{{ e.exit_reason }}</td>
+                        <td class="py-1 text-right text-gray-400">{{ e.count }}</td>
+                        <td class="py-1 text-right {{ e.total_pnl | pnl_class }}">{{ e.total_pnl | money }}</td>
+                        <td class="py-1 text-right {{ e.avg_pnl | pnl_class }}">{{ e.avg_pnl | money }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Ticker Performance Table -->
+<div class="mb-6">
+    <h3 class="text-lg font-semibold text-white mb-3">Ticker Breakdown</h3>
+    <div class="bg-owl-card border border-owl-border rounded-lg overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-owl-bg">
+                <tr class="text-gray-500 text-xs uppercase">
+                    <th class="text-left px-4 py-2">Ticker</th>
+                    <th class="text-right px-4 py-2">Trades</th>
+                    <th class="text-right px-4 py-2">Win Rate</th>
+                    <th class="text-right px-4 py-2">Total P&L</th>
+                    <th class="text-right px-4 py-2">Avg P&L</th>
+                    <th class="text-right px-4 py-2">Best</th>
+                    <th class="text-right px-4 py-2">Worst</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for t in tickers %}
+                <tr class="border-t border-owl-border hover:bg-owl-bg/50">
+                    <td class="px-4 py-2 font-medium text-white">{{ t.ticker }}</td>
+                    <td class="px-4 py-2 text-right text-gray-400">{{ t.trades }}</td>
+                    <td class="px-4 py-2 text-right">
+                        {% set wr = (t.wins / t.trades * 100) if t.trades > 0 else 0 %}
+                        <span class="{% if wr >= 60 %}text-green-400{% elif wr >= 50 %}text-yellow-400{% else %}text-red-400{% endif %}">
+                            {{ "%.0f" | format(wr) }}%
+                        </span>
+                        <span class="text-xs text-gray-500">({{ t.wins }}W)</span>
+                    </td>
+                    <td class="px-4 py-2 text-right font-medium {{ t.total_pnl | pnl_class }}">{{ t.total_pnl | money }}</td>
+                    <td class="px-4 py-2 text-right {{ t.avg_pnl | pnl_class }}">{{ t.avg_pnl | money }}</td>
+                    <td class="px-4 py-2 text-right text-green-400">{{ t.best_trade | money }}</td>
+                    <td class="px-4 py-2 text-right text-red-400">{{ t.worst_trade | money }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="/static/ws.js"></script>
+<script>
+    // Chart defaults
+    Chart.defaults.color = '#9ca3af';
+    Chart.defaults.borderColor = '#2a2d3a';
+
+    // 1. Cumulative P&L Curve
+    const pnlData = {{ pnl_curve | tojson }};
+    if (pnlData.length > 0) {
+        new Chart(document.getElementById('pnl-curve'), {
+            type: 'line',
+            data: {
+                labels: pnlData.map(d => {
+                    const dt = new Date(d.closed_at);
+                    return dt.toLocaleDateString('en-US', {month: 'short', day: 'numeric'});
+                }),
+                datasets: [{
+                    label: 'Cumulative P&L',
+                    data: pnlData.map(d => d.cumulative_pnl),
+                    borderColor: '#6366f1',
+                    backgroundColor: 'rgba(99,102,241,0.1)',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: pnlData.length > 50 ? 0 : 2,
+                    pointHoverRadius: 4,
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: ctx => '$' + ctx.parsed.y.toFixed(2)
+                        }
+                    }
+                },
+                scales: {
+                    x: { ticks: { maxTicksLimit: 8 }, grid: { display: false } },
+                    y: {
+                        ticks: { callback: v => '$' + v.toFixed(0) },
+                        grid: { color: '#2a2d3a' }
+                    }
+                }
+            }
+        });
+    }
+
+    // 2. Daily P&L Bars
+    const dailyData = {{ daily_pnl | tojson }};
+    if (dailyData.length > 0) {
+        new Chart(document.getElementById('daily-pnl'), {
+            type: 'bar',
+            data: {
+                labels: dailyData.map(d => {
+                    const dt = new Date(d.trade_date + 'T12:00:00');
+                    return dt.toLocaleDateString('en-US', {month: 'short', day: 'numeric'});
+                }),
+                datasets: [{
+                    label: 'Daily P&L',
+                    data: dailyData.map(d => d.daily_pnl),
+                    backgroundColor: dailyData.map(d =>
+                        d.daily_pnl >= 0 ? 'rgba(74,222,128,0.7)' : 'rgba(248,113,113,0.7)'
+                    ),
+                    borderRadius: 3,
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: ctx => {
+                                const d = dailyData[ctx.dataIndex];
+                                return `$${ctx.parsed.y.toFixed(2)} (${d.wins}/${d.trades} wins)`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: { ticks: { maxTicksLimit: 10 }, grid: { display: false } },
+                    y: {
+                        ticks: { callback: v => '$' + v.toFixed(0) },
+                        grid: { color: '#2a2d3a' }
+                    }
+                }
+            }
+        });
+    }
+
+    // 3. Exit Distribution Doughnut
+    const exitData = {{ exits | tojson }};
+    if (exitData.length > 0) {
+        const palette = [
+            '#6366f1', '#8b5cf6', '#a78bfa', '#c084fc',
+            '#34d399', '#22d3ee', '#fbbf24', '#f87171',
+            '#fb923c', '#a3e635', '#2dd4bf', '#818cf8'
+        ];
+        new Chart(document.getElementById('exit-dist'), {
+            type: 'doughnut',
+            data: {
+                labels: exitData.map(e => e.exit_reason),
+                datasets: [{
+                    data: exitData.map(e => e.count),
+                    backgroundColor: exitData.map((_, i) => palette[i % palette.length]),
+                    borderWidth: 0,
+                }]
+            },
+            options: {
+                responsive: true,
+                cutout: '55%',
+                plugins: {
+                    legend: {
+                        position: 'right',
+                        labels: { boxWidth: 12, padding: 8, font: { size: 11 } }
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: ctx => {
+                                const e = exitData[ctx.dataIndex];
+                                const pnl = e.total_pnl >= 0 ? '+' : '';
+                                return `${e.count} trades | ${pnl}$${e.total_pnl.toFixed(2)}`;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // 4. Ticker P&L Bar Chart
+    const tickerData = {{ tickers | tojson }};
+    if (tickerData.length > 0) {
+        new Chart(document.getElementById('ticker-pnl'), {
+            type: 'bar',
+            data: {
+                labels: tickerData.map(t => t.ticker),
+                datasets: [{
+                    label: 'P&L',
+                    data: tickerData.map(t => t.total_pnl),
+                    backgroundColor: tickerData.map(t =>
+                        t.total_pnl >= 0 ? 'rgba(74,222,128,0.7)' : 'rgba(248,113,113,0.7)'
+                    ),
+                    borderRadius: 3,
+                }]
+            },
+            options: {
+                responsive: true,
+                indexAxis: 'y',
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: ctx => {
+                                const t = tickerData[ctx.dataIndex];
+                                const wr = t.trades > 0 ? (t.wins / t.trades * 100).toFixed(0) : 0;
+                                return `$${ctx.parsed.x.toFixed(2)} | ${t.trades} trades | ${wr}% WR`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        ticks: { callback: v => '$' + v.toFixed(0) },
+                        grid: { color: '#2a2d3a' }
+                    },
+                    y: { grid: { display: false } }
+                }
+            }
+        });
+    }
+
+    // 5. Hourly Performance
+    const hourlyData = {{ hourly | tojson }};
+    if (hourlyData.length > 0) {
+        new Chart(document.getElementById('hourly-perf'), {
+            type: 'bar',
+            data: {
+                labels: hourlyData.map(h => {
+                    const hr = h.hour;
+                    const ampm = hr >= 12 ? 'PM' : 'AM';
+                    const h12 = hr > 12 ? hr - 12 : (hr === 0 ? 12 : hr);
+                    return `${h12}${ampm}`;
+                }),
+                datasets: [
+                    {
+                        label: 'P&L',
+                        data: hourlyData.map(h => h.total_pnl),
+                        backgroundColor: hourlyData.map(h =>
+                            h.total_pnl >= 0 ? 'rgba(74,222,128,0.7)' : 'rgba(248,113,113,0.7)'
+                        ),
+                        borderRadius: 3,
+                        yAxisID: 'y',
+                    },
+                    {
+                        label: 'Win Rate',
+                        data: hourlyData.map(h => h.trades > 0 ? (h.wins / h.trades * 100) : 0),
+                        type: 'line',
+                        borderColor: '#fbbf24',
+                        pointRadius: 3,
+                        tension: 0.3,
+                        yAxisID: 'y1',
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: { labels: { boxWidth: 12, padding: 8 } },
+                    tooltip: {
+                        callbacks: {
+                            label: ctx => {
+                                const h = hourlyData[ctx.dataIndex];
+                                if (ctx.datasetIndex === 0) return `$${ctx.parsed.y.toFixed(2)} (${h.trades} trades)`;
+                                return `${ctx.parsed.y.toFixed(0)}% WR`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: { grid: { display: false } },
+                    y: {
+                        position: 'left',
+                        ticks: { callback: v => '$' + v.toFixed(0) },
+                        grid: { color: '#2a2d3a' }
+                    },
+                    y1: {
+                        position: 'right',
+                        min: 0, max: 100,
+                        ticks: { callback: v => v + '%' },
+                        grid: { display: false }
+                    }
+                }
+            }
+        });
+    }
+</script>
+{% endblock %}

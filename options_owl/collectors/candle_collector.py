@@ -36,35 +36,8 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
-import aiosqlite
 from loguru import logger
-
-# ---------------------------------------------------------------------------
-# Schema
-# ---------------------------------------------------------------------------
-
-CANDLE_SCHEMA = """\
-CREATE TABLE IF NOT EXISTS stock_candles (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ticker TEXT NOT NULL,
-    timeframe TEXT NOT NULL,
-    bar_start_ts INTEGER NOT NULL,
-    bar_start TEXT NOT NULL,
-    open REAL NOT NULL,
-    high REAL NOT NULL,
-    low REAL NOT NULL,
-    close REAL NOT NULL,
-    volume REAL DEFAULT 0,
-    vwap REAL DEFAULT 0,
-    source TEXT DEFAULT 'poll',
-    UNIQUE(ticker, timeframe, bar_start_ts)
-);
-
-CREATE INDEX IF NOT EXISTS idx_candles_lookup
-    ON stock_candles(ticker, timeframe, bar_start_ts);
-"""
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -96,12 +69,26 @@ class PriceObs:
 # CandleCollector
 # ---------------------------------------------------------------------------
 
-# 5 minutes in milliseconds
+# Timeframe bucket sizes in milliseconds
+_1M_MS = 1 * 60 * 1000
 _5M_MS = 5 * 60 * 1000
+_15M_MS = 15 * 60 * 1000
+_1H_MS = 60 * 60 * 1000
+
+_TIMEFRAMES = [
+    # 1m REQUIRED by the regime feature builder (regime_features.py queries
+    # timeframe='1m' for the 09:30-09:44 morning window; without it the regime
+    # model never runs — "Insufficient morning data" all day). Added 2026-06-12.
+    ("1m", _1M_MS),
+    ("5m", _5M_MS),
+    ("15m", _15M_MS),
+    ("1h", _1H_MS),
+]
 
 # Keep enough observations to cover a full trading day
 _MAX_OBS = 500
 _MAX_MINUTE_BARS = 500
+_WS_STALE_TIMEOUT = 120  # seconds — force reconnect if no WS messages during market hours
 
 
 class CandleCollector:
@@ -111,8 +98,7 @@ class CandleCollector:
     Multiple readers can query the DB concurrently via WAL mode.
     """
 
-    def __init__(self, db_path: Path, tickers: list[str]) -> None:
-        self._db_path = db_path
+    def __init__(self, tickers: list[str]) -> None:
         self._tickers = frozenset(t.upper() for t in tickers)
 
         # Minute bar buffers (from WS): ticker -> deque[MinuteBar]
@@ -128,19 +114,15 @@ class CandleCollector:
         # Track last flushed bar to avoid re-writing
         self._last_flushed_ts: dict[str, float] = {}
 
+        # Buffer for real-time stock ticks from WS (flushed to PG periodically)
+        self._pending_stock_ticks: list[dict] = []
+
         # WebSocket state
         self._ws_running = False
         self._ws_task: asyncio.Task[None] | None = None
         self._ws_connected = False
         self._flush_task: asyncio.Task[None] | None = None
-
-    async def init_db(self) -> None:
-        """Create the stock_candles table if needed."""
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        async with aiosqlite.connect(self._db_path) as conn:
-            await conn.execute("PRAGMA journal_mode=WAL")
-            await conn.executescript(CANDLE_SCHEMA)
-            await conn.commit()
+        self._last_msg_time: float = 0.0  # monotonic time of last WS message
 
     # ------------------------------------------------------------------
     # Data ingestion
@@ -167,91 +149,95 @@ class CandleCollector:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _bucket_start(ts_ms: float) -> int:
-        """Floor a timestamp (ms) to the start of its 5-minute bucket."""
-        return int((ts_ms // _5M_MS) * _5M_MS)
+    def _bucket_start(ts_ms: float, bucket_ms: int = _5M_MS) -> int:
+        """Floor a timestamp (ms) to the start of its bucket."""
+        return int((ts_ms // bucket_ms) * bucket_ms)
 
     def _build_from_minute_bars(self, ticker: str) -> list[dict]:
-        """Aggregate buffered WS minute bars into completed 5m candles."""
+        """Aggregate buffered WS minute bars into completed 5m/15m/1h candles."""
         bars = self._minute_bars.get(ticker, deque())
         if not bars:
             return []
 
-        last_flushed = self._last_flushed_ts.get(ticker, 0)
         now_ms = time.time() * 1000
-        current_bucket = self._bucket_start(now_ms)
-
-        # Group into 5m buckets
-        buckets: dict[int, list[MinuteBar]] = {}
-        for bar in bars:
-            bucket = self._bucket_start(bar.ts_ms)
-            # Only completed buckets, not yet flushed
-            if bucket < current_bucket and bucket > last_flushed:
-                buckets.setdefault(bucket, []).append(bar)
-
         candles = []
-        for bucket_ts in sorted(buckets):
-            mb = buckets[bucket_ts]
-            candles.append(
-                {
-                    "ticker": ticker,
-                    "timeframe": "5m",
-                    "bar_start_ts": bucket_ts,
-                    "bar_start": datetime.fromtimestamp(
-                        bucket_ts / 1000, tz=timezone.utc
-                    ).isoformat(),
-                    "open": mb[0].open,
-                    "high": max(b.high for b in mb),
-                    "low": min(b.low for b in mb),
-                    "close": mb[-1].close,
-                    "volume": sum(b.volume for b in mb),
-                    "vwap": mb[-1].vwap if mb[-1].vwap else 0,
-                    "source": "ws",
-                }
-            )
+
+        for tf_name, tf_ms in _TIMEFRAMES:
+            last_key = f"{ticker}:{tf_name}"
+            last_flushed = self._last_flushed_ts.get(last_key, 0)
+            current_bucket = self._bucket_start(now_ms, tf_ms)
+
+            buckets: dict[int, list[MinuteBar]] = {}
+            for bar in bars:
+                bucket = self._bucket_start(bar.ts_ms, tf_ms)
+                if bucket < current_bucket and bucket > last_flushed:
+                    buckets.setdefault(bucket, []).append(bar)
+
+            for bucket_ts in sorted(buckets):
+                mb = buckets[bucket_ts]
+                candles.append(
+                    {
+                        "ticker": ticker,
+                        "timeframe": tf_name,
+                        "bar_start_ts": bucket_ts,
+                        "bar_start": datetime.fromtimestamp(
+                            bucket_ts / 1000, tz=timezone.utc
+                        ).isoformat(),
+                        "open": mb[0].open,
+                        "high": max(b.high for b in mb),
+                        "low": min(b.low for b in mb),
+                        "close": mb[-1].close,
+                        "volume": sum(b.volume for b in mb),
+                        "vwap": mb[-1].vwap if mb[-1].vwap else 0,
+                        "source": "ws",
+                    }
+                )
         return candles
 
     def _build_from_polls(self, ticker: str) -> list[dict]:
-        """Build approximate 5m candles from polled price observations."""
+        """Build approximate 5m/15m/1h candles from polled price observations."""
         obs = self._poll_obs.get(ticker, deque())
         if not obs:
             return []
 
-        last_flushed = self._last_flushed_ts.get(ticker, 0)
         now_ms = time.time() * 1000
-        current_bucket = self._bucket_start(now_ms)
-
-        buckets: dict[int, list[PriceObs]] = {}
-        for o in obs:
-            bucket = self._bucket_start(o.ts_ms)
-            if bucket < current_bucket and bucket > last_flushed:
-                buckets.setdefault(bucket, []).append(o)
-
         candles = []
-        for bucket_ts in sorted(buckets):
-            points = buckets[bucket_ts]
-            prices = [p.price for p in points]
-            candles.append(
-                {
-                    "ticker": ticker,
-                    "timeframe": "5m",
-                    "bar_start_ts": bucket_ts,
-                    "bar_start": datetime.fromtimestamp(
-                        bucket_ts / 1000, tz=timezone.utc
-                    ).isoformat(),
-                    "open": points[0].price,
-                    "high": max(prices),
-                    "low": min(prices),
-                    "close": points[-1].price,
-                    "volume": 0,
-                    "vwap": 0,
-                    "source": "poll",
-                }
-            )
+
+        for tf_name, tf_ms in _TIMEFRAMES:
+            last_key = f"{ticker}:{tf_name}"
+            last_flushed = self._last_flushed_ts.get(last_key, 0)
+            current_bucket = self._bucket_start(now_ms, tf_ms)
+
+            buckets: dict[int, list[PriceObs]] = {}
+            for o in obs:
+                bucket = self._bucket_start(o.ts_ms, tf_ms)
+                if bucket < current_bucket and bucket > last_flushed:
+                    buckets.setdefault(bucket, []).append(o)
+
+            for bucket_ts in sorted(buckets):
+                points = buckets[bucket_ts]
+                prices = [p.price for p in points]
+                candles.append(
+                    {
+                        "ticker": ticker,
+                        "timeframe": tf_name,
+                        "bar_start_ts": bucket_ts,
+                        "bar_start": datetime.fromtimestamp(
+                            bucket_ts / 1000, tz=timezone.utc
+                        ).isoformat(),
+                        "open": points[0].price,
+                        "high": max(prices),
+                        "low": min(prices),
+                        "close": points[-1].price,
+                        "volume": 0,
+                        "vwap": 0,
+                        "source": "poll",
+                    }
+                )
         return candles
 
     def build_candles(self, ticker: str) -> list[dict]:
-        """Build completed 5m candles from best available source.
+        """Build completed candles (5m/15m/1h) from best available source.
 
         Prefers WS minute bars (true OHLCV). Falls back to poll-based
         approximation when WS data isn't available.
@@ -282,97 +268,59 @@ class CandleCollector:
         if not all_candles:
             return 0
 
+        # Write candles to PostgreSQL (primary store)
         written = 0
         try:
-            async with aiosqlite.connect(self._db_path) as conn:
-                await conn.execute("PRAGMA journal_mode=WAL")
-                cursor = await conn.executemany(
-                    """INSERT OR IGNORE INTO stock_candles
-                       (ticker, timeframe, bar_start_ts, bar_start,
-                        open, high, low, close, volume, vwap, source)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    [
-                        (
-                            c["ticker"],
-                            c["timeframe"],
-                            c["bar_start_ts"],
-                            c["bar_start"],
-                            c["open"],
-                            c["high"],
-                            c["low"],
-                            c["close"],
-                            c["volume"],
-                            c["vwap"],
-                            c["source"],
-                        )
-                        for c in all_candles
-                    ],
-                )
-                await conn.commit()
-                written = cursor.rowcount if cursor.rowcount > 0 else len(all_candles)
+            from options_owl.db import postgres as pg
+            if pg.is_connected():
+                await pg.write_stock_candles_batch(all_candles)
+                written = len(all_candles)
+            else:
+                logger.warning("PG not connected — dropping candles")
+                return 0
         except Exception as exc:
-            logger.error(f"Candle flush failed: {exc}")
+            logger.error(f"PG candle flush failed: {exc}")
             return 0
 
-        # Update last-flushed timestamps
+        # Update last-flushed timestamps (keyed by ticker:timeframe)
         for c in all_candles:
-            ticker = c["ticker"]
+            key = f"{c['ticker']}:{c['timeframe']}"
             ts = c["bar_start_ts"]
-            if ts > self._last_flushed_ts.get(ticker, 0):
-                self._last_flushed_ts[ticker] = ts
+            if ts > self._last_flushed_ts.get(key, 0):
+                self._last_flushed_ts[key] = ts
 
-        if written:
-            tickers_written = {c["ticker"] for c in all_candles}
-            logger.info(
-                f"Candle flush: {written} bars for "
-                f"{', '.join(sorted(tickers_written))}"
-            )
+        tickers_written = {c["ticker"] for c in all_candles}
+        tf_counts = {}
+        for c in all_candles:
+            tf_counts[c["timeframe"]] = tf_counts.get(c["timeframe"], 0) + 1
+        tf_str = " ".join(f"{tf}={n}" for tf, n in sorted(tf_counts.items()))
+        logger.info(
+            f"Candle flush: {written} bars ({tf_str}) for "
+            f"{', '.join(sorted(tickers_written))}"
+        )
 
-            # Fire-and-forget: also write candles to PostgreSQL
-            try:
-                from options_owl.db import postgres as pg
-                if pg.is_connected():
-                    from datetime import datetime as _dt, timezone as _tz
-                    for c in all_candles:
-                        bar_time = _dt.fromtimestamp(c["bar_start_ts"], tz=_tz.utc)
-                        await pg.write_stock_candle(
-                            ticker=c["ticker"],
-                            timeframe=c["timeframe"],
-                            open_=c["open"],
-                            high=c["high"],
-                            low=c["low"],
-                            close=c["close"],
-                            volume=c["volume"],
-                            vwap=c.get("vwap", 0),
-                            bar_time=bar_time,
-                        )
-            except Exception as exc:
-                logger.debug(f"PG candle write failed: {exc}")
+        # Flush buffered WS stock ticks to PG
+        await self._flush_stock_ticks()
 
         return written
+
+    async def _flush_stock_ticks(self) -> None:
+        """Write buffered real-time stock ticks to PostgreSQL."""
+        if not self._pending_stock_ticks:
+            return
+        ticks = self._pending_stock_ticks
+        self._pending_stock_ticks = []
+        try:
+            from options_owl.db import postgres as pg
+            if pg.is_connected():
+                await pg.write_stock_ticks_batch(ticks)
+                logger.debug(f"Flushed {len(ticks)} WS stock ticks to PG")
+        except Exception as exc:
+            logger.debug(f"PG stock tick flush failed: {exc}")
 
     # ------------------------------------------------------------------
     # Cleanup
     # ------------------------------------------------------------------
-
-    async def cleanup_old_bars(self, keep_hours: int = 48) -> int:
-        """Remove candle bars older than keep_hours from the database."""
-        cutoff_ms = int((time.time() - keep_hours * 3600) * 1000)
-        try:
-            async with aiosqlite.connect(self._db_path) as conn:
-                cursor = await conn.execute(
-                    "DELETE FROM stock_candles WHERE bar_start_ts < ?",
-                    (cutoff_ms,),
-                )
-                await conn.commit()
-                deleted = cursor.rowcount
-                if deleted:
-                    logger.info(f"Candle cleanup: removed {deleted} bars older than {keep_hours}h")
-                return deleted
-        except Exception as exc:
-            logger.error(f"Candle cleanup failed: {exc}")
-            return 0
-
 
     # ------------------------------------------------------------------
     # WebSocket: Polygon Stocks Advanced (real-time minute bars)
@@ -409,6 +357,13 @@ class CandleCollector:
     def ws_connected(self) -> bool:
         """Whether the stocks WS is currently connected and receiving data."""
         return self._ws_connected
+
+    @property
+    def last_msg_age(self) -> float:
+        """Seconds since last WS message (0 if never received)."""
+        if self._last_msg_time == 0.0:
+            return 0.0
+        return time.monotonic() - self._last_msg_time
 
     async def _auto_flush_loop(self) -> None:
         """Flush completed candles to DB every 60s."""
@@ -505,22 +460,41 @@ class CandleCollector:
                     logger.info("Candle WS: authenticated on Polygon Stocks Advanced")
 
                     # Subscribe to AM.{ticker} for each tracked ticker
-                    subs = ",".join(f"AM.{t}" for t in sorted(self._tickers))
+                    # Skip index tickers (VIX, etc.) — Polygon stocks WS
+                    # doesn't carry calculated indices. They get data from
+                    # the harvester poll loop via record_price() instead.
+                    _INDEX_TICKERS = {"VIX", "GSPC", "DJI", "IXIC"}
+                    ws_tickers = sorted(self._tickers - _INDEX_TICKERS)
+                    subs = ",".join(f"AM.{t}" for t in ws_tickers)
                     await ws.send(_json.dumps({"action": "subscribe", "params": subs}))
                     logger.info(
                         f"Candle WS: subscribed to {len(self._tickers)} tickers"
                     )
 
-                    # Message loop
+                    # Message loop with staleness detection
                     got_data = False
-                    async for raw_msg in ws:
-                        if not self._ws_running:
-                            break
+                    self._last_msg_time = time.monotonic()
+                    while self._ws_running:
+                        try:
+                            raw_msg = await asyncio.wait_for(
+                                ws.recv(), timeout=_WS_STALE_TIMEOUT,
+                            )
+                        except asyncio.TimeoutError:
+                            if _is_market_hours():
+                                age = self.last_msg_age
+                                logger.warning(
+                                    f"Candle WS STALE: no messages for "
+                                    f"{age:.0f}s during market hours — "
+                                    f"forcing reconnect"
+                                )
+                                break  # exit inner loop → reconnect
+                            continue  # outside market hours, silence is expected
                         if not got_data:
                             got_data = True
                             reconnect_attempts = 0
                             self._ws_connected = True
                             logger.info("Candle WS: receiving live data")
+                        self._last_msg_time = time.monotonic()
                         self._process_ws_message(raw_msg)
 
             except asyncio.CancelledError:
@@ -578,6 +552,24 @@ class CandleCollector:
                 vwap=float(event.get("vw", 0)),
             )
             self.ingest_minute_bar(ticker, bar)
+
+            # Buffer real-time stock tick for PG (from AM minute bar data)
+            self._pending_stock_ticks.append({
+                "ticker": ticker,
+                "price": close_price,
+                "volume": int(event.get("v", 0)),
+                "vwap": float(event.get("vw", 0)),
+            })
+
+            # Publish to Redis for real-time delivery to all agents
+            try:
+                from options_owl.db import redis_client
+                if redis_client.is_connected():
+                    asyncio.create_task(
+                        redis_client.publish_price(ticker, float(close_price))
+                    )
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -642,44 +634,38 @@ def _seconds_until_premarket() -> float:
 
 
 async def read_candles_from_db(
-    db_path: Path | str,
-    ticker: str,
+    db_path: str = "",
+    ticker: str = "",
     timeframe: str = "5m",
     limit: int = 50,
 ) -> list[dict]:
-    """Read recent candle bars from the shared harvester DB.
+    """Read recent candle bars from PostgreSQL.
 
     Returns a list of dicts with keys: bar_start_ts, open, high, low, close,
-    volume, vwap, source.  Sorted ascending by bar_start_ts.
+    volume, vwap.  Sorted ascending by bar_start_ts.
 
-    The harvester DB uses WAL mode, so we must checkpoint WAL data into the
-    main DB before reading.  On read-only Docker mounts, we copy the DB +
-    WAL to a temp location first so SQLite can open it normally (it needs
-    write access for the -shm file even in read-only mode).
+    The db_path parameter is kept for backward compatibility but ignored.
     """
-    db_path = Path(db_path)
-    if not db_path.exists():
-        return []
-
     try:
-        # Read directly from the WAL-mode DB with a busy timeout.
-        # WAL mode allows concurrent readers even while the harvester writes.
-        # busy_timeout tells SQLite to retry for up to 5 seconds if locked.
-        async with aiosqlite.connect(str(db_path)) as conn:
-            await conn.execute("PRAGMA busy_timeout = 5000")
-            await conn.execute("PRAGMA journal_mode = WAL")
-            conn.row_factory = aiosqlite.Row
-            cursor = await conn.execute(
-                """SELECT bar_start_ts, bar_start, open, high, low, close,
-                          volume, vwap, source
-                   FROM stock_candles
-                   WHERE ticker = ? AND timeframe = ?
-                   ORDER BY bar_start_ts DESC
-                   LIMIT ?""",
-                (ticker.upper(), timeframe, limit),
-            )
-            rows = await cursor.fetchall()
-            return [dict(r) for r in reversed(rows)]  # ascending order
+        from options_owl.db import postgres as pg
+        candles = await pg.read_stock_candles(ticker, timeframe, limit)
+        if not candles:
+            return []
+        # Convert bar_time to bar_start_ts (epoch ms) for compat with CandleBar
+        result = []
+        for c in candles:
+            bar_time = c.get("bar_time")
+            ts_ms = int(bar_time.timestamp() * 1000) if bar_time else 0
+            result.append({
+                "bar_start_ts": ts_ms,
+                "open": c["open"],
+                "high": c["high"],
+                "low": c["low"],
+                "close": c["close"],
+                "volume": c.get("volume", 0),
+                "vwap": c.get("vwap", 0),
+            })
+        return result
     except Exception as exc:
-        logger.debug(f"Failed to read candles from {db_path}: {exc}")
+        logger.debug(f"Failed to read candles from PG for {ticker}: {exc}")
         return []

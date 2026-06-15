@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Convex Redesign — Stop Fighting the Fat-Tail Edge</title>
+<style>
+:root{--primary:#2563eb;--primary-light:#dbeafe;--danger:#dc2626;--warning:#f59e0b;--success:#16a34a;--gray-50:#f9fafb;--gray-200:#e5e7eb;--gray-600:#4b5563;--gray-800:#1f2937;--gray-900:#111827;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:var(--gray-800);line-height:1.6;max-width:980px;margin:0 auto;padding:2rem;background:#fff;}
+header{border-bottom:3px solid var(--primary);padding-bottom:1.5rem;margin-bottom:2rem;}h1{font-size:1.5rem;color:var(--gray-900);}
+.meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:.5rem 2rem;margin-top:1rem;font-size:.875rem;color:var(--gray-600);}.meta dt{font-weight:600;display:inline;}.meta dd{display:inline;margin-left:.25rem;}
+.badge{display:inline-block;padding:.1rem .55rem;border-radius:9999px;font-size:.7rem;font-weight:700;text-transform:uppercase;background:var(--gray-200);color:var(--gray-600);}
+section{margin-bottom:1.8rem;}section>h2{font-size:1.2rem;color:var(--primary);border-bottom:1px solid var(--gray-200);padding-bottom:.4rem;margin-bottom:.9rem;}section>h3{font-size:1rem;margin:1rem 0 .5rem;color:var(--gray-900);}
+ul,ol{padding-left:1.5rem;margin-bottom:.75rem;}li{margin-bottom:.3rem;}
+table{width:100%;border-collapse:collapse;margin-bottom:1rem;font-size:.85rem;}th,td{text-align:left;padding:.45rem .7rem;border:1px solid var(--gray-200);vertical-align:top;}th{background:var(--gray-50);font-weight:600;}
+code{font-family:'SF Mono','Consolas',monospace;font-size:.82rem;background:var(--gray-50);padding:.05rem .25rem;border-radius:3px;}
+.callout{padding:.7rem 1rem;border-left:4px solid var(--primary);background:var(--primary-light);border-radius:0 .375rem .375rem 0;margin-bottom:1rem;font-size:.875rem;}
+.callout.danger{border-left-color:var(--danger);background:#fef2f2;}.callout.warning{border-left-color:var(--warning);background:#fffbeb;}
+footer{margin-top:2.5rem;padding-top:1rem;border-top:1px solid var(--gray-200);font-size:.75rem;color:var(--gray-600);}
+</style></head><body>
+<header><h1>Convex Redesign — Stop Fighting the Fat-Tail Edge</h1>
+<div class="meta">
+<div><dt>Spec ID:</dt><dd>convex-redesign</dd></div>
+<div><dt>Status:</dt><dd><span class="badge">Todo</span></dd></div>
+<div><dt>Project:</dt><dd>OptionsOwl</dd></div>
+<div><dt>Created:</dt><dd>2026-06-11</dd></div>
+<div><dt>Basis:</dt><dd>runner-prediction (validated) + fundamental-logic audit + external strategy research</dd></div>
+</div></header>
+
+<section><h2>1. The thesis (three independent analyses converged)</h2>
+<p>OptionsOwl's edge is <strong>convex / fat-tailed</strong>: a minority of trades become large runners and pay for many small losers. But the architecture was built for <strong>high-win-rate scalping</strong>, so it fights the edge at every stage. Three analyses (2026-06-11) agree:</p>
+<ul>
+<li><strong>Runner-prediction (validated, overfit-checked):</strong> ≥100% runners ARE predictable at entry — OOS AUC <strong>0.80</strong>, top-decile <strong>2.2× base</strong> (big-runner AUC 0.87, 3.8×). Runners live in: low premium, low DTE (0DTE 40% vs 4DTE 4%), index names (IWM/QQQ/SPY), Fridays. Survives within DTE strata + in the tradeable ($1–3, spread≤20%) subset.</li>
+<li><strong>Fundamental-logic audit:</strong> sizing is anti-convex (5 down-haircuts, no up-path); exits decapitate the tail (scaleout, CALL profit ceilings); DCA adds to losers; "score" is incoherent.</li>
+<li><strong>External research:</strong> scaleout "almost always reduces net profit + shrinks the right tail"; can't-predict-losers is the EXPECTED convex signature (edge is in exits/sizing, not entry filters); anti-martingale (add to winners) &gt; averaging down; keep breakeven ratchet + 0DTE risk controls.</li>
+</ul>
+<div class="callout danger"><strong>The unified root cause:</strong> the system <em>excludes its own runners.</em> Gates BLOCK the cheap near-ATM 0DTE setups where runners live (real trades hit +100% only 3.8% vs 25% in the unfiltered runner population) → sizing CAPS what survives (the $442-of-$19K NVDA) → exits CUT the survivors (scaleout ⅓ at +20%, profit ceilings). Fix all three together or none works.</div>
+</section>
+
+<section><h2>2. Redesign — entry / sizing / exit as ONE convex system</h2>
+<h3>2.1 Entry — thin &amp; permissive, let runner-setups through</h3>
+<ul>
+<li>Stop trying to filter losers (direction refuted, confidence-scaling overfit, and it's the wrong job for a convex strategy). Keep only the **real risk controls** (spread gate, EOD cutoff, position/portfolio caps, VIX, kill switch, daily-loss CB).</li>
+<li><strong>Relax the gates that block runner setups</strong> — premium cap + score floors currently exclude the cheap, low-DTE, near-ATM calls that are the runners. Admit high-P(runner) candidates that today get filtered.</li>
+<li>Add a <strong>P(runner) score</strong> (the validated classifier) to the entry context — used for sizing (2.2/2.3), not as a hard reject.</li>
+<li><strong>Micro-bounce entry fill (validated, dipconfirm_tuning.md):</strong> enter on the first <strong>N=2 tick bounce off the local premium low</strong> (90s cap, always-fill fallback at market) on the live WS feed — catches the dip bottom: ~0.9% cheaper entries (~$25–30/trade), median entry at the in-window low vs +3.1% above today. Also fixes the as-coded bug where an ML-signal timeout records the unfillable <code>low_water</code> as the entry. In V7's 1-min backtest, model as an entry-fill improvement (enter near the intra-bar low / shave the validated ~0.9% off the ask). Free basis-points per entry — NOT a fader fix; real validation is the live-tick paper test behind <code>ENABLE_DIP_CONFIRM_MICROBOUNCE</code>.</li>
+</ul>
+<h3>2.2 Sizing — convex, up-tilted to P(runner), anti-martingale</h3>
+<ul>
+<li><strong>Remove the anti-convex haircuts:</strong> kill the backwards 60% confidence tier (refuted OOS); rethink slot-dilution (÷MAX_CONCURRENT under-deploys when few signals fire); keep MAX_POSITION_PCT + portfolio risk as the hard ceiling.</li>
+<li><strong>Tilt budget to P(runner):</strong> 1.5–2× for top-decile (46–55% runner rate, ~268% avg peak), flat middle, 0.5×/skip bottom-30% (&lt;7%). Risk-bounded by the position cap + V5 stops.</li>
+<li><strong>Flip DCA → anti-martingale:</strong> ADD to confirmed winners (one capped add, whole stack under one trail), NOT average down into dips (current V6 DCA is backwards).</li>
+</ul>
+<h3>2.3 Exit — cut the body fast, let the tail run uncapped</h3>
+<ul>
+<li><strong>Remove the right-tail caps:</strong> no scaleout (sells ⅓ at +20% — the #1 leak per both audit + research) and NO CALL profit ceiling — propagate the PUT lesson (no-ceiling went +$20K→+$63K).</li>
+<li><strong>Widening trail on confirmed runners</strong> (give the tail room), vs current ~37% giveback.</li>
+<li><strong>Keep the breakeven ratchet</strong> (convex-positive, truncates only the left tail) and a <strong>fast stall-stop</strong> to cut the body (faders) quickly — small initial bet + fast stall-cut keeps losers small.</li>
+</ul>
+</section>
+
+<section><h2>3. Why this also satisfies "stop losing money"</h2>
+<p>Small flat base bet → <strong>losers stay small</strong> (we add size only to trades already working). Up-size + uncapped exit → <strong>runners get big.</strong> That's the asymmetry: lots of small −X, occasional large +Y. It does NOT require predicting losers (we can't) — only sizing/holding the runners we CAN identify.</p>
+</section>
+
+<section><h2>4. Validation protocol (mandatory — this is a real-money entry+sizing+exit overhaul)</h2>
+<ol>
+<li><strong>Full-chain PAPER test FIRST</strong> (the runner-prediction agent's required next step): relaxed gates for high-P(runner) + P(runner)-tilted sizing + uncapped/widening exit, run in paper/shadow on live data. Sizing-up does nothing unless the runner setups are first allowed through the gates — so test the chain end-to-end, not pieces.</li>
+<li><strong>Backtest each component + the whole</strong> on the (backfilling) multi-year data: scaleout OFF vs ON (P95/P99 tail capture, not just net P&amp;L); CALL no-ceiling; P(runner)-tilted sizing; multi-window walk-forward + OOS. Reject in-sample-only wins (the confidence-scaling discipline).</li>
+<li><strong>Phase the live rollout:</strong> exit changes first (no scaleout/ceiling — exit-side, doesn't raise entry risk), then gate-relaxation+sizing together (the part that increases $/trade) only after paper + win-rate hold. Keep .env rollback + daily-loss CB.</li>
+</ol>
+</section>
+
+<section><h2>5. Component status feeding this</h2>
+<table><thead><tr><th>Piece</th><th>Status</th></tr></thead><tbody>
+<tr><td>Runner-prediction classifier (entry P(runner))</td><td>✅ validated OOS 0.80, overfit-checked (scripts/runner_prediction.py)</td></tr>
+<tr><td>Exit-tuning candA (grace/scaleout/soft/adaptive)</td><td>✅ +18% OOS — a step toward 2.3</td></tr>
+<tr><td>Remove 60% conf tier (flat)</td><td>✅ validated robust; part of 2.2</td></tr>
+<tr><td>Scaleout OFF / CALL no-ceiling backtest</td><td>⏳ queue after sizing-OOS frees backtest file</td></tr>
+<tr><td>Multi-day cap loosening</td><td>⏳ sizing-OOS pass (running)</td></tr>
+<tr><td>Dip-confirm fast tick-trigger (entry price)</td><td>⏳ running — orthogonal price optimization</td></tr>
+<tr><td>Multi-year backfill (more runner-prediction data)</td><td>⏳ running (~2.75yr)</td></tr>
+</tbody></table>
+</section>
+<footer>OptionsOwl — Convex redesign | 2026-06-11. Reports: runner_prediction.md, fundamental_logic_audit.md, strategy_research.md. Memory: entry-filter-refuted-2026-06-11, gate-sweep-findings-2026-06-10.</footer>
+</body></html>

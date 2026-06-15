@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from options_owl.sourcing.data.indicator_engine import (
     BARS_PER_DAY,
@@ -40,10 +39,10 @@ def _make_day_bars(
     bars = []
     for i in range(n):
         h = base_price + day_high_offset * ((i + 1) / n)
-        l = base_price - day_low_offset * ((i + 1) / n)
+        lo = base_price - day_low_offset * ((i + 1) / n)
         c = base_price + (day_high_offset - day_low_offset) * 0.3
         ts = f"{timestamp_prefix}T{9 + i // 12}:{(i % 12) * 5:02d}:00" if timestamp_prefix else None
-        bars.append(_make_bar(base_price, h, l, c, 1000, timestamp=ts))
+        bars.append(_make_bar(base_price, h, lo, c, 1000, timestamp=ts))
     return bars
 
 

@@ -319,7 +319,7 @@ class MarketDataStream:
         if ticker not in self._subscriptions:
             await self.subscribe(ticker)
 
-        # Check cache
+        # Check local cache first
         entry = self._price_cache.get(ticker)
         if entry is not None:
             price, ts = entry
@@ -328,6 +328,18 @@ class MarketDataStream:
             if staleness <= max_age:
                 return price
             logger.debug(f"Cache stale for {ticker} ({staleness:.0f}s old)")
+
+        # Redis cache (centralized harvester publishes stock prices)
+        try:
+            from options_owl.db import redis_client
+            if redis_client.is_connected():
+                result = await redis_client.get_price(ticker, max_age=60)
+                if result is not None:
+                    redis_price, _age = result
+                    self._update_cache(ticker, redis_price)
+                    return redis_price
+        except Exception:
+            pass
 
         # Fallback: synchronous yfinance fetch
         price = await self._yfinance_fetch_price(ticker)
@@ -366,7 +378,18 @@ class MarketDataStream:
         """
         ticker = ticker.upper()
 
-        # 1. Check WS option cache first (real-time, sub-second)
+        # 0. Redis cache (real-time from centralized harvester)
+        try:
+            from options_owl.db import redis_client
+            if redis_client.is_connected():
+                contract_key = f"{ticker}:{option_type.lower()}:{strike}:{expiry}"
+                data = await redis_client.get_option_premium(contract_key)
+                if data and (_time.time() - data.get("t", 0)) < 120:
+                    return data["mid"]
+        except Exception:
+            pass
+
+        # 1. Check WS option cache (real-time when Polygon WS is enabled)
         key = (ticker, strike, expiry, option_type.lower())
         contract = self._option_contract_map.get(key)
         if contract:
@@ -379,7 +402,7 @@ class MarketDataStream:
                 logger.debug(f"Option WS cache stale for {contract} ({age:.0f}s)")
 
         # 2. Polygon REST snapshot fallback
-        if self.provider == DataFeedProvider.POLYGON and self.settings.POLYGON_API_KEY:
+        if self.settings.POLYGON_API_KEY:
             premium = await self._polygon_rest_option_premium(
                 ticker, strike, expiry, option_type
             )

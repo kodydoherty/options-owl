@@ -1,6 +1,5 @@
 """Tests for multi-timeframe support level detection."""
 
-import pytest
 from dataclasses import dataclass
 
 

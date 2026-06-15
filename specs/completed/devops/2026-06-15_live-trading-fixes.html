@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>OptionsOwl — Live-Trading Fixes (2026-06-15)</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="/dev/stdin" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">OptionsOwl — Live-Trading Fixes (2026-06-15)</h1>
+</header>
+<h1 id="optionsowl-v7-live-trading-fixes">OptionsOwl — V7 Live-Trading
+Fixes</h1>
+<p><strong>Date:</strong> 2026-06-15 (first LIVE session of the full V7
++ UW flow system) · <strong>Severity:</strong> High ·
+<strong>Status:</strong> Fixed + deployed live</p>
+<p>On the first live session, <strong>zero trades were flowing</strong>
+despite a healthy-looking system. Three independent bugs were found
+mid-market and fixed. All three were deployed live (rebuild.sh, full
+test gate) the same session.</p>
+<hr />
+<h2
+id="fix-1-score-floor-neutralized-the-0.62-pattern-gate-critical-ml-side">Fix
+1 — Score floor neutralized the 0.62 pattern gate (CRITICAL, ML
+side)</h2>
+<ul>
+<li><strong>Symptom:</strong> ML scan found candidates
+(e.g. <code>TSLA CALL pattern=0.684 score=68</code>), the 28-gate
+pipeline APPROVED them, then they were silently rejected — 51 signals
+generated, ~0 trades.</li>
+<li><strong>Root cause:</strong> <code>score_to_contracts</code> had
+<code>_SCORE_FLOOR=75</code> (≈ pattern 0.75) and
+<code>_MIN_ML_CONFIDENCE=0.70</code>. The deployed
+<code>ML_PATTERN_THRESHOLD=0.62</code> let 0.62–0.75 signals through the
+entry gate, but the <strong>sizing floor (75/0.70) rejected every
+one</strong> — so the 0.62 change delivered <em>none</em> of its
+backtested volume.</li>
+<li><strong>Fix:</strong> aligned <code>_SCORE_FLOOR = 62</code> and
+<code>_MIN_ML_CONFIDENCE = 0.62</code> (PUT floor stays 0.65 — put model
+threshold). <code>options_owl/risk/vinny_strategy.py</code>. Verified
+live: <code>FLOOR 62 / 0.62</code>; a score-65/conf-0.65 call now sizes
+6 contracts.</li>
+<li><strong>Note:</strong> the fix deployed ~11:35 ET, after the 90-min
+CALL scan window (closed ~11:00 ET), so the big payoff is the next open.
+PUT scan (5–360 min) benefits same day.</li>
+</ul>
+<h2
+id="fix-2-ml-scan-polygon-fallback-used-the-wrong-expiry-7-tickers-blind">Fix
+2 — ML scan Polygon fallback used the wrong expiry (7 tickers
+blind)</h2>
+<ul>
+<li><strong>Symptom:</strong>
+<code>Polygon chain: JPM/MSTR/NFLX/PLTR/AMD/SMCI/BA exp=2026-06-15 → 0 contracts</code>
+— those names couldn’t be scanned. (The 9 liquid 0DTE names scanned fine
+via Redis.)</li>
+<li><strong>Root cause:</strong> <code>fetch_live_option_chain</code>
+queried only today/tomorrow. Names without a Monday 0DTE (they expire
+Friday) returned 0. The harvester captures the correct range; only the
+Polygon fallback was naive.</li>
+<li><strong>Fix:</strong> bounded <strong>near-expiry fallback</strong>
+in <code>fetch_live_option_chain</code> — if the requested expiry has 0
+contracts, walk forward over the next ~5 business days to the ticker’s
+nearest available expiry.
+<code>options_owl/sourcing/ml_pipeline.py</code>. Verified live:
+<code>JPM → 86, PLTR → 116, MSTR → 440</code> contracts at 06-18;
+<code>polygon_fb=7</code> recovering.</li>
+</ul>
+<h2
+id="fix-3-uw-flow-collector-dropped-100-of-ws-alerts-critical-flow-side">Fix
+3 — UW flow collector dropped 100% of WS alerts (CRITICAL, flow
+side)</h2>
+<ul>
+<li><strong>Symptom:</strong> UW flow WS connected + streaming (19
+msgs/22 s), but <strong>zero flow signals ever</strong> — in production
+or shadow.</li>
+<li><strong>Root cause:</strong> the live <strong>WebSocket message
+format has no <code>type</code> field</strong> (nor
+<code>strike</code>/<code>expiry</code>) — they’re encoded in the OCC
+<code>option_chain</code> symbol (<code>MSTR260618C00115000</code>).
+<code>evaluate_flow_alert</code> did
+<code>if opt_type not in ("put","call"): return None</code>, so
+<strong>every alert was rejected.</strong> The backtest used the
+<em>REST</em> endpoint (which HAS <code>type</code>), so this never
+surfaced until live.</li>
+<li><strong>Fix:</strong> when <code>type</code> is absent, derive
+put/call + strike + expiry by parsing the OCC <code>option_chain</code>
+via <code>parse_occ_ticker</code> (prepending <code>O:</code>).
+<code>options_owl/collectors/uw_flow_collector.py</code>. Verified live:
+a WS-format META call alert now <strong>FIRES</strong> (CALL, strike
+560) — previously dropped. 32 flow tests green (+2 regression
+tests).</li>
+</ul>
+<hr />
+<h2 id="validation-deploy">Validation &amp; deploy</h2>
+<ul>
+<li>Full suite (~2,545 tests) green on each deploy; ruff clean. All
+three shipped via <code>scripts/rebuild.sh</code> (test-gated), flags
+unchanged, staggered restart. No open positions during restarts.</li>
+<li>Tests updated to the new floors (<code>test_vinny_strategy</code>,
+<code>test_risk_gates</code>, <code>test_ml_strategy_e2e</code>,
+<code>test_code_review_fixes</code>,
+<code>test_conviction_sizing</code>) + WS-format regression tests
+added.</li>
+</ul>
+<h2 id="lessons">Lessons</h2>
+<ul>
+<li><strong>Backtest/serve format skew:</strong> the flow backtest used
+the REST schema; the live feed is the WS schema (different field names).
+Always validate the serve path against the <em>live</em> data shape, not
+just the backtest source.</li>
+<li><strong>Config consistency:</strong> lowering one gate (pattern
+0.62) without aligning the downstream sizing floor (75) silently
+neutralized it. Thresholds that gate the same thing must move
+together.</li>
+<li><strong>Per-ticker expiry everywhere:</strong> smart-entry already
+had per-ticker expiry; the scan’s fallback did not.</li>
+</ul>
+<h2 id="remaining-follow-ups">Remaining (follow-ups)</h2>
+<ul>
+<li>Fix the <strong>flow-shadow</strong>
+(<code>uw_flow_shadow.py</code>) — same <code>type</code>/OCC bug;
+observe-only, so non-blocking.</li>
+<li>Move <strong>darkpool collection from REST → WS</strong> and persist
+all UW WS data into the harvester DB (architecture request).</li>
+<li>Validate the now-flowing flow trades reach Webull
+<strong>live</strong> (not paper) — trade #265 (pre-fix) went
+paper.</li>
+</ul>
+</body>
+</html>

@@ -107,7 +107,8 @@ class TestV5ConfigDefaults:
 class TestTickerCategory:
 
     def test_highvol_tickers(self):
-        for t in ("MSTR", "AMD", "TSLA", "NVDA", "AVGO", "META", "COIN", "SMCI", "PLTR"):
+        # COIN and AVGO removed from HIGH_VOL (blocked tickers, 2026-05-30)
+        for t in ("MSTR", "AMD", "TSLA", "NVDA", "META", "SMCI", "PLTR"):
             assert categorize_ticker(t) == TickerCategory.HIGH_VOL
 
     def test_index_tickers(self):

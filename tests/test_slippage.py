@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import aiosqlite
 import pytest
+from unittest.mock import AsyncMock
 
+from options_owl.collectors.candle_cache import CandleBar
 from options_owl.config.settings import Settings
 from options_owl.execution.paper_trader import PaperTrader, init_paper_db
 from options_owl.models.signals import (
@@ -27,10 +29,29 @@ def _make_settings(tmp_db_path: str, **overrides) -> Settings:
         "DAILY_LOSS_LIMIT_PCT": 10.0,
         "ENABLE_RISK_MANAGER": False,
         "ENABLE_SMART_ENTRY": False,
+        "ENABLE_PUT_TRADING": True,
         "ENABLE_VINNY_STRATEGY": False,
+        "ENABLE_DIRECTIONAL_REGIME": False,
     }
     defaults.update(overrides)
     return Settings(**defaults)
+
+
+def _attach_mock_candle_cache(trader: PaperTrader) -> None:
+    bearish_bars = [
+        CandleBar(0, 522.0, 522.5, 519.0, 519.5, 1000, vwap=521.0),
+        CandleBar(0, 520.0, 520.5, 518.0, 518.5, 1000, vwap=520.0),
+        CandleBar(0, 519.0, 519.5, 517.0, 517.5, 1000, vwap=519.0),
+        CandleBar(0, 518.0, 518.5, 516.0, 516.5, 1000, vwap=518.0),
+        CandleBar(0, 517.0, 517.5, 515.0, 515.5, 1000, vwap=517.0),
+        CandleBar(0, 516.0, 516.5, 514.0, 514.5, 1000, vwap=516.0),
+    ]
+    mock_cc = AsyncMock()
+    mock_cc.get_candle_data = AsyncMock(return_value={
+        "5m": bearish_bars,
+        "indicators": {"5m": {"rsi": 38.0, "ema9": 515.0, "ema21": 518.0}},
+    })
+    trader._candle_cache = mock_cc
 
 
 def _make_signal(**overrides) -> TradeSignal:
@@ -67,6 +88,7 @@ class TestEntrySlippage:
         settings = _make_settings(tmp_db_path, SIMULATED_ENTRY_SLIPPAGE_BPS=50.0)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=90, atm_premium=1.70)
         result = await trader.evaluate_and_trade(sig, signal_id=1)
@@ -84,6 +106,7 @@ class TestEntrySlippage:
         settings = _make_settings(tmp_db_path, SIMULATED_ENTRY_SLIPPAGE_BPS=100.0)
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=90, atm_premium=2.00)
         result = await trader.evaluate_and_trade(sig, signal_id=1)
@@ -115,6 +138,7 @@ class TestEntrySlippage:
         )
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=90, atm_premium=1.70)
         result = await trader.evaluate_and_trade(sig, signal_id=1)
@@ -136,6 +160,7 @@ class TestExitSlippage:
         )
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=90, atm_premium=1.70)
         opened = await trader.evaluate_and_trade(sig, signal_id=1)
@@ -174,6 +199,7 @@ class TestExitSlippage:
         )
         trader_slip = PaperTrader(settings_slip)
         await trader_slip.init()
+        _attach_mock_candle_cache(trader_slip)
 
         sig = _make_signal(score=90, atm_premium=1.70)
         opened = await trader_slip.evaluate_and_trade(sig, signal_id=1)
@@ -199,6 +225,7 @@ class TestExitSlippage:
             )
             trader_no = PaperTrader(settings_no)
             await trader_no.init()
+            _attach_mock_candle_cache(trader_no)
 
             sig2 = _make_signal(score=90, atm_premium=1.70)
             opened2 = await trader_no.evaluate_and_trade(sig2, signal_id=1)
@@ -226,6 +253,7 @@ class TestSlippageImpactOnPnL:
         )
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=90, atm_premium=1.70)
         opened = await trader.evaluate_and_trade(sig, signal_id=1)
@@ -261,6 +289,7 @@ class TestZeroSlippage:
         )
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=90, atm_premium=1.70)
         result = await trader.evaluate_and_trade(sig, signal_id=1)
@@ -279,6 +308,7 @@ class TestZeroSlippage:
         )
         trader = PaperTrader(settings)
         await trader.init()
+        _attach_mock_candle_cache(trader)
 
         sig = _make_signal(score=90, atm_premium=1.70)
         opened = await trader.evaluate_and_trade(sig, signal_id=1)

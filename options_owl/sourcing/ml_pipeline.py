@@ -1036,101 +1036,46 @@ def compute_entry_timing_features(
     return {k: f.get(k, 0) for k in entry_features}
 
 
-def compute_regime_features(
+async def compute_regime_features(
     ticker: str,
-    date_str: str,
-    morning_stock_bars: list[dict],
-    prev_day_stats: dict | None,
-    gex_data: dict | None,
+    now_et: datetime,
     regime_features: list[str],
 ) -> dict | None:
-    """Compute regime model features from morning data.
+    """Compute the FULL regime feature vector for live serving (Postgres).
 
-    EXACT same logic as compute_regime_score() in backtest_gold_standard.py,
-    but adapted for live data (no DB queries — data is passed in).
+    Delegates to the SHARED feature module (regime_features.py) — the single
+    source of truth also used by scripts/train_ml_models_v3.py. This produces
+    the model's complete feature set (40 features) instead of the old 18, so
+    there is no train/serve skew and no silent zero-fill: load_serving_inputs
+    reads Postgres (stock_candles SPY/QQQ/VIX + lags, gex_ticks) and
+    compute_regime_feature_vector builds every feature in REGIME_FEATURE_ORDER.
 
-    Parameters
-    ----------
-    morning_stock_bars : list[dict]
-        First 15 minutes of stock bars, each with keys: open, high, low, close, volume.
-    prev_day_stats : dict | None
-        Previous day stats: prev_high, prev_low, prev_volume, prev_close, avg_3d_range.
-    gex_data : dict | None
-        GEX data from UW: call_gamma, put_gamma, call_delta, put_delta.
+    Returns the feature dict keyed in the model's expected order, or None if the
+    early-morning window is too sparse to score.
     """
-    if not morning_stock_bars or len(morning_stock_bars) < 5:
+    from options_owl.sourcing.features.regime_features import (
+        REGIME_FEATURE_ORDER,
+        compute_regime_feature_vector,
+        load_serving_inputs,
+    )
+    from options_owl.sourcing.scoring.ml_gates.signal_model import (
+        _warn_missing_features,
+    )
+
+    raw_inputs = await load_serving_inputs(ticker, now_et, tz_et=ET)
+
+    # Require a usable early-morning window (>= 5 bars) — same gate as training.
+    morning = raw_inputs.get("morning_bars") or []
+    if len([b for b in morning if b.get("close", 0) > 0]) < 5:
         return None
 
-    f: dict[str, float] = {}
-    f["ticker_idx"] = TICKERS.index(ticker) if ticker in TICKERS else 0
-    f["day_of_week"] = datetime.strptime(date_str, "%Y-%m-%d").weekday()
+    f = compute_regime_feature_vector(raw_inputs)
 
-    # Morning stats from first 15 minutes
-    morning_high = max(b["high"] for b in morning_stock_bars if b["high"] > 0)
-    morning_low = min(
-        b["low"] for b in morning_stock_bars if b["low"] > 0
-    )
-    morning_open = morning_stock_bars[0]["open"] if morning_stock_bars[0]["open"] else 0
-    morning_close = (
-        morning_stock_bars[-1]["close"]
-        if morning_stock_bars[-1]["close"]
-        else morning_open
-    )
-    morning_volume = sum(b["volume"] for b in morning_stock_bars if b["volume"])
-
-    if morning_low <= 0 or morning_open <= 0:
-        return None
-
-    f["morning_range_pct"] = (morning_high - morning_low) / morning_low * 100
-    f["morning_volume"] = float(morning_volume)
-    f["morning_direction"] = (morning_close / morning_open - 1) * 100
-    morning_body = abs(morning_close - morning_open)
-    morning_range = morning_high - morning_low
-    f["morning_body_ratio"] = morning_body / morning_range if morning_range > 0 else 0
-
-    # Previous day stats
-    if prev_day_stats:
-        f["prev_range_pct"] = prev_day_stats.get("prev_range_pct", 0)
-        f["prev_volume"] = prev_day_stats.get("prev_volume", 0)
-        prev_close = prev_day_stats.get("prev_close", 0)
-        f["overnight_gap_pct"] = (
-            (morning_open / prev_close - 1) * 100 if prev_close > 0 else 0
-        )
-        f["avg_3d_range"] = prev_day_stats.get("avg_3d_range", 0)
-        f["range_trend"] = f["morning_range_pct"] / max(f["avg_3d_range"], 0.01) - 1
-        avg_prev_vol = prev_day_stats.get("avg_prev_vol", 1)
-        f["volume_vs_prev"] = morning_volume * 26 / max(avg_prev_vol, 1)
-    else:
-        f["prev_range_pct"] = 0
-        f["prev_volume"] = 0
-        f["overnight_gap_pct"] = 0
-        f["avg_3d_range"] = 0
-        f["range_trend"] = 0
-        f["volume_vs_prev"] = 0
-
-    # GEX from UW
-    if gex_data:
-        f["call_gamma"] = gex_data.get("call_gamma", 0)
-        f["put_gamma"] = gex_data.get("put_gamma", 0)
-        f["net_gamma"] = f["call_gamma"] - f["put_gamma"]
-        f["call_delta"] = gex_data.get("call_delta", 0)
-        f["put_delta"] = gex_data.get("put_delta", 0)
-        f["net_delta"] = f["call_delta"] - f["put_delta"]
-    else:
-        for k in [
-            "call_gamma",
-            "put_gamma",
-            "net_gamma",
-            "call_delta",
-            "put_delta",
-            "net_delta",
-        ]:
-            f[k] = 0
-
-    from options_owl.sourcing.scoring.ml_gates.signal_model import _warn_missing_features
-
+    # The shared module ALWAYS emits the full REGIME_FEATURE_ORDER, so this
+    # warner must stay quiet. It still guards against a future model/meta drift.
     _warn_missing_features("regime_classifier", regime_features, f)
-    return {k: f.get(k, 0) for k in regime_features}
+    # Honor the loaded model's feature order (REGIME_FEATURE_ORDER by default).
+    return {k: f.get(k, 0.0) for k in (regime_features or REGIME_FEATURE_ORDER)}
 
 
 def _build_v2_signal_features(
@@ -1238,21 +1183,41 @@ async def fetch_live_option_chain(
 
     Returns list of dicts with keys: strike, bid, ask, mid, volume,
     open_interest, last_price, option_type, iv, delta, theta, vega.
+
+    Near-expiry fallback (2026-06-15 fix): not every ticker has a 0DTE today (e.g. AMD/JPM/MSTR
+    expire Friday). If the requested expiry has 0 contracts, walk forward over the next few business
+    days to the ticker's nearest available expiry. Liquid 0DTE names return on the first call.
     """
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+
     from options_owl.collectors.polygon_options import polygon_option_chain
 
     try:
-        chain = await asyncio.wait_for(
-            polygon_option_chain(api_key, ticker, expiry, option_type="call"),
-            timeout=10,
-        )
-        return chain
-    except asyncio.TimeoutError:
-        logger.warning(f"ML_PIPELINE: Polygon chain timeout for {ticker}")
-        return []
-    except Exception as exc:
-        logger.warning(f"ML_PIPELINE: Polygon chain error for {ticker}: {exc}")
-        return []
+        base = _dt.strptime(expiry, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        base = _dt.now(tz=ET).date()
+    candidates, d = [expiry] if expiry else [], base
+    for _ in range(6):  # walk up to ~1 week ahead to hit the nearest weekly expiry
+        d = d + _td(days=1)
+        if d.weekday() < 5:
+            candidates.append(d.strftime("%Y-%m-%d"))
+
+    seen: set[str] = set()
+    for exp in candidates:
+        if not exp or exp in seen:
+            continue
+        seen.add(exp)
+        try:
+            chain = await asyncio.wait_for(
+                polygon_option_chain(api_key, ticker, exp, option_type="call"), timeout=10)
+            if chain:  # first non-empty expiry wins
+                return chain
+        except asyncio.TimeoutError:
+            logger.warning(f"ML_PIPELINE: Polygon chain timeout for {ticker} {exp}")
+        except Exception as exc:
+            logger.warning(f"ML_PIPELINE: Polygon chain error for {ticker} {exp}: {exc}")
+    return []
 
 
 async def fetch_live_underlying_price(api_key: str, ticker: str) -> float | None:
@@ -1766,34 +1731,29 @@ async def check_ticker_regime(
 async def _compute_regime_score_for_ticker(
     ticker: str, models: MLModels, settings: MLPipelineSettings
 ) -> float | None:
-    """Compute regime score for a single ticker."""
-    today = get_todays_expiry()
+    """Compute regime score for a single ticker.
 
-    morning_bars, prev_stats, gex = await asyncio.gather(
-        fetch_morning_stock_bars(settings.POLYGON_API_KEY, ticker, today),
-        fetch_prev_day_stats(settings.POLYGON_API_KEY, ticker, today),
-        fetch_gex_data(ticker),
-        return_exceptions=True,
-    )
+    Features come from the SHARED feature module via compute_regime_features
+    (Postgres-backed: stock_candles + gex_ticks). The 15s timeout protects the
+    monitor loop from a hung DB read (CLAUDE.md external-I/O rule).
+    """
+    now_et = datetime.now(tz=ET)
+    try:
+        feat = await asyncio.wait_for(
+            compute_regime_features(ticker, now_et, models.regime_features),
+            timeout=15,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"ML_PIPELINE: regime feature build timed out (15s) for {ticker}")
+        return None
+    except Exception as exc:
+        logger.warning(f"ML_PIPELINE: regime feature build failed for {ticker}: {exc}")
+        return None
 
-    if isinstance(morning_bars, Exception):
-        logger.warning(f"ML_PIPELINE: {ticker} morning bars fetch error: {morning_bars}")
-        morning_bars = []
-    if isinstance(prev_stats, Exception):
-        prev_stats = None
-    if isinstance(gex, Exception):
-        gex = None
-
-    if not morning_bars or len(morning_bars) < 5:
+    if feat is None:
         logger.warning(
             f"ML_PIPELINE: Insufficient morning data for {ticker} regime — allowing"
         )
-        return None
-
-    feat = compute_regime_features(
-        ticker, today, morning_bars, prev_stats, gex, models.regime_features,
-    )
-    if feat is None:
         return None
 
     X = np.array(

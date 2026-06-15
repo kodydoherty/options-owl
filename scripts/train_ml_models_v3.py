@@ -44,6 +44,12 @@ sys.path.insert(0, str(PROJECT_DIR))
 
 from options_owl.risk.exit_v5.config import get_ticker_config  # noqa: E402
 from options_owl.risk.exit_v5.fsm import ExitFSM, TradeState  # noqa: E402
+from options_owl.sourcing.features.regime_features import (  # noqa: E402
+    REGIME_FEATURE_ORDER,
+    compute_regime_feature_vector,
+    load_training_inputs,
+    rth_bars_by_date_from_rows,
+)
 
 THETADATA_DB = str(PROJECT_DIR / "journal" / "thetadata_options.db")
 UW_DB = str(PROJECT_DIR / "journal" / "uw_historical.db")
@@ -166,6 +172,8 @@ def _walk_forward_validate(
         fold_params = dict(params)
         if not is_regression:
             if len(set(y_te)) < 2:
+                print(f"    Fold {fold_idx - 1}: SKIPPED — test month {test_month} "
+                      "is single-class (AUC undefined)")
                 continue
             fold_params["scale_pos_weight"] = float(
                 (y_tr == 0).sum() / max((y_tr == 1).sum(), 1)
@@ -213,6 +221,272 @@ def _final_date_split(df: pd.DataFrame, embargo_days: int = 0) -> tuple[pd.Serie
     train_mask = ~test_mask
     train_mask = _apply_embargo(train_mask, df, embargo_days)
     return train_mask, test_mask
+
+
+# ===========================================================================
+# Shared: robust validation for SMALL day-level datasets
+# ===========================================================================
+#
+# regime_classifier and ticker_selection have ~1 sample per ticker-day
+# (~2k rows total on the current 126-day DB). A naive last-month holdout can
+# end up single-class (AUC=NaN, accuracy=1.0 — exactly what happened to
+# ticker_selection). For these models we instead:
+#   1. Try an expanding date-based holdout: start with the last ~20% of
+#      distinct dates and grow it (up to 40%) until the test set contains
+#      BOTH classes (ideally >= 5 of the minority) and a sane minimum size.
+#   2. If no such holdout exists, fall back to stratified-by-label k-fold
+#      over DATES (purged + embargoed) and report mean +/- std AUC.
+# AUC is always guarded: single-class folds are skipped and logged, never
+# emitted as NaN.
+
+
+def _safe_auc(y_true, preds) -> float | None:
+    """AUC that returns None (instead of raising / NaN) on single-class y."""
+    if len(np.unique(np.asarray(y_true))) < 2:
+        return None
+    return float(roc_auc_score(y_true, preds))
+
+
+def _robust_final_date_split(
+    df: pd.DataFrame,
+    label_col: str = "label",
+    embargo_days: int = 0,
+    min_test_frac: float = 0.2,
+    max_test_frac: float = 0.4,
+    min_test_samples: int = 30,
+    min_minority: int = 5,
+) -> tuple[pd.Series, pd.Series] | None:
+    """Date-based final holdout that GUARANTEES a multi-class test set.
+
+    Sizes the test window by ROW fraction but cuts only on DATE boundaries
+    (never splits a date — per-ticker date coverage can be very uneven, e.g.
+    SPY has 4x the history of other tickers). Starts at the latest cutoff
+    where the test set holds >= min_test_frac of rows, then expands earlier
+    (up to max_test_frac of rows) until it has >= min_minority samples of
+    each class (second pass relaxes to >= 1). Returns (train_mask, test_mask)
+    or None if even the largest allowed window is single-class (caller should
+    fall back to k-fold CV).
+    """
+    dates = sorted(df["date"].unique())
+    n_dates = len(dates)
+    n_rows = len(df)
+    if n_dates < 10:
+        return None
+
+    rows_per_date = df["date"].value_counts()
+    min_test_rows = max(min_test_samples, int(round(n_rows * min_test_frac)))
+    max_test_rows = int(round(n_rows * max_test_frac))
+
+    # Latest cutoff where the test window reaches min_test_rows
+    test_rows = 0
+    start_cut = None
+    for cut in range(n_dates - 1, 0, -1):
+        test_rows += int(rows_per_date.get(dates[cut], 0))
+        if test_rows >= min_test_rows:
+            start_cut = cut
+            break
+    if start_cut is None or test_rows > max_test_rows:
+        return None
+
+    for required_minority in (min_minority, 1):
+        for cut in range(start_cut, 0, -1):
+            cutoff = dates[cut]
+            test_mask = df["date"] >= cutoff
+            n_test = int(test_mask.sum())
+            if n_test > max_test_rows:
+                break  # expanding further only makes the test set bigger
+            y_te = df.loc[test_mask, label_col].values.astype(int)
+            counts = np.bincount(y_te, minlength=2)
+            if counts.min() >= required_minority:
+                train_mask = _apply_embargo(~test_mask, df, embargo_days)
+                print(f"  Final holdout: last {n_dates - cut}/{n_dates} distinct dates "
+                      f"(>= {cutoff}) | test n={n_test} "
+                      f"class_counts={counts.tolist()}")
+                return train_mask, test_mask
+    print("  No multi-class date holdout found (even at "
+          f"{max_test_frac:.0%} of rows) — will fall back to k-fold CV")
+    return None
+
+
+def _stratified_date_kfold_cv(
+    df: pd.DataFrame,
+    X: np.ndarray,
+    y: np.ndarray,
+    feature_cols: list,
+    params: dict,
+    label_col: str = "label",
+    n_splits: int = 5,
+    embargo_days: int = 1,
+    num_boost_round: int = 300,
+) -> list[float]:
+    """Fallback CV when no valid date holdout exists.
+
+    Folds are built over DATES (never rows): dates are sorted by their
+    positive-label rate and dealt round-robin into folds, so every fold gets
+    a representative label mix (stratified-by-label over dates). Train dates
+    within `embargo_days` positions of any test date are purged (embargo).
+    Single-class folds are skipped and logged — never NaN.
+    """
+    dates = sorted(df["date"].unique())
+    date_pos = {d: i for i, d in enumerate(dates)}
+    date_rates = df.groupby("date")[label_col].mean()
+    ordered = sorted(dates, key=lambda d: (date_rates[d], d))
+    folds: list[list] = [[] for _ in range(n_splits)]
+    for i, d in enumerate(ordered):
+        folds[i % n_splits].append(d)
+
+    print(f"  Stratified-by-label date k-fold (k={n_splits}, "
+          f"embargo_days={embargo_days}, purged):")
+    scores: list[float] = []
+    for k, test_dates in enumerate(folds):
+        test_set = set(test_dates)
+        banned = set()
+        for d in test_dates:
+            i = date_pos[d]
+            for off in range(-embargo_days, embargo_days + 1):
+                j = i + off
+                if 0 <= j < len(dates):
+                    banned.add(dates[j])
+        test_mask = df["date"].isin(test_set)
+        train_mask = ~df["date"].isin(banned | test_set)
+        if test_mask.sum() < 10 or train_mask.sum() < 50:
+            print(f"    Fold {k + 1}: SKIPPED (too few samples)")
+            continue
+        y_tr = y[train_mask.values]
+        y_te = y[test_mask.values]
+        if len(np.unique(y_tr)) < 2:
+            print(f"    Fold {k + 1}: SKIPPED (single-class train set)")
+            continue
+        if len(np.unique(y_te)) < 2:
+            print(f"    Fold {k + 1}: SKIPPED (single-class test set)")
+            continue
+
+        fold_params = dict(params)
+        fold_params["scale_pos_weight"] = float(
+            (y_tr == 0).sum() / max((y_tr == 1).sum(), 1)
+        )
+        dtrain = lgb.Dataset(X[train_mask.values], label=y_tr, feature_name=feature_cols)
+        dtest = lgb.Dataset(X[test_mask.values], label=y_te, reference=dtrain)
+        fold_model = lgb.train(
+            fold_params, dtrain, num_boost_round=num_boost_round,
+            valid_sets=[dtest],
+            callbacks=[lgb.early_stopping(50, verbose=False)],
+        )
+        preds = fold_model.predict(X[test_mask.values])
+        auc = _safe_auc(y_te, preds)
+        if auc is None:
+            print(f"    Fold {k + 1}: SKIPPED (AUC undefined)")
+            continue
+        print(f"    Fold {k + 1}: AUC={auc:.4f} (n_test={int(test_mask.sum())}, "
+              f"test_dates={len(test_dates)})")
+        scores.append(auc)
+
+    if scores:
+        print(f"  K-fold AUC: {np.mean(scores):.4f} +/- {np.std(scores):.4f} "
+              f"({len(scores)}/{n_splits} valid folds)")
+    return scores
+
+
+def _train_day_level_model(
+    df: pd.DataFrame,
+    feature_cols: list,
+    params: dict,
+    model_name: str,
+    label_col: str = "label",
+    embargo_days: int = 1,
+    num_boost_round: int = 300,
+):
+    """Train + robustly evaluate a small day-level binary classifier.
+
+    Runs the informational expanding walk-forward, then either a guaranteed
+    multi-class date holdout or (fallback) stratified date k-fold.
+    Returns (model, meta) or None if training is impossible.
+    """
+    X = df[feature_cols].values.astype(np.float32)
+    y = df[label_col].values.astype(int)
+
+    if len(np.unique(y)) < 2:
+        print(f"  {model_name}: label is single-class over the WHOLE dataset — "
+              "cannot train. Check the label definition.")
+        return None
+
+    # Informational expanding-window walk-forward by month
+    wf_scores = _walk_forward_validate(
+        df, X, y, feature_cols, params, is_regression=False,
+        embargo_days=embargo_days, num_boost_round=num_boost_round,
+    )
+
+    meta: dict = {
+        "features": feature_cols,
+        "split": "date_only_never_row",
+        "embargo_days": embargo_days,
+        "walk_forward_folds": len(wf_scores),
+        "walk_forward_auc_mean": float(np.mean(wf_scores)) if wf_scores else None,
+        "walk_forward_auc_std": float(np.std(wf_scores)) if wf_scores else None,
+    }
+
+    split = _robust_final_date_split(df, label_col=label_col, embargo_days=embargo_days)
+    if split is not None:
+        train_mask, test_mask = split
+        X_train, y_train = X[train_mask.values], y[train_mask.values]
+        X_test, y_test = X[test_mask.values], y[test_mask.values]
+        print(f"  Final split: train={len(X_train)} test={len(X_test)} (by date)")
+
+        fit_params = dict(params)
+        fit_params["scale_pos_weight"] = float(
+            (y_train == 0).sum() / max((y_train == 1).sum(), 1)
+        )
+        dtrain = lgb.Dataset(X_train, label=y_train, feature_name=feature_cols)
+        dtest = lgb.Dataset(X_test, label=y_test, reference=dtrain)
+        model = lgb.train(fit_params, dtrain, num_boost_round=num_boost_round,
+                          valid_sets=[dtest], callbacks=[lgb.log_evaluation(100)])
+
+        preds = model.predict(X_test)
+        auc = _safe_auc(y_test, preds)
+        if auc is None:  # cannot happen by construction, but never emit NaN
+            print("  WARNING: holdout unexpectedly single-class — "
+                  "falling back to k-fold CV")
+        else:
+            pred_labels = (preds > 0.5).astype(int)
+            meta.update({
+                "validation": "expanding_date_holdout",
+                "auc": auc,
+                "accuracy": float(accuracy_score(y_test, pred_labels)),
+                "precision": float(precision_score(y_test, pred_labels, zero_division=0)),
+                "recall": float(recall_score(y_test, pred_labels, zero_division=0)),
+                "n_train": len(X_train),
+                "n_test": len(X_test),
+            })
+            print(f"\n  {model_name}: AUC={auc:.3f} Acc={meta['accuracy']:.3f} "
+                  f"Prec={meta['precision']:.3f} Recall={meta['recall']:.3f}")
+            return model, meta
+
+    # Fallback: stratified-by-label k-fold over dates (purged, embargoed).
+    cv_scores = _stratified_date_kfold_cv(
+        df, X, y, feature_cols, params, label_col=label_col,
+        embargo_days=max(embargo_days, 1), num_boost_round=num_boost_round,
+    )
+    if not cv_scores:
+        print(f"  {model_name}: no valid CV folds — not saving a model.")
+        return None
+
+    # Final production model trains on ALL data (no holdout exists);
+    # honest metrics come from the k-fold CV.
+    fit_params = dict(params)
+    fit_params["scale_pos_weight"] = float((y == 0).sum() / max((y == 1).sum(), 1))
+    dtrain = lgb.Dataset(X, label=y, feature_name=feature_cols)
+    model = lgb.train(fit_params, dtrain, num_boost_round=num_boost_round)
+    meta.update({
+        "validation": "stratified_date_kfold",
+        "auc": float(np.mean(cv_scores)),
+        "auc_std": float(np.std(cv_scores)),
+        "cv_folds_valid": len(cv_scores),
+        "n_train": len(X),
+        "n_test": 0,
+    })
+    print(f"\n  {model_name}: CV AUC={meta['auc']:.3f} +/- {meta['auc_std']:.3f} "
+          f"(final model trained on all {len(X)} samples)")
+    return model, meta
 
 
 # ===========================================================================
@@ -903,14 +1177,257 @@ def _worker_exit_timing(item):
 
 
 # ===========================================================================
+# Shared: serve-time-safe day-level features (regime + ticker_selection)
+# ===========================================================================
+#
+# Both day-level models are served ~9:45 ET (morning-features design), so
+# every feature must be computable from data that exists by 9:45:
+#   - RTH bars 09:30-09:44 of the SAME day (completed before 9:45)
+#   - anything from PRIOR days (closes, ranges, volumes, realized vol)
+#   - UW greek_exposure for the day (OI-based; OI is fixed at the open)
+# stock_ohlc includes premarket bars from 04:00 — all intraday computations
+# below filter to RTH explicitly.
+# VIX is NOT in any local DB (checked thetadata_options.db + uw_historical.db
+# 2026-06-10) — skipped until a source is backfilled.
+# minutes-since-open is constant (=15) at the fixed 9:45 serve time for these
+# one-prediction-per-day models, so it is intentionally not a feature.
+
+RTH_START = "09:30"
+RTH_END = "16:00"
+EARLY_END = "09:45"  # day-level models serve at ~9:45 ET
+
+# Per-ticker serve-time-safe features produced by _load_daily_context().
+# Names match compute_regime_features() in options_owl/sourcing/ml_pipeline.py
+# where the semantic is identical, so the live serving path needs minimal
+# changes to feed the new model.
+_TICKER_CONTEXT_FEATURES = [
+    "morning_range_pct",   # 09:30-09:44 high-low range %
+    "morning_volume",      # 09:30-09:44 share volume
+    "morning_direction",   # 09:30 open -> 09:44 close return %
+    "morning_body_ratio",  # |close-open| / (high-low) of the 15m window
+    "morning_vol_15m",     # realized vol of 1-min returns, 09:30-09:44
+    "overnight_gap_pct",   # today's RTH open vs yesterday's RTH close
+    "prev_range_pct",      # yesterday's RTH range %
+    "prev_volume",         # yesterday's RTH volume
+    "prev_day_ret",        # yesterday's open->close return %
+    "prev_close_pos",      # where yesterday closed in its range (0..1)
+    "avg_3d_range",        # mean RTH range % of prior 3 days
+    "vol_5d",              # realized vol of prior 5 close-to-close returns
+    "range_trend",         # morning_range_pct / avg_3d_range - 1
+    "volume_vs_prev",      # morning volume extrapolated vs prior 5-day avg
+]
+
+# Cross-market context (SPY/QQQ early morning) — all from bars <= 09:44 of
+# the same day or prior days.
+_MARKET_CONTEXT_COLS = [
+    "morning_direction", "morning_range_pct", "morning_vol_15m",
+    "overnight_gap_pct", "prev_day_ret", "vol_5d",
+]
+
+# OI-based greek exposure from UW. OI is set at the open (prior day's
+# clearing), so the same-day greek_exposure row is known by 9:45. Falls back
+# to the most recent prior date; zeros if stale (> 5 days; UW coverage
+# currently ends 2026-05-21).
+_GEX_COLS = [
+    "call_gamma", "put_gamma", "net_gamma",
+    "call_delta", "put_delta", "net_delta",
+    "call_charm", "put_charm", "net_charm",
+    "call_vanna", "put_vanna", "net_vanna",
+]
+
+
+def _load_daily_context(conn, ticker: str) -> pd.DataFrame | None:
+    """Per-date daily context for a ticker from stock_ohlc (RTH bars only).
+
+    Returns a DataFrame indexed by date string containing:
+      - rth_range_pct / rth_close_pos: SAME-DAY label ingredients —
+        NEVER to be used as features (that's the day_range_pct leak).
+      - _TICKER_CONTEXT_FEATURES: all computable by 9:45 ET (early-morning
+        window uses only bars before 09:45; the rest are prior-day lags).
+    """
+    bars = pd.read_sql_query(
+        "SELECT substr(timestamp, 1, 10) AS d, substr(timestamp, 12, 5) AS tm, "
+        "open, high, low, close, volume FROM stock_ohlc "
+        "WHERE ticker=? ORDER BY timestamp",
+        conn, params=(ticker,),
+    )
+    if bars.empty:
+        return None
+    # stock_ohlc includes premarket (04:00+) — keep regular hours only
+    rth = bars[(bars["tm"] >= RTH_START) & (bars["tm"] <= RTH_END)]
+    if rth.empty:
+        return None
+
+    g = rth.groupby("d")
+    daily = pd.DataFrame({
+        "rth_open": g["open"].first(),
+        "rth_close": g["close"].last(),
+        "rth_high": g["high"].max(),
+        "rth_low": g["low"].min(),
+        "rth_volume": g["volume"].sum(),
+    })
+
+    # Early-morning window: bars completed before the 9:45 serve time
+    early_feats: dict[str, dict] = {}
+    for d, grp in rth[rth["tm"] < EARLY_END].groupby("d"):
+        closes = grp["close"].dropna().values
+        opens = grp["open"].dropna().values
+        highs = grp["high"].dropna().values
+        lows = grp["low"].dropna().values
+        row = {"morning_volume": float(grp["volume"].fillna(0).sum())}
+        if (len(closes) >= 5 and len(opens) > 0 and len(highs) > 0 and len(lows) > 0
+                and opens[0] > 0 and np.min(lows) > 0):
+            m_open = float(opens[0])
+            m_close = float(closes[-1])
+            m_high = float(np.max(highs))
+            m_low = float(np.min(lows))
+            row["morning_range_pct"] = (m_high - m_low) / m_low * 100
+            row["morning_direction"] = (m_close / m_open - 1) * 100
+            rng = m_high - m_low
+            row["morning_body_ratio"] = abs(m_close - m_open) / rng if rng > 0 else 0.0
+            if np.all(closes[:-1] > 0):
+                row["morning_vol_15m"] = float(
+                    np.std(np.diff(closes) / closes[:-1]) * 100
+                )
+            else:
+                row["morning_vol_15m"] = 0.0
+        early_feats[d] = row
+    daily = daily.join(pd.DataFrame.from_dict(early_feats, orient="index"), how="left")
+
+    # SAME-DAY label ingredients (never features)
+    rng_pct = (daily["rth_high"] - daily["rth_low"]) / daily["rth_low"] * 100
+    span = (daily["rth_high"] - daily["rth_low"]).replace(0, np.nan)
+    daily["rth_range_pct"] = rng_pct
+    daily["rth_close_pos"] = ((daily["rth_close"] - daily["rth_low"]) / span).fillna(0.5)
+
+    # Prior-day lag features (shift(1) = strictly past data at 9:45 today)
+    prev_close = daily["rth_close"].shift(1)
+    daily["overnight_gap_pct"] = (daily["rth_open"] / prev_close - 1) * 100
+    daily["prev_range_pct"] = rng_pct.shift(1)
+    daily["prev_volume"] = daily["rth_volume"].shift(1)
+    daily["prev_day_ret"] = ((daily["rth_close"] / daily["rth_open"] - 1) * 100).shift(1)
+    daily["prev_close_pos"] = daily["rth_close_pos"].shift(1)
+    daily["avg_3d_range"] = rng_pct.shift(1).rolling(3).mean()
+    daily["vol_5d"] = (daily["rth_close"].pct_change().rolling(5).std() * 100).shift(1)
+    daily["range_trend"] = (
+        daily["morning_range_pct"] / daily["avg_3d_range"].clip(lower=0.01) - 1
+    )
+    avg_prev_vol = daily["rth_volume"].shift(1).rolling(5).mean()
+    daily["volume_vs_prev"] = daily["morning_volume"] * 26 / avg_prev_vol.clip(lower=1)
+    return daily
+
+
+def _load_rth_bars_by_date(conn, ticker: str) -> dict:
+    """Grouped RTH 1-min bars {date: [bar,...]} for one ticker from stock_ohlc.
+
+    Feeds the SHARED feature module (regime_features) so the trainer builds the
+    morning/prior-day/market features with the exact same math as the live
+    serving path — zero train/serve skew. Premarket bars are dropped inside
+    rth_bars_by_date_from_rows.
+    """
+    bars = pd.read_sql_query(
+        "SELECT substr(timestamp, 1, 10) AS d, substr(timestamp, 12, 5) AS tm, "
+        "open, high, low, close, volume FROM stock_ohlc "
+        "WHERE ticker=? ORDER BY timestamp",
+        conn, params=(ticker,),
+    )
+    if bars.empty:
+        return {}
+    rows = bars.to_dict("records")
+    return rth_bars_by_date_from_rows(rows)
+
+
+def _load_market_bars(theta_conn) -> dict[str, dict]:
+    """SPY + QQQ grouped RTH bars for cross-market context (shared module)."""
+    return {
+        mkt: _load_rth_bars_by_date(theta_conn, mkt) for mkt in ("SPY", "QQQ")
+    }
+
+
+def _load_market_context(theta_conn) -> dict[str, pd.DataFrame]:
+    """SPY + QQQ daily context for cross-market features."""
+    out = {}
+    for mkt in ("SPY", "QQQ"):
+        ctx = _load_daily_context(theta_conn, mkt)
+        if ctx is not None:
+            out[mkt] = ctx
+    return out
+
+
+def _market_features_for_date(market_ctx: dict[str, pd.DataFrame], dt: str) -> dict:
+    """spy_*/qqq_* early-morning features for a date (zeros when missing)."""
+    f = {}
+    for mkt in ("SPY", "QQQ"):
+        prefix = f"{mkt.lower()}_"
+        ctx = market_ctx.get(mkt)
+        if ctx is not None and dt in ctx.index:
+            row = ctx.loc[dt]
+            for col in _MARKET_CONTEXT_COLS:
+                v = row.get(col)
+                f[prefix + col] = float(v) if v is not None and pd.notna(v) else 0.0
+        else:
+            for col in _MARKET_CONTEXT_COLS:
+                f[prefix + col] = 0.0
+    return f
+
+
+def _gex_features(uw_conn, ticker: str, dt: str, max_staleness_days: int = 5) -> dict:
+    """OI-based UW greek exposure for ticker/date (serve-time-safe: OI is
+    fixed at the open). Most recent date <= dt; zeros when missing/stale."""
+    f = {k: 0.0 for k in _GEX_COLS}
+    row = uw_conn.execute(
+        "SELECT date, call_gamma, put_gamma, call_delta, put_delta, "
+        "call_charm, put_charm, call_vanna, put_vanna "
+        "FROM greek_exposure WHERE ticker=? AND date<=? ORDER BY date DESC LIMIT 1",
+        (ticker, dt),
+    ).fetchone()
+    if not row:
+        return f
+    staleness = (
+        datetime.strptime(dt, "%Y-%m-%d") - datetime.strptime(row[0], "%Y-%m-%d")
+    ).days
+    if staleness > max_staleness_days:
+        return f
+    f["call_gamma"] = float(row[1] or 0)
+    f["put_gamma"] = float(row[2] or 0)
+    f["net_gamma"] = f["call_gamma"] - f["put_gamma"]
+    f["call_delta"] = float(row[3] or 0)
+    f["put_delta"] = float(row[4] or 0)
+    f["net_delta"] = f["call_delta"] - f["put_delta"]
+    f["call_charm"] = float(row[5] or 0)
+    f["put_charm"] = float(row[6] or 0)
+    f["net_charm"] = f["call_charm"] - f["put_charm"]
+    f["call_vanna"] = float(row[7] or 0)
+    f["put_vanna"] = float(row[8] or 0)
+    f["net_vanna"] = f["call_vanna"] - f["put_vanna"]
+    return f
+
+
+# LightGBM params sized for ~2k-sample day-level datasets
+_DAY_LEVEL_PARAMS = {
+    "objective": "binary", "metric": "auc", "verbosity": -1,
+    "learning_rate": 0.05, "num_leaves": 15, "min_child_samples": 30,
+    "feature_fraction": 0.8, "bagging_fraction": 0.8, "bagging_freq": 5,
+    "lambda_l2": 1.0,
+}
+
+
+# ===========================================================================
 # MODEL 3: Regime Classification — trending vs chop day
 # ===========================================================================
 
 def train_regime_model():
-    """Train regime classifier using daily stock OHLC + UW GEX data.
+    """Train regime classifier from RTH stock OHLC + UW GEX data.
 
-    Label: 1 = trending day (intraday range > 1.5% AND close near high/low),
-           0 = chop day (range < 1% OR close near middle of range)
+    Label: 1 = trending day (RTH range > 1.5% AND close near high/low),
+           0 = chop day. Computed from RTH bars only (premarket excluded).
+
+    Every feature is serve-time-safe at ~9:45 ET: early-morning RTH bars
+    (09:30-09:44), prior-day lags, SPY/QQQ cross-market context, and OI-based
+    greek exposure. The old full-day leak features (day_range_pct, day_volume)
+    remain dropped; the old same-day options_volume features (put_call_ratio,
+    net premiums, OI) were also full-day information AND the UW table only
+    has a single date of data, so they are dropped too.
     """
     print("\n" + "=" * 70)
     print("MODEL 3: Regime Classification (trending vs chop)")
@@ -919,123 +1436,59 @@ def train_regime_model():
     theta_conn = _connect_theta()
     uw_conn = _connect_uw()
 
+    # SHARED feature module: build features from grouped RTH bars (same math as
+    # live serving). _load_daily_context is kept ONLY to derive the LABEL
+    # (full-day RTH range/close-pos — same-day info that is never a feature).
+    market_ctx = _load_market_context(theta_conn)        # label/date frames
+    market_bars = _load_market_bars(theta_conn)          # shared-module inputs
+
     rows = []
     for ticker in TICKERS:
-        # Get daily OHLC from stock data (aggregate 1-min into daily)
-        daily = pd.read_sql_query(
-            """SELECT substr(timestamp, 1, 10) as date,
-                      MIN(open) as day_open,
-                      MAX(high) as day_high,
-                      MIN(low) as day_low,
-                      SUM(volume) as day_volume
-               FROM stock_ohlc WHERE ticker=?
-               GROUP BY substr(timestamp, 1, 10)
-               ORDER BY date""",
-            theta_conn, params=(ticker,),
-        )
-        if len(daily) < 20:
+        ctx = market_ctx.get(ticker)
+        if ctx is None:
+            ctx = _load_daily_context(theta_conn, ticker)
+        if ctx is None or len(ctx) < 20:
+            print(f"  {ticker}: skipped (no/insufficient stock data)")
             continue
 
-        # Get first and last close per day
-        for _, day_row in daily.iterrows():
-            dt = day_row["date"]
-            day_open = day_row["day_open"]
-            day_high = day_row["day_high"]
-            day_low = day_row["day_low"]
-            day_volume = day_row["day_volume"] or 0
+        by_date = (
+            market_bars.get(ticker)
+            if ticker in market_bars
+            else _load_rth_bars_by_date(theta_conn, ticker)
+        )
+        if not by_date:
+            print(f"  {ticker}: skipped (no RTH bars)")
+            continue
 
-            if not day_high or not day_low or day_high <= 0 or day_low <= 0:
+        n_ticker = 0
+        for dt, day in ctx.iterrows():
+            if (pd.isna(day["rth_high"]) or pd.isna(day["rth_low"])
+                    or day["rth_low"] <= 0 or pd.isna(day["rth_close"])):
+                continue
+            # Require a usable early-morning window (serving needs >= 5 bars)
+            if pd.isna(day.get("morning_direction")):
                 continue
 
-            # Get close (last bar of day)
-            close_row = theta_conn.execute(
-                "SELECT close FROM stock_ohlc WHERE ticker=? AND timestamp LIKE ? ORDER BY timestamp DESC LIMIT 1",
-                (ticker, f"{dt}%"),
-            ).fetchone()
-            if not close_row:
-                continue
-            day_close = close_row[0]
-            if not day_close or day_close <= 0:
-                continue
+            # Label from RTH-only range/close position
+            is_trending = (
+                day["rth_range_pct"] > 1.5
+                and (day["rth_close_pos"] < 0.2 or day["rth_close_pos"] > 0.8)
+            )
 
-            # Get open (first bar)
-            open_row = theta_conn.execute(
-                "SELECT open FROM stock_ohlc WHERE ticker=? AND timestamp LIKE ? ORDER BY timestamp ASC LIMIT 1",
-                (ticker, f"{dt}%"),
-            ).fetchone()
-            if open_row and open_row[0] and open_row[0] > 0:
-                day_open = open_row[0]
-            _ = day_open  # kept for clarity; label uses range/close position only
-
-            day_range_pct = (day_high - day_low) / day_low * 100
-            close_position = (day_close - day_low) / (day_high - day_low) if day_high > day_low else 0.5
-
-            # Label: trending if range > 1.5% AND close is near extreme (< 0.2 or > 0.8)
-            is_trending = day_range_pct > 1.5 and (close_position < 0.2 or close_position > 0.8)
-
-            f = {
-                "ticker_idx": TICKERS.index(ticker),
-                "day_range_pct": day_range_pct,
-            }
-
-            # GEX data for this ticker/date
-            gex_row = uw_conn.execute(
-                "SELECT call_gamma, put_gamma, call_delta, put_delta FROM greek_exposure WHERE ticker=? AND date=?",
-                (ticker, dt),
-            ).fetchone()
-            if gex_row:
-                f["call_gamma"] = float(gex_row[0] or 0)
-                f["put_gamma"] = float(gex_row[1] or 0)
-                f["net_gamma"] = f["call_gamma"] - f["put_gamma"]
-                f["call_delta"] = float(gex_row[2] or 0)
-                f["put_delta"] = float(gex_row[3] or 0)
-                f["net_delta"] = f["call_delta"] - f["put_delta"]
-            else:
-                for k in ["call_gamma", "put_gamma", "net_gamma", "call_delta", "put_delta", "net_delta"]:
-                    f[k] = 0
-
-            # Options volume data
-            vol_row = uw_conn.execute(
-                "SELECT call_volume, put_volume, net_call_premium, net_put_premium, "
-                "put_open_interest, call_open_interest FROM options_volume WHERE ticker=? AND date=?",
-                (ticker, dt),
-            ).fetchone()
-            if vol_row:
-                call_vol = vol_row[0] or 0
-                put_vol = vol_row[1] or 0
-                f["put_call_ratio"] = float(put_vol / max(call_vol, 1))
-                f["net_call_premium"] = float(vol_row[2] or 0)
-                f["net_put_premium"] = float(vol_row[3] or 0)
-                f["put_oi"] = float(vol_row[4] or 0)
-                f["call_oi"] = float(vol_row[5] or 0)
-            else:
-                for k in ["put_call_ratio", "net_call_premium", "net_put_premium", "put_oi", "call_oi"]:
-                    f[k] = 0
-
-            # Previous day's action (lag features)
-            prev_rows = daily[daily["date"] < dt].tail(5)
-            if len(prev_rows) > 0:
-                prev = prev_rows.iloc[-1]
-                f["prev_range_pct"] = float((prev["day_high"] - prev["day_low"]) / prev["day_low"] * 100) if prev["day_low"] > 0 else 0
-                f["prev_volume"] = float(prev["day_volume"] or 0)
-                if len(prev_rows) >= 3:
-                    recent_ranges = [(r["day_high"] - r["day_low"]) / r["day_low"] * 100
-                                     for _, r in prev_rows.tail(3).iterrows() if r["day_low"] > 0]
-                    f["avg_3d_range"] = float(np.mean(recent_ranges)) if recent_ranges else 0
-                else:
-                    f["avg_3d_range"] = 0
-            else:
-                f["prev_range_pct"] = 0
-                f["prev_volume"] = 0
-                f["avg_3d_range"] = 0
-
-            f["day_volume"] = float(day_volume)
-            f["day_of_week"] = datetime.strptime(dt, "%Y-%m-%d").weekday()
+            raw_inputs = load_training_inputs(
+                ticker, dt,
+                by_date=by_date,
+                market_by_date=market_bars,
+                gex_row=_gex_features(uw_conn, ticker, dt),
+            )
+            f = compute_regime_feature_vector(raw_inputs)
 
             f["label"] = 1 if is_trending else 0
             f["ticker"] = ticker
             f["date"] = dt
             rows.append(f)
+            n_ticker += 1
+        print(f"  {ticker}: {n_ticker} days")
 
     theta_conn.close()
     uw_conn.close()
@@ -1045,61 +1498,31 @@ def train_regime_model():
         return
 
     df = pd.DataFrame(rows)
-    print(f"  Collected {len(df)} day-ticker samples ({df['label'].sum()} trending, {(~df['label'].astype(bool)).sum()} chop)")
+    print(f"  Collected {len(df)} day-ticker samples "
+          f"({df['label'].sum()} trending, {(~df['label'].astype(bool)).sum()} chop)")
 
-    meta_cols = ["ticker", "date"]
-    # TARGET LEAKAGE FIX: the label is derived from day_range_pct (trending =
-    # day_range_pct > 1.5 AND close near extreme), and day_volume is full-day
-    # information not knowable at prediction time (the model is served at 9:45
-    # AM). Including them lets the model read the answer off the features.
-    leak_cols = ["day_range_pct", "day_volume"]
-    feature_cols = [c for c in df.columns if c not in meta_cols + ["label"] + leak_cols]
+    # Feature order is the SHARED module's canonical REGIME_FEATURE_ORDER, so
+    # the saved meta["features"] matches compute_regime_features() exactly.
+    leak_cols = ["day_range_pct", "day_volume", "rth_range_pct", "rth_close_pos"]
+    feature_cols = list(REGIME_FEATURE_ORDER)
+    assert not set(leak_cols) & set(feature_cols), "leak features must stay dropped"
 
-    X = df[feature_cols].values.astype(np.float32)
-    y = df["label"].values
+    result = _train_day_level_model(
+        df, feature_cols, dict(_DAY_LEVEL_PARAMS), "Regime Model",
+        embargo_days=1, num_boost_round=300,
+    )
+    if result is None:
+        return
+    model, meta = result
 
-    params = {
-        "objective": "binary", "metric": "auc", "verbosity": -1,
-        "learning_rate": 0.05, "num_leaves": 31, "min_child_samples": 20,
-        "feature_fraction": 0.8, "bagging_fraction": 0.8, "bagging_freq": 5,
-    }
-
-    # Date-based expanding-window walk-forward (never split by row)
-    _walk_forward_validate(df, X, y, feature_cols, params, is_regression=False,
-                           num_boost_round=300)
-
-    train_mask, test_mask = _final_date_split(df)
-    X_train, y_train = X[train_mask.values], y[train_mask.values]
-    X_test, y_test = X[test_mask.values], y[test_mask.values]
-    print(f"\n  Final split: train={len(X_train)} test={len(X_test)} (by date)")
-
-    dtrain = lgb.Dataset(X_train, label=y_train, feature_name=feature_cols)
-    dtest = lgb.Dataset(X_test, label=y_test, reference=dtrain)
-
-    model = lgb.train(params, dtrain, num_boost_round=300,
-                       valid_sets=[dtest], callbacks=[lgb.log_evaluation(50)])
-
-    preds = model.predict(X_test)
-    auc = roc_auc_score(y_test, preds)
-    pred_labels = (preds > 0.5).astype(int)
-    acc = accuracy_score(y_test, pred_labels)
-    prec = precision_score(y_test, pred_labels, zero_division=0)
-    rec = recall_score(y_test, pred_labels, zero_division=0)
-
-    print(f"\n  Regime Model: AUC={auc:.3f} Acc={acc:.3f} Prec={prec:.3f} Recall={rec:.3f}")
-
-    # Feature importance
     imp = sorted(zip(feature_cols, model.feature_importance("gain")), key=lambda x: -x[1])
     print("  Top features:")
     for name, gain in imp[:10]:
         print(f"    {name}: {gain:.0f}")
 
-    # Save
     model_path = str(MODEL_DIR / "regime_classifier.txt")
     model.save_model(model_path)
-    meta = {"features": feature_cols, "auc": auc, "accuracy": acc,
-            "precision": prec, "recall": rec, "n_train": len(X_train), "n_test": len(X_test),
-            "split": "date_walk_forward", "dropped_leak_features": leak_cols}
+    meta["dropped_leak_features"] = leak_cols + ["options_volume_same_day_features"]
     with open(str(MODEL_DIR / "regime_classifier_meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
     print(f"  Saved to {model_path}")
@@ -1109,11 +1532,92 @@ def train_regime_model():
 # MODEL 4: Ticker Selection — which tickers to focus on today
 # ===========================================================================
 
-def train_ticker_selection_model():
-    """Train model to predict which tickers will be profitable today.
+def _ticker_day_opportunity(theta_conn, ticker: str, dt: str) -> dict | None:
+    """Realistic tradable-opportunity label for one ticker-day.
 
-    For each ticker-day: features are pre-market/early data, label is whether
-    the ticker had net positive P&L that day (from FSM backtests).
+    Old label (best entry in first 60min -> best full-day exit > 30%) was
+    ~99% positive for 0DTE ATM options — degenerate, which is why the
+    last-month holdout was single-class and AUC was NaN.
+
+    New label: from the first ATM bar at/after 09:45 ET (the model's serve
+    time), did the premium peak >= the per-ticker min_move (TICKER_MOVE_PCT)
+    within the next 120 minutes (MOVE_WINDOW_MIN), on EITHER the CALL or PUT
+    side? ~78% positive on the current DB. Also returns serve-time-safe
+    CALL-side features (9:30 open premium/IV, 9:30->9:45 premium change).
+    """
+    min_move = TICKER_MOVE_PCT.get(ticker, MIN_MOVE_PCT)
+    best_gain = None
+    feats: dict = {}
+
+    for right in ("CALL", "PUT"):
+        strike = find_atm_strike(theta_conn, ticker, dt, right)
+        if strike is None:
+            continue
+
+        opt = pd.read_sql_query(
+            "SELECT substr(timestamp, 12, 5) AS tm, close FROM option_ohlc "
+            "WHERE ticker=? AND timestamp LIKE ? AND right=? AND strike=? "
+            "ORDER BY timestamp",
+            theta_conn, params=(ticker, f"{dt}%", right, strike),
+        )
+        opt = opt[(opt["close"].notna()) & (opt["close"] > 0)]
+        if len(opt) < 30:
+            continue
+
+        # Entry = first valid bar at/after the 9:45 serve time
+        entry_rows = opt[opt["tm"] >= EARLY_END]
+        if entry_rows.empty:
+            continue
+        entry_tm = entry_rows.iloc[0]["tm"]
+        entry_price = float(entry_rows.iloc[0]["close"])
+        if entry_price <= 0:
+            continue
+
+        # Peak within the next MOVE_WINDOW_MIN minutes
+        eh, em = int(entry_tm[:2]), int(entry_tm[3:])
+        end_min = eh * 60 + em + MOVE_WINDOW_MIN
+        end_tm = f"{end_min // 60:02d}:{end_min % 60:02d}"
+        window = entry_rows.iloc[1:]
+        window = window[window["tm"] <= end_tm]
+        if len(window) < 5:
+            continue
+        gain = (float(window["close"].max()) / entry_price - 1) * 100
+        best_gain = gain if best_gain is None else max(best_gain, gain)
+
+        if right == "CALL":
+            # Serve-time-safe CALL-side features (bars <= 9:45 only)
+            feats["opening_premium"] = float(opt.iloc[0]["close"])
+            feats["call_prem_change_15m"] = (
+                (entry_price / feats["opening_premium"] - 1) * 100
+                if feats["opening_premium"] > 0 else 0.0
+            )
+            greeks_first = theta_conn.execute(
+                "SELECT implied_vol, delta FROM option_greeks "
+                "WHERE ticker=? AND timestamp LIKE ? AND right='CALL' AND strike=? "
+                "ORDER BY timestamp LIMIT 1",
+                (ticker, f"{dt}%", strike),
+            ).fetchone()
+            feats["opening_iv"] = float(greeks_first[0] or 0) if greeks_first else 0.0
+            feats["opening_delta"] = (
+                float(abs(greeks_first[1] or 0)) if greeks_first else 0.0
+            )
+
+    if best_gain is None:
+        return None
+    for k in ("opening_premium", "call_prem_change_15m", "opening_iv", "opening_delta"):
+        feats.setdefault(k, 0.0)
+    feats["label"] = 1 if best_gain >= min_move else 0
+    feats["max_pnl_pct"] = best_gain
+    return feats
+
+
+def train_ticker_selection_model():
+    """Train model to predict which tickers will be tradable today.
+
+    For each ticker-day: features are early-morning (<= 9:45 ET) data only;
+    label is whether a realistic 9:45 ATM entry (CALL or PUT) had a
+    min_move-sized peak within the next 120 minutes (see
+    _ticker_day_opportunity).
     """
     print("\n" + "=" * 70)
     print("MODEL 4: Ticker Selection (which tickers to trade today)")
@@ -1122,11 +1626,15 @@ def train_ticker_selection_model():
     theta_conn = _connect_theta()
     uw_conn = _connect_uw()
 
-    # First, compute daily P&L per ticker from option data
-    # Use ATM option intraday to compute "would this have been profitable?"
+    market_ctx = _load_market_context(theta_conn)
+
     rows = []
     for ticker in TICKERS:
         print(f"  Processing {ticker}...", flush=True)
+
+        ctx = market_ctx.get(ticker)
+        if ctx is None:
+            ctx = _load_daily_context(theta_conn, ticker)
 
         dates = [r[0] for r in theta_conn.execute(
             "SELECT DISTINCT substr(timestamp, 1, 10) FROM option_ohlc WHERE ticker=? ORDER BY 1",
@@ -1134,108 +1642,37 @@ def train_ticker_selection_model():
         ).fetchall()]
 
         for dt in dates:
-            # Quick daily P&L estimate: ATM call from first bar to best exit
-            strike = find_atm_strike(theta_conn, ticker, dt, "CALL")
-            if strike is None:
+            opp = _ticker_day_opportunity(theta_conn, ticker, dt)
+            if opp is None:
                 continue
 
-            day_ohlc = pd.read_sql_query(
-                "SELECT close FROM option_ohlc WHERE ticker=? AND timestamp LIKE ? AND right='CALL' AND strike=? ORDER BY timestamp",
-                theta_conn, params=(ticker, f"{dt}%", strike),
-            )
-            if len(day_ohlc) < 20:
-                continue
+            f = {
+                "ticker_idx": TICKERS.index(ticker),
+                "day_of_week": datetime.strptime(dt, "%Y-%m-%d").weekday(),
+            }
 
-            closes = day_ohlc["close"].dropna().values
-            if len(closes) < 20 or closes[0] <= 0:
-                continue
-
-            # Simple metric: max gain achievable from any 9:30-10:30 entry
-            # (killzone entries)
-            early_entries = closes[:min(60, len(closes))]
-            best_entry = np.min(early_entries)
-            best_exit = np.max(closes)
-            if best_entry <= 0:
-                continue
-            max_pnl_pct = (best_exit / best_entry - 1) * 100
-
-            # Label: profitable if best achievable gain > 30%
-            is_profitable = max_pnl_pct > 30
-
-            # Features (pre-market / early morning)
-            f = {"ticker_idx": TICKERS.index(ticker)}
-
-            # GEX
-            gex = uw_conn.execute(
-                "SELECT call_gamma, put_gamma, call_delta, put_delta FROM greek_exposure WHERE ticker=? AND date=?",
-                (ticker, dt),
-            ).fetchone()
-            if gex:
-                f["call_gamma"] = float(gex[0] or 0)
-                f["put_gamma"] = float(gex[1] or 0)
-                f["net_gamma"] = f["call_gamma"] - f["put_gamma"]
-                f["net_delta"] = float((gex[2] or 0) - (gex[3] or 0))
+            # Per-ticker early-morning + prior-day context (RTH only —
+            # the old version's "early" features used premarket bars)
+            if ctx is not None and dt in ctx.index:
+                day = ctx.loc[dt]
+                for col in _TICKER_CONTEXT_FEATURES:
+                    v = day.get(col)
+                    f[col] = float(v) if v is not None and pd.notna(v) else 0.0
             else:
-                f["call_gamma"] = 0
-                f["put_gamma"] = 0
-                f["net_gamma"] = 0
-                f["net_delta"] = 0
+                for col in _TICKER_CONTEXT_FEATURES:
+                    f[col] = 0.0
 
-            # Options volume
-            vol = uw_conn.execute(
-                "SELECT call_volume, put_volume, net_call_premium, net_put_premium FROM options_volume WHERE ticker=? AND date=?",
-                (ticker, dt),
-            ).fetchone()
-            if vol:
-                f["put_call_ratio"] = float((vol[1] or 0) / max(vol[0] or 1, 1))
-                f["net_premium_flow"] = float((vol[2] or 0) - (vol[3] or 0))
-            else:
-                f["put_call_ratio"] = 0
-                f["net_premium_flow"] = 0
+            # OI-based greek exposure (known at open). The old same-day
+            # options_volume features (put_call_ratio, net_premium_flow)
+            # were full-day info AND the table only has one date — dropped.
+            f.update(_gex_features(uw_conn, ticker, dt))
 
-            # Stock data: previous day and early today
-            stock = pd.read_sql_query(
-                "SELECT open, high, low, close, volume FROM stock_ohlc WHERE ticker=? AND timestamp LIKE ? ORDER BY timestamp LIMIT 30",
-                theta_conn, params=(ticker, f"{dt}%"),
-            )
-            if len(stock) > 5:
-                s = stock["close"].dropna().values
-                if len(s) > 5 and s[0] > 0:
-                    f["early_momentum"] = float((s[min(5, len(s)-1)] / s[0] - 1) * 100)
-                    f["early_volatility"] = float(np.std(np.diff(s[:min(10, len(s))]) / s[:min(9, len(s)-1)]) * 100) if all(s[:min(9, len(s)-1)] > 0) else 0
-                else:
-                    f["early_momentum"] = 0
-                    f["early_volatility"] = 0
-                if "volume" in stock.columns:
-                    f["early_volume"] = float(stock["volume"].iloc[:5].sum() or 0)
-                else:
-                    f["early_volume"] = 0
-            else:
-                f["early_momentum"] = 0
-                f["early_volatility"] = 0
-                f["early_volume"] = 0
+            # SPY/QQQ early-morning market context
+            f.update(_market_features_for_date(market_ctx, dt))
 
-            # Opening premium and IV
-            greeks_first = theta_conn.execute(
-                "SELECT implied_vol, delta FROM option_greeks "
-                "WHERE ticker=? AND timestamp LIKE ? AND right='CALL' AND strike=? "
-                "ORDER BY timestamp LIMIT 1",
-                (ticker, f"{dt}%", strike),
-            ).fetchone()
-            if greeks_first:
-                f["opening_iv"] = float(greeks_first[0] or 0)
-                f["opening_delta"] = float(abs(greeks_first[1] or 0))
-            else:
-                f["opening_iv"] = 0
-                f["opening_delta"] = 0
-
-            f["opening_premium"] = float(closes[0])
-            f["day_of_week"] = datetime.strptime(dt, "%Y-%m-%d").weekday()
-
-            f["label"] = 1 if is_profitable else 0
+            f.update(opp)
             f["ticker"] = ticker
             f["date"] = dt
-            f["max_pnl_pct"] = max_pnl_pct
             rows.append(f)
 
     theta_conn.close()
@@ -1246,41 +1683,19 @@ def train_ticker_selection_model():
         return
 
     df = pd.DataFrame(rows)
-    print(f"  Collected {len(df)} ticker-day samples ({df['label'].sum()} profitable, {(~df['label'].astype(bool)).sum()} unprofitable)")
+    print(f"  Collected {len(df)} ticker-day samples "
+          f"({df['label'].sum()} tradable, {(~df['label'].astype(bool)).sum()} not)")
 
     meta_cols = ["ticker", "date", "max_pnl_pct"]
     feature_cols = [c for c in df.columns if c not in meta_cols + ["label"]]
 
-    X = df[feature_cols].values.astype(np.float32)
-    y = df["label"].values
-
-    params = {
-        "objective": "binary", "metric": "auc", "verbosity": -1,
-        "learning_rate": 0.05, "num_leaves": 31, "min_child_samples": 20,
-        "feature_fraction": 0.8, "bagging_fraction": 0.8, "bagging_freq": 5,
-    }
-
-    # Date-based expanding-window walk-forward (never split by row)
-    _walk_forward_validate(df, X, y, feature_cols, params, is_regression=False,
-                           num_boost_round=300)
-
-    train_mask, test_mask = _final_date_split(df)
-    X_train, y_train = X[train_mask.values], y[train_mask.values]
-    X_test, y_test = X[test_mask.values], y[test_mask.values]
-    print(f"\n  Final split: train={len(X_train)} test={len(X_test)} (by date)")
-
-    dtrain = lgb.Dataset(X_train, label=y_train, feature_name=feature_cols)
-    dtest = lgb.Dataset(X_test, label=y_test, reference=dtrain)
-
-    model = lgb.train(params, dtrain, num_boost_round=300,
-                       valid_sets=[dtest], callbacks=[lgb.log_evaluation(50)])
-
-    preds = model.predict(X_test)
-    auc = roc_auc_score(y_test, preds)
-    pred_labels = (preds > 0.5).astype(int)
-    acc = accuracy_score(y_test, pred_labels)
-
-    print(f"\n  Ticker Selection: AUC={auc:.3f} Acc={acc:.3f}")
+    result = _train_day_level_model(
+        df, feature_cols, dict(_DAY_LEVEL_PARAMS), "Ticker Selection",
+        embargo_days=1, num_boost_round=300,
+    )
+    if result is None:
+        return
+    model, meta = result
 
     imp = sorted(zip(feature_cols, model.feature_importance("gain")), key=lambda x: -x[1])
     print("  Top features:")
@@ -1289,8 +1704,10 @@ def train_ticker_selection_model():
 
     model_path = str(MODEL_DIR / "ticker_selection.txt")
     model.save_model(model_path)
-    meta = {"features": feature_cols, "auc": auc, "accuracy": acc,
-            "n_train": len(X_train), "n_test": len(X_test)}
+    meta["label"] = (
+        "peak >= per-ticker min_move within 120min of a 9:45 ATM entry "
+        "(CALL or PUT)"
+    )
     with open(str(MODEL_DIR / "ticker_selection_meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
     print(f"  Saved to {model_path}")
@@ -1375,11 +1792,30 @@ def _worker_stop_calibrate(item):
 # MODEL 6: Signal Quality — predict magnitude of move (regression)
 # ===========================================================================
 
-def _worker_signal_quality(item):
-    """Predict the peak gain % achievable from each entry point.
+# Quality threshold: an entry is "high quality" if its premium peaks at least
+# this much within the forward window. 50% is a meaningful 0DTE scalp move and
+# yields a usable, non-degenerate positive rate (vs the old regression target
+# whose corr collapsed 0.52 -> 0.068 once leakage was removed).
+SIGNAL_QUALITY_THRESHOLD_PCT = 50.0
 
-    Label: peak_gain_pct (regression — continuous value, not binary)
-    Features: same pre-entry features as entry model
+
+def _worker_signal_quality(item):
+    """Classify whether an ATM entry is HIGH QUALITY (binary, serve-time-safe).
+
+    REWORK (2026-06-10): the old target was a regression on peak_gain_pct that
+    was a leakage artifact (corr 0.52 -> 0.068 once the forward leak was
+    removed) and uninformative (MAE 158). It is replaced — same medicine as
+    regime/ticker_selection — with a binary classification:
+
+      Label  : 1 if premium peaks >= SIGNAL_QUALITY_THRESHOLD_PCT within the
+               next MOVE_WINDOW_MIN minutes, else 0  (forward window -> needs
+               the 1-day embargo, which train_model_with_pool applies).
+      Features: compute_pre_entry_features — STRICTLY-PAST trailing windows
+               (premium/volume/greeks/underlying up to idx-1). No forward bars,
+               no full-day aggregates. Serve-time-safe at the entry minute.
+
+    Entries are sampled only at/after 30 minutes since the open so the trailing
+    feature windows are fully populated (mirrors the live scanner's warm-up).
     """
     ticker = item["ticker"]
     dt = item["date"]
@@ -1401,7 +1837,7 @@ def _worker_signal_quality(item):
         if not entry_price or entry_price <= 0 or np.isnan(entry_price):
             continue
 
-        # Peak gain in forward window
+        # Forward peak gain over the next MOVE_WINDOW_MIN minutes (label only).
         future = closes[entry_idx:min(entry_idx + MOVE_WINDOW_MIN, n)]
         if len(future) < 5:
             continue
@@ -1410,17 +1846,17 @@ def _worker_signal_quality(item):
             continue
         peak_gain_pct = (peak / entry_price - 1) * 100
 
-        # Min gain (worst drawdown)
-        trough = np.nanmin(future)
-        min_gain_pct = (trough / entry_price - 1) * 100 if trough > 0 else -100
-
         features = compute_pre_entry_features(ohlc, quotes, greeks, stock, entry_idx)
         if not features:
             continue
 
+        # Warm-up gate: require a fully-populated trailing window (matches live).
+        if features.get("minutes_since_open", 0) < 30:
+            continue
+
         features["is_call"] = 1 if item["right"] == "CALL" else 0
-        features["peak_gain_pct"] = peak_gain_pct
-        features["max_drawdown_pct"] = min_gain_pct
+        features["label"] = 1 if peak_gain_pct >= SIGNAL_QUALITY_THRESHOLD_PCT else 0
+        features["peak_gain_pct"] = peak_gain_pct  # meta only (not a feature)
         features["ticker"] = ticker
         features["date"] = dt
         rows.append(features)
@@ -1434,8 +1870,14 @@ def _worker_signal_quality(item):
 
 def train_model_with_pool(model_name, worker_fn, tickers, label_col="label",
                           is_regression=False, extra_meta_cols=None,
-                          embargo_days=0):
+                          embargo_days=0, robust_split=False, model_meta=None):
     """Generic training pipeline: preload data → parallel workers → train LightGBM.
+
+    When ``robust_split`` is True the assembled (binary) dataset is routed
+    through _train_day_level_model, which GUARANTEES a multi-class date holdout
+    (or falls back to stratified date k-fold) and never emits NaN AUC — the same
+    robust validation used by regime/ticker_selection. ``model_meta`` extra keys
+    are merged into the saved meta JSON.
 
     Splits by DATE (expanding-window walk-forward + last-month holdout), never
     by row. Set embargo_days=1 for models whose labels look forward in time.
@@ -1476,6 +1918,36 @@ def train_model_with_pool(model_name, worker_fn, tickers, label_col="label",
         pos = df[label_col].sum()
         neg = len(df) - pos
         print(f"  Positive: {pos} ({pos/len(df)*100:.1f}%) | Negative: {neg} ({neg/len(df)*100:.1f}%)")
+
+    # Robust path: guaranteed multi-class date holdout (or stratified k-fold),
+    # no NaN AUC. Used by the reworked signal_quality model.
+    if robust_split and not is_regression:
+        params = {
+            "objective": "binary", "metric": "auc", "verbosity": -1,
+            "learning_rate": 0.05, "num_leaves": 31, "min_child_samples": 20,
+            "feature_fraction": 0.8, "bagging_fraction": 0.8, "bagging_freq": 5,
+            "lambda_l2": 1.0,
+        }
+        result = _train_day_level_model(
+            df, feature_cols, params, model_name, label_col=label_col,
+            embargo_days=embargo_days, num_boost_round=500,
+        )
+        if result is None:
+            print(f"  {model_name}: not saved (no valid validation).")
+            return None
+        model, meta = result
+        if model_meta:
+            meta.update(model_meta)
+        imp = sorted(zip(feature_cols, model.feature_importance("gain")), key=lambda x: -x[1])
+        print("  Top features:")
+        for name, gain in imp[:10]:
+            print(f"    {name}: {gain:.0f}")
+        safe_name = model_name.replace(" ", "_").lower()
+        model.save_model(str(MODEL_DIR / f"{safe_name}.txt"))
+        with open(str(MODEL_DIR / f"{safe_name}_meta.json"), "w") as mf:
+            json.dump(meta, mf, indent=2)
+        print(f"  Saved to {MODEL_DIR / f'{safe_name}.txt'}")
+        return model
 
     X = df[feature_cols].values.astype(np.float32)
     y = df[label_col].values.astype(np.float32)
@@ -1710,14 +2182,37 @@ def main():
     if model in ("all", "ticker_select"):
         train_ticker_selection_model()
 
-    if model in ("all", "stop_calibrate"):
+    # stop_calibration is recorded-only at serve time (ml_pipeline computes stop_pct → audit log
+    # ONLY; never applied to the FSM config). Under V7 wide-trail exits the graduated_stop gate
+    # never binds before the trails fire, so calibrating it changes nothing (verified byte-identical
+    # in the 2026-06-13 stop_cal test). DROPPED from "all" retrains by default. The fixed
+    # graduated_stop backstop (per-ticker config) is untouched and still the catastrophic-loss net.
+    _train_stop = model == "stop_calibrate" or (
+        model == "all" and os.getenv("RETRAIN_INCLUDE_STOP_CALIBRATION", "0") == "1")
+    if _train_stop:
         train_stop_calibration_model(tickers)
 
-    if model in ("all", "signal_quality"):
+    # signal_quality is recorded-only (it gates nothing in V7 OR the gs baseline), so it's
+    # DROPPED from "all" retrains by default to save compute. Set RETRAIN_INCLUDE_SIGNAL_QUALITY=1
+    # to re-include, or train explicitly with --model signal_quality.
+    _train_sq = model == "signal_quality" or (
+        model == "all" and os.getenv("RETRAIN_INCLUDE_SIGNAL_QUALITY", "0") == "1")
+    if _train_sq:
+        # Reworked: binary "high-quality entry" classifier (was a leak-inflated
+        # regression). Serve-time-safe pre-entry features + robust date split.
         train_model_with_pool(
             "signal_quality", _worker_signal_quality, tickers,
-            label_col="peak_gain_pct", is_regression=True,
-            extra_meta_cols=["max_drawdown_pct"], embargo_days=1,
+            label_col="label", is_regression=False,
+            extra_meta_cols=["peak_gain_pct"], embargo_days=1,
+            robust_split=True,
+            model_meta={
+                "label": (
+                    f"premium peaks >= {SIGNAL_QUALITY_THRESHOLD_PCT:.0f}% within "
+                    f"{MOVE_WINDOW_MIN}min of an entry (binary); features are "
+                    "strictly-past pre-entry trailing windows"
+                ),
+                "quality_threshold_pct": SIGNAL_QUALITY_THRESHOLD_PCT,
+            },
         )
 
     elapsed = time.time() - t_start

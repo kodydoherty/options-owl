@@ -13,9 +13,6 @@ Key findings (backtested 2026-05-21, 226 trades over 60 days):
 
 from __future__ import annotations
 
-import pytest
-import numpy as np
-from unittest.mock import patch
 
 from options_owl.risk.vinny_strategy import (
     score_to_contracts,
@@ -44,7 +41,7 @@ class TestMLConfidenceToMult:
         mult, _ = _ml_confidence_to_mult(0.50)
         assert mult == 0.0
 
-        mult, _ = _ml_confidence_to_mult(0.69)
+        mult, _ = _ml_confidence_to_mult(0.60)
         assert mult == 0.0
 
     def test_sweet_spot_gets_full_allocation(self):
@@ -154,9 +151,9 @@ class TestScoreToContractsWithMLConfidence:
         assert result == 0
 
     def test_score_below_floor_still_rejects(self):
-        """Score < 78 is rejected regardless of ML confidence."""
+        """Score < 62 is rejected regardless of ML confidence."""
         result = score_to_contracts(
-            77, cost_per_contract=100, balance=10000, ml_confidence=0.75,
+            61, cost_per_contract=100, balance=10000, ml_confidence=0.75,
         )
         assert result == 0
 
@@ -202,10 +199,10 @@ class TestConfidenceTierOrdering:
             assert 0 < mult <= 1.0
 
     def test_min_confidence_is_70pct(self):
-        assert _MIN_ML_CONFIDENCE == 0.70
+        assert _MIN_ML_CONFIDENCE == 0.62
 
-    def test_score_floor_is_78(self):
-        assert _SCORE_FLOOR == 78
+    def test_score_floor_is_75(self):
+        assert _SCORE_FLOOR == 62
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +437,7 @@ class TestSourceCodeSafety:
 
     def test_below_min_always_rejected(self):
         """Any confidence below _MIN_ML_CONFIDENCE must return 0."""
-        for conf in [0.0, 0.1, 0.3, 0.5, 0.69]:
+        for conf in [0.0, 0.1, 0.3, 0.5, 0.60]:
             mult, _ = _ml_confidence_to_mult(conf)
             assert mult == 0.0, f"Confidence {conf} should be rejected (mult=0)"
 

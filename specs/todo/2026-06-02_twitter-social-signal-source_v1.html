@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Twitter/Social Media Signal Source for Options Trading</title>
+    <style>
+        :root {
+            --primary: #7c3aed;
+            --primary-light: #ede9fe;
+            --danger: #dc2626;
+            --warning: #f59e0b;
+            --success: #16a34a;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-600: #4b5563;
+            --gray-800: #1f2937;
+            --gray-900: #111827;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            color: var(--gray-800);
+            line-height: 1.6;
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 2rem;
+            background: #fff;
+        }
+        header {
+            border-bottom: 3px solid var(--primary);
+            padding-bottom: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        header h1 { font-size: 1.75rem; color: var(--gray-900); }
+        .meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.5rem 2rem;
+            margin-top: 1rem;
+            font-size: 0.875rem;
+            color: var(--gray-600);
+        }
+        .meta dt { font-weight: 600; display: inline; }
+        .meta dd { display: inline; margin-left: 0.25rem; }
+        .status-badge {
+            display: inline-block;
+            padding: 0.125rem 0.625rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .status-todo { background: var(--gray-200); color: var(--gray-600); }
+        .status-active { background: var(--primary-light); color: var(--primary); }
+        .status-completed { background: #dcfce7; color: var(--success); }
+        .status-rejected { background: #fef2f2; color: var(--danger); }
+        .experiment-type {
+            display: inline-block;
+            padding: 0.125rem 0.625rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            background: var(--primary-light);
+            color: var(--primary);
+        }
+        section { margin-bottom: 2rem; }
+        section > h2 {
+            font-size: 1.25rem;
+            color: var(--primary);
+            border-bottom: 1px solid var(--gray-200);
+            padding-bottom: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        section > h3 { font-size: 1rem; margin: 1rem 0 0.5rem; color: var(--gray-900); }
+        ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+        li { margin-bottom: 0.25rem; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1rem;
+            font-size: 0.875rem;
+        }
+        th, td {
+            text-align: left;
+            padding: 0.5rem 0.75rem;
+            border: 1px solid var(--gray-200);
+        }
+        th { background: var(--gray-50); font-weight: 600; }
+        td.positive { color: var(--success); font-weight: 600; }
+        td.negative { color: var(--danger); font-weight: 600; }
+        pre {
+            background: var(--gray-50);
+            border: 1px solid var(--gray-200);
+            border-radius: 0.375rem;
+            padding: 1rem;
+            overflow-x: auto;
+            font-size: 0.8125rem;
+            line-height: 1.5;
+            margin-bottom: 1rem;
+        }
+        code { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: 0.8125rem; }
+        .callout {
+            padding: 0.75rem 1rem;
+            border-left: 4px solid var(--primary);
+            background: var(--primary-light);
+            border-radius: 0 0.375rem 0.375rem 0;
+            margin-bottom: 1rem;
+            font-size: 0.875rem;
+        }
+        .callout.warning { border-left-color: var(--warning); background: #fffbeb; }
+        .callout.danger { border-left-color: var(--danger); background: #fef2f2; }
+        .callout.success { border-left-color: var(--success); background: #dcfce7; }
+        .verdict {
+            padding: 1rem;
+            border: 2px solid var(--gray-200);
+            border-radius: 0.5rem;
+            margin-top: 1rem;
+            font-size: 1rem;
+        }
+        .verdict.adopted { border-color: var(--success); background: #f0fdf4; }
+        .verdict.rejected { border-color: var(--danger); background: #fef2f2; }
+        .verdict.modified { border-color: var(--warning); background: #fffbeb; }
+        .changelog { font-size: 0.875rem; }
+        .changelog dt { font-weight: 600; margin-top: 0.5rem; }
+        .changelog dd { margin-left: 1rem; color: var(--gray-600); }
+        footer {
+            margin-top: 3rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--gray-200);
+            font-size: 0.75rem;
+            color: var(--gray-600);
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Twitter/Social Media Signal Source for Options Trading</h1>
+    <div class="meta">
+        <div><dt>Spec ID:</dt><dd>twitter-social-signal-source</dd></div>
+        <div><dt>Type:</dt><dd><span class="experiment-type">Experiment</span></dd></div>
+        <div><dt>Status:</dt><dd><span class="status-badge status-todo">Todo</span></dd></div>
+        <div><dt>Project:</dt><dd>OptionsOwl</dd></div>
+        <div><dt>Category:</dt><dd>experiments</dd></div>
+        <div><dt>Created:</dt><dd>2026-06-02</dd></div>
+        <div><dt>Updated:</dt><dd>2026-06-02</dd></div>
+        <div><dt>Version:</dt><dd>v1</dd></div>
+        <div><dt>Author:</dt><dd>Kody Doherty</dd></div>
+    </div>
+</header>
+
+<section>
+    <h2>1. Hypothesis</h2>
+    <p>Tweets from high-impact accounts (Trump, Elon Musk, cabinet members, Fed officials) and breaking news alerts
+    cause rapid, predictable price movements in specific tickers within seconds to minutes. By monitoring these feeds
+    in real-time, classifying tweet sentiment and market relevance, and mapping them to tradeable tickers, we can
+    generate options signals that capture the initial move before the broader market reacts.</p>
+    <div class="callout">
+        <strong>Expected outcome:</strong> Identify 2-5 high-conviction event-driven trades per week with
+        15-30% average gain on 0DTE options, reacting within 30-90 seconds of a market-moving tweet.
+        These signals would be additive to the existing ML pattern scanner (different alpha source).
+    </div>
+</section>
+
+<section>
+    <h2>2. Background &amp; Motivation</h2>
+    <p>The current OptionsOwl pipeline sources signals from Discord (Neverland Pirates) and an ML pattern scanner.
+    Both are reactive to price action — they detect moves already in progress. Twitter/social media signals
+    represent a fundamentally different alpha source: <strong>event-driven catalysts</strong> that cause moves
+    rather than react to them.</p>
+    <ul>
+        <li><strong>Political tweets</strong>: Trump tariff announcements, trade deal mentions, company callouts
+        (historically moved SPY 0.5-2% in minutes)</li>
+        <li><strong>Elon Musk</strong>: TSLA-specific tweets, crypto mentions, regulatory comments</li>
+        <li><strong>Fed officials</strong>: Rate hints, economic outlook (SPY, QQQ, IWM)</li>
+        <li><strong>Breaking news</strong>: Earnings leaks, FDA approvals, antitrust actions, M&amp;A rumors</li>
+        <li><strong>Cabinet/policy</strong>: Commerce Sec (tariffs), Treasury Sec (debt ceiling), AG (antitrust)</li>
+    </ul>
+    <p>The edge is <strong>speed + classification</strong>: most retail traders see these tweets minutes later via
+    news aggregators. A direct Twitter stream with ML classification can react in under 60 seconds.</p>
+</section>
+
+<section>
+    <h2>3. Methodology</h2>
+
+    <h3>3.1 Phase 1: Historical Backtest (Local)</h3>
+    <p>Collect historical tweets from high-impact accounts, align with minute-level options data,
+    and measure the price impact window and magnitude.</p>
+    <pre><code># Data sources for backtest:
+# 1. Twitter/X API v2 — Academic Research or Pro tier for historical search
+#    Endpoint: GET /2/tweets/search/all (full archive)
+#    Alt: snscrape (open-source scraper, no API key needed)
+#    Alt: Kaggle datasets (Trump tweets, Elon tweets — free, pre-collected)
+#
+# 2. Options price data — existing ThetaData DB + Polygon historical
+#
+# 3. Alignment: tweet timestamp (UTC) → nearest minute bar in options data
+#    Measure: price at tweet, +1m, +5m, +15m, +30m, +60m</code></pre>
+
+    <h3>3.2 Phase 2: Real-Time Collector (Production)</h3>
+    <p>If backtest shows alpha, build a Twitter collector that feeds into the existing signal pipeline.</p>
+    <pre><code># Architecture:
+# twitter_collector.py → monitors filtered stream
+#   → tweet_classifier.py → LLM/rules classify relevance + sentiment + ticker mapping
+#     → TradeSignal(bot_source=BotSource.TWITTER) → existing entry pipeline
+#
+# Classification output:
+# {
+#   "relevant": true,
+#   "sentiment": "bullish" | "bearish",
+#   "tickers": ["TSLA", "SPY"],
+#   "confidence": 0.85,
+#   "urgency": "immediate" | "developing",
+#   "category": "tariff" | "company_mention" | "policy" | "earnings" | "fed"
+# }</code></pre>
+
+    <h3>3.3 Data Source &amp; Period</h3>
+    <table>
+        <tr><th>Data Source</th><td>Twitter/X historical tweets + ThetaData options DB</td></tr>
+        <tr><th>Date Range</th><td>2025-01-01 to 2026-06-01 (Trump 2nd term, high tweet activity)</td></tr>
+        <tr><th>Sample Size</th><td>~500-1000 market-moving tweets from target accounts</td></tr>
+        <tr><th>Script/Command</th><td><code>python scripts/backtest_twitter_signals.py</code></td></tr>
+    </table>
+
+    <h3>3.4 Target Accounts</h3>
+    <table>
+        <thead>
+            <tr><th>Account</th><th>Handle</th><th>Primary Tickers</th><th>Signal Type</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>Donald Trump</td><td>@realDonaldTrump</td><td>SPY, QQQ, specific callouts</td><td>Tariffs, trade deals, company praise/attacks</td></tr>
+            <tr><td>Elon Musk</td><td>@elonmusk</td><td>TSLA, DOGE-adjacent</td><td>Company updates, regulatory, crypto</td></tr>
+            <tr><td>Scott Bessent (Treasury)</td><td>@ScottBessent</td><td>SPY, TLT, banks</td><td>Fiscal policy, debt ceiling</td></tr>
+            <tr><td>Howard Lutnick (Commerce)</td><td>@hoaborhd</td><td>SPY, tariff targets</td><td>Tariffs, trade policy</td></tr>
+            <tr><td>Fed Reserve</td><td>@federalreserve</td><td>SPY, QQQ, IWM</td><td>Rate decisions, economic data</td></tr>
+            <tr><td>Breaking News</td><td>@DeItaone, @LiveSquawk, @zaborhedgefund</td><td>Various</td><td>Earnings, FDA, M&amp;A, macro</td></tr>
+        </tbody>
+    </table>
+
+    <h3>3.5 Metrics</h3>
+    <ul>
+        <li><strong>Primary:</strong> Average 0DTE option return within 15 minutes of tweet (ATM call/put based on sentiment)</li>
+        <li><strong>Secondary:</strong> Win rate, time-to-peak, optimal hold period, false positive rate (tweet classified as market-moving but no price reaction)</li>
+    </ul>
+</section>
+
+<section>
+    <h2>4. Implementation Plan</h2>
+
+    <h3>4.1 Phase 1: Data Collection &amp; Backtest</h3>
+    <table>
+        <thead>
+            <tr><th>#</th><th>Task</th><th>File</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>1</td><td>Collect historical tweets (snscrape or API)</td><td><code>scripts/collect_tweets.py</code></td><td>Todo</td></tr>
+            <tr><td>2</td><td>Classify tweets: relevant/irrelevant, sentiment, ticker mapping</td><td><code>scripts/classify_tweets.py</code></td><td>Todo</td></tr>
+            <tr><td>3</td><td>Align tweets with options price data (ThetaData + Polygon)</td><td><code>scripts/backtest_twitter_signals.py</code></td><td>Todo</td></tr>
+            <tr><td>4</td><td>Measure price impact: entry at tweet+30s, exit at +5m/+15m/+30m</td><td><code>scripts/backtest_twitter_signals.py</code></td><td>Todo</td></tr>
+            <tr><td>5</td><td>Analyze results: which accounts/categories have alpha?</td><td><code>scripts/backtest_twitter_signals.py</code></td><td>Todo</td></tr>
+        </tbody>
+    </table>
+
+    <h3>4.2 Phase 2: Production Collector (if backtest positive)</h3>
+    <table>
+        <thead>
+            <tr><th>#</th><th>Task</th><th>File</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>6</td><td>Twitter streaming collector (filtered stream API)</td><td><code>options_owl/collectors/twitter_collector.py</code></td><td>Todo</td></tr>
+            <tr><td>7</td><td>Tweet classifier (LLM or rules-based)</td><td><code>options_owl/signals/tweet_classifier.py</code></td><td>Todo</td></tr>
+            <tr><td>8</td><td>Integration with entry pipeline (BotSource.TWITTER)</td><td><code>options_owl/bot_runner.py</code></td><td>Todo</td></tr>
+            <tr><td>9</td><td>Faster entry path (skip dip-confirm for urgency=immediate)</td><td><code>options_owl/execution/paper_trader.py</code></td><td>Todo</td></tr>
+            <tr><td>10</td><td>Twitter-specific exit config (tight scalp — take profits fast)</td><td><code>options_owl/risk/exit_v5/config.py</code></td><td>Todo</td></tr>
+        </tbody>
+    </table>
+
+    <h3>4.3 Key Technical Decisions</h3>
+    <ul>
+        <li><strong>Twitter API tier:</strong> X/Twitter API v2 Pro ($5000/mo) for filtered stream, or Basic ($100/mo) for polling. Alternative: use free news aggregator APIs (Benzinga, NewsAPI) as proxy</li>
+        <li><strong>Classification:</strong> Claude API for tweet classification (already have Anthropic key) vs rules-based keyword matching (faster, cheaper, good enough for high-impact accounts)</li>
+        <li><strong>Latency target:</strong> Tweet → signal in &lt;30 seconds. WebSocket stream preferred over polling</li>
+        <li><strong>False positive handling:</strong> High-impact accounts post many irrelevant tweets. Classification must filter aggressively — only trade tweets that mention markets, companies, policy, or economics</li>
+    </ul>
+</section>
+
+<section>
+    <h2>5. Results</h2>
+
+    <div class="callout warning">
+        <strong>Fill this section after the experiment completes.</strong> Include raw numbers, not just conclusions.
+    </div>
+
+    <h3>5.1 Summary</h3>
+    <table>
+        <thead>
+            <tr><th>Metric</th><th>Control (ML only)</th><th>Test (ML + Twitter)</th><th>Delta</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Total P&amp;L (5 days)</td>
+                <td>TBD</td>
+                <td>TBD</td>
+                <td>TBD</td>
+            </tr>
+            <tr>
+                <td>Twitter signal win rate</td>
+                <td>N/A</td>
+                <td>TBD</td>
+                <td>TBD</td>
+            </tr>
+            <tr>
+                <td>Avg return per tweet trade</td>
+                <td>N/A</td>
+                <td>TBD</td>
+                <td>TBD</td>
+            </tr>
+            <tr>
+                <td>False positive rate</td>
+                <td>N/A</td>
+                <td>TBD</td>
+                <td>TBD</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>5.2 Detailed Breakdown</h3>
+    <p>TBD — per-account analysis, per-category analysis, time-to-peak distributions</p>
+
+    <h3>5.3 Unexpected Findings</h3>
+    <ul>
+        <li>TBD</li>
+    </ul>
+</section>
+
+<section>
+    <h2>6. Conclusion &amp; Decision</h2>
+    <div class="verdict">
+        <strong>Verdict: Pending</strong>
+        <p>Awaiting backtest results.</p>
+    </div>
+
+    <h3>Follow-up Actions</h3>
+    <ul>
+        <li>If positive: build production collector and integrate with entry pipeline</li>
+        <li>If negative: document which signal categories failed and why</li>
+        <li>Consider hybrid: only trade Trump tariff tweets (highest historical alpha) and skip everything else</li>
+    </ul>
+</section>
+
+<section>
+    <h2>7. Risks &amp; Considerations</h2>
+    <ul>
+        <li><strong>API cost:</strong> Twitter Pro tier is $5000/mo — need to validate alpha before committing. Start with free alternatives (snscrape, news APIs)</li>
+        <li><strong>Latency:</strong> If everyone is trading the same tweets, the edge disappears. Need sub-30s reaction time</li>
+        <li><strong>False positives:</strong> High-impact accounts post constantly. Most tweets are irrelevant. Classification accuracy is critical</li>
+        <li><strong>Account suspension:</strong> Twitter API terms change frequently. Need fallback data sources</li>
+        <li><strong>Regulatory risk:</strong> Trading on government officials' public statements is legal, but front-running non-public info is not. Only use publicly available tweets</li>
+        <li><strong>Crowded trade:</strong> Many hedge funds already do this. The alpha may be fully captured by the time retail can react</li>
+    </ul>
+</section>
+
+<section>
+    <h2>8. Changelog</h2>
+    <dl class="changelog">
+        <dt>v1 — 2026-06-02</dt>
+        <dd>Initial experiment spec created</dd>
+    </dl>
+</section>
+
+<footer>
+    OptionsOwl — Experiment Specification | 2026-06-02
+</footer>
+
+</body>
+</html>

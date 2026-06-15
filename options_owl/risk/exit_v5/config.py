@@ -27,7 +27,7 @@ class TickerCategory(Enum):
 
 
 HIGH_VOL_TICKERS = frozenset({
-    "MSTR", "AMD", "TSLA", "NVDA", "AVGO", "META", "COIN", "SMCI", "PLTR",
+    "MSTR", "AMD", "TSLA", "NVDA", "META", "SMCI", "PLTR",
 })
 
 INDEX_TICKERS = frozenset({
@@ -42,6 +42,46 @@ def categorize_ticker(ticker: str) -> TickerCategory:
     if ticker in INDEX_TICKERS:
         return TickerCategory.INDEX
     return TickerCategory.STANDARD
+
+
+# ---------------------------------------------------------------------------
+# Strike grid configuration — per-ticker option strike intervals
+# ---------------------------------------------------------------------------
+# From ThetaData research (6.7M rows, 14 tickers, 124 trading days).
+# Strike spacing varies 7.6x (SPY $1/0.14% vs AMZN $2.50/1.07%).
+
+STRIKE_INTERVALS: dict[str, float] = {
+    # Fine grid — small strikes relative to price
+    "SPY": 1.0, "QQQ": 1.0, "IWM": 0.5, "NVDA": 0.5, "MSTR": 0.5,
+    # Standard grid
+    "META": 2.5, "MSFT": 2.5, "TSLA": 2.5, "PLTR": 1.0, "AVGO": 2.5,
+    # Wide grid — large strikes relative to price
+    "GOOGL": 2.5, "AAPL": 2.5, "AMD": 2.5, "AMZN": 2.5,
+}
+
+DEFAULT_STRIKE_INTERVAL: float = 2.5
+
+# Tickers where the strike grid is fine enough to allow 3 strikes OTM
+_FINE_GRID_TICKERS = frozenset({"SPY", "QQQ", "IWM", "NVDA", "MSTR"})
+# Tickers where the strike grid is wide — only 1 strike OTM allowed
+_WIDE_GRID_TICKERS = frozenset({"AAPL", "AMD", "AMZN", "GOOGL"})
+
+
+def get_max_otm_distance(ticker: str) -> float:
+    """Return the maximum allowed OTM distance in dollars for a ticker.
+
+    Fine-grid tickers (SPY, QQQ, IWM, NVDA, MSTR): 3 strikes OTM
+    Standard tickers (META, TSLA, PLTR, etc.): 2 strikes OTM
+    Wide-grid tickers (AAPL, AMD, AMZN, GOOGL): 1 strike OTM
+    """
+    interval = STRIKE_INTERVALS.get(ticker, DEFAULT_STRIKE_INTERVAL)
+
+    if ticker in _FINE_GRID_TICKERS:
+        return interval * 3
+    elif ticker in _WIDE_GRID_TICKERS:
+        return interval * 1
+    else:
+        return interval * 2
 
 
 @dataclass(frozen=True)
@@ -269,38 +309,91 @@ def get_ticker_config(
 
 
 # ── PUT Scalp Config ─────────────────────────────────────────────────────────
-# Backtested (3+ years): +50% target, -60% stop, 60min max hold.
-# Cheap premiums ($0.05-$0.50) in afternoon (1:00-2:30 PM) slots.
-# Simple exits — no adaptive trails or soft trails needed.
+# Aggressive scalp: take profits early, trail tightly, cut losers fast.
+# PUTs are momentum plays — lock gains quickly before theta + reversal kill them.
 
 PUT_SCALP_CONFIG = V5Config(
     # Grace period — shorter for PUTs (premium moves fast)
     grace_period_min=3.0,
 
-    # Gate 3: General profit target at 50% (fires for all PUTs)
-    profit_target_general_pct=50.0,
-    profit_target_index_0dte_pct=50.0,
+    # Gate 3: No fixed profit target — let trail system lock in gains (backtest: +$63K vs +$20K)
+    # Breakeven ratchet at +20% guarantees no loss, soft/adaptive trail lock in profits progressively
+    profit_target_general_pct=0.0,
+    profit_target_index_0dte_pct=0.0,
 
-    # Gate 6: Hard stop at 60% (both tight and backstop same = simple stop)
-    tight_stop_0dte_pct=60.0,
-    backstop_0dte_pct=60.0,
-    tight_stop_multiday_pct=60.0,
-    backstop_multiday_pct=60.0,
+    # Gate 3.5: Breakeven ratchet still works (once +20%, floor = entry)
 
-    # Gate 9: Max hold time = 60 minutes, exit regardless of P&L
-    theta_bleed_min=60.0,
-    theta_bleed_drop_pct=-100.0,  # always true (any P&L triggers at 60min)
-    theta_timer_minutes=60.0,
+    # Gate 3.7: Scaleout still works (sell 1/3 at +20% if 3+ contracts)
+
+    # Gate 4: Scalp trail — peaked +15%, faded below 60% of peak → exit
+    scalp_peak_threshold_pct=15.0,
+
+    # Gate 6: Hard stop at 50% loss
+    tight_stop_0dte_pct=50.0,
+    backstop_0dte_pct=50.0,
+    tight_stop_multiday_pct=50.0,
+    backstop_multiday_pct=50.0,
+
+    # Gate 7: Soft trail — once peaked +15%, keep 60% of gains
+    soft_trail_band_low_pct=15.0,
+    soft_trail_band_high_pct=50.0,
+    soft_trail_keep_pct=0.6,
+
+    # Gate 8: Adaptive trail — active at +20%, trail at 40% drop from peak
+    adaptive_highvol_tiers=(AdaptiveTier(20, 40),),
+    adaptive_index_tiers=(AdaptiveTier(20, 35),),
+    adaptive_standard_tiers=(AdaptiveTier(20, 35),),
+
+    # Gate 9: No hold time limit — let trail system handle exits
+    # Backtest: no limit = $63K PF 1.57 vs 60m limit = $52K PF 1.46
+    theta_bleed_min=999.0,
+    theta_bleed_drop_pct=-100.0,
+    theta_timer_minutes=999.0,
     theta_timer_loss_pct=-100.0,
-
-    # Disable complex trails — PUTs use simple target/stop
-    scalp_peak_threshold_pct=999.0,    # effectively disabled
-    soft_trail_band_low_pct=999.0,     # effectively disabled
-    adaptive_highvol_tiers=(AdaptiveTier(9999, 99),),
-    adaptive_index_tiers=(AdaptiveTier(9999, 99),),
-    adaptive_standard_tiers=(AdaptiveTier(9999, 99),),
 )
 
 
 # Backward compat alias
 V4Config = V5Config
+
+
+def apply_v7_wide_trail_exits(cfg: V5Config, is_put: bool = False) -> V5Config:
+    """Apply the V7 convex EXIT transform to a V5Config.
+
+    Validated in the exit-only ablation (both OOS windows beat V6 exits at identical
+    win rate: OOS +72%, OOS2 +27% P&L, higher PF).
+
+    - no profit ceiling (let winners run) — both CALL and PUT
+    - widening adaptive trail: moonshot x1.5, runner x1.3, active x1.1 (clamp 5-90%)
+    - CALLs ONLY: faster stall-cut on dead losers (theta 60min / 25%).
+      PUTs KEEP their no-hold-limit (theta 999) — they ride slow-building crashes;
+      a time-cut would clip exactly the down-day moves we want to capture
+      (separately validated: PUT no-limit $63K vs 60min-limit $52K).
+    The scaleout-off / 2PM-tighten-off / breakeven-ratchet-on parts are handled via
+    settings in monitor_bridge (they are flag-driven, not V5Config fields).
+    """
+    from dataclasses import replace as _replace
+
+    def _widen(tiers: tuple[AdaptiveTier, ...]) -> tuple[AdaptiveTier, ...]:
+        out = []
+        for t in tiers:
+            if t.min_peak_gain >= 300:
+                w = t.trail_width * 1.5
+            elif t.min_peak_gain >= 100:
+                w = t.trail_width * 1.3
+            else:
+                w = t.trail_width * 1.1
+            out.append(AdaptiveTier(t.min_peak_gain, max(5.0, min(90.0, w))))
+        return tuple(out)
+
+    changes: dict = dict(
+        profit_target_index_0dte_pct=0.0,
+        profit_target_general_pct=0.0,
+        adaptive_highvol_tiers=_widen(cfg.adaptive_highvol_tiers),
+        adaptive_index_tiers=_widen(cfg.adaptive_index_tiers),
+        adaptive_standard_tiers=_widen(cfg.adaptive_standard_tiers),
+    )
+    if not is_put:
+        changes["theta_bleed_min"] = 60.0
+        changes["theta_bleed_drop_pct"] = 25.0
+    return _replace(cfg, **changes)

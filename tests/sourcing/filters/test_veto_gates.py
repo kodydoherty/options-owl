@@ -2,7 +2,6 @@
 
 from unittest.mock import patch
 
-import pytest
 
 from options_owl.sourcing.data.indicator_engine import IndicatorSet
 from options_owl.sourcing.filters.veto_gates import (
@@ -15,7 +14,7 @@ from options_owl.sourcing.filters.veto_gates import (
     _veto_wide_spread,
     run_veto_gates,
 )
-from options_owl.sourcing.scoring.types import Direction, SignalContext, SignalState, TierResult
+from options_owl.sourcing.scoring.types import Direction, SignalContext, SignalState
 
 
 # ---------------------------------------------------------------------------

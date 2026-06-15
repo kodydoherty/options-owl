@@ -1,0 +1,47 @@
+{
+  "model_type": "regime_classifier",
+  "version": "v1",
+  "created": "2026-06-09T17:00:19.441509",
+  "training_days": 560,
+  "date_range": "2024-04-01 to 2026-06-09",
+  "features": [
+    "adx",
+    "ema_spread",
+    "gap_pct",
+    "green_ratio",
+    "intraday_range",
+    "max_drawdown",
+    "max_runup",
+    "opening_drive",
+    "prev_return",
+    "price_position",
+    "recent_momentum",
+    "recent_vol",
+    "return_from_open",
+    "rsi",
+    "session_pct",
+    "trend_3d",
+    "trend_5d",
+    "vs_vwap"
+  ],
+  "n_features": 18,
+  "checkpoints_minutes": [
+    15,
+    30,
+    60,
+    90,
+    120,
+    180
+  ],
+  "labels": {
+    "0": "BULLISH",
+    "1": "BEARISH",
+    "2": "CHOPPY"
+  },
+  "confidence_threshold": 0.5,
+  "label_distribution": {
+    "bullish": 206,
+    "bearish": 157,
+    "choppy": 197
+  }
+}

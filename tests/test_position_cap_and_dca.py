@@ -8,9 +8,8 @@ Verifies:
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -107,7 +106,7 @@ class TestV6DCACapLogic:
             V6_DCA_UNDERLYING_THRESHOLD=0.5,
             MAX_DCA_POSITION_PCT=5.0,  # 5% of portfolio
             PORTFOLIO_SIZE=23000.0,
-            WEBULL_ENTRY_AGGRESS_PCT=2.0,
+            WEBULL_ENTRY_AGGRESS_PCT=5.0,
         )
 
     @pytest.fixture
@@ -141,7 +140,6 @@ class TestV6DCACapLogic:
         mock_pt.webull_executor = None
 
         # Patch aiosqlite and time
-        import aiosqlite
         mock_conn = AsyncMock()
         mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
         mock_conn.__aexit__ = AsyncMock(return_value=None)

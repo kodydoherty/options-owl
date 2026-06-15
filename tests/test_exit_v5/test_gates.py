@@ -3,7 +3,7 @@
 Tests match v5 category-aware logic (DTE-aware, underlying-based, per-category trails).
 """
 
-from options_owl.risk.exit_v5.config import AdaptiveTier, TickerCategory, V5Config
+from options_owl.risk.exit_v5.config import TickerCategory, V5Config
 from options_owl.risk.exit_v5.types import ExitReason
 from options_owl.risk.exit_v5.gates import (
     check_adaptive_trail,

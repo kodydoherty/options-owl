@@ -1,8 +1,6 @@
 """Tests for sourcing filters: quality gate, penalty veto, options validator."""
 
-import pytest
 
-from options_owl.sourcing.data.indicator_engine import IndicatorSet
 from options_owl.sourcing.data.options_provider import OptionsChain
 from options_owl.sourcing.filters.options_validator import validate_chain
 from options_owl.sourcing.filters.penalty_veto import check_penalty_veto

@@ -6,10 +6,12 @@ import math
 
 from options_owl.risk.greeks import (
     _bs_price,
+    calc_charm,
     calc_delta,
     calc_gamma,
     calc_iv_from_premium,
     calc_theta,
+    calc_vanna,
     calc_vega,
     norm_cdf,
     norm_pdf,
@@ -189,6 +191,112 @@ class TestEdgeCases:
         vega_otm = calc_vega(80, 100, 1.0, 0.05, 0.20)
         assert vega_atm > vega_itm
         assert vega_atm > vega_otm
+
+
+# ---------------------------------------------------------------------------
+# Charm (dDelta/dt, per calendar day)
+# ---------------------------------------------------------------------------
+
+
+class TestCharm:
+    """charm = -phi(d1)*(2rT - d2*sigma*sqrt(T)) / (2*T*sigma*sqrt(T)) / 365 (q=0)."""
+
+    S = 100.0
+    K = 100.0
+    T = 1.0
+    r = 0.05
+    sigma = 0.20
+
+    def test_known_value_atm(self):
+        # Hand-computed: d1=0.35, d2=0.15, phi(0.35)=0.375240
+        # charm_annual = -0.375240*(0.10-0.03)/0.4 = -0.0656670
+        # per day = -0.0656670/365 = -1.79910e-4
+        charm = calc_charm(self.S, self.K, self.T, self.r, self.sigma, "call")
+        assert abs(charm - (-1.79910e-4)) < 1e-7
+
+    def test_call_equals_put_with_zero_dividend(self):
+        # q=0: charm_call == charm_put (delta_put = delta_call - 1)
+        c = calc_charm(self.S, self.K, self.T, self.r, self.sigma, "call")
+        p = calc_charm(self.S, self.K, self.T, self.r, self.sigma, "put")
+        assert abs(c - p) < 1e-12
+
+    def test_finite_difference_call(self):
+        # charm per day = (delta(T-eps) - delta(T+eps)) / (2*eps*365)
+        eps = 1e-5
+        for S in (90.0, 100.0, 110.0):
+            d_minus = calc_delta(S, self.K, self.T - eps, self.r, self.sigma, "call")
+            d_plus = calc_delta(S, self.K, self.T + eps, self.r, self.sigma, "call")
+            fd = (d_minus - d_plus) / (2 * eps * 365.0)
+            charm = calc_charm(S, self.K, self.T, self.r, self.sigma, "call")
+            assert abs(charm - fd) < 1e-8, f"S={S}: {charm} vs FD {fd}"
+
+    def test_finite_difference_put(self):
+        eps = 1e-5
+        d_minus = calc_delta(95.0, self.K, self.T - eps, self.r, self.sigma, "put")
+        d_plus = calc_delta(95.0, self.K, self.T + eps, self.r, self.sigma, "put")
+        fd = (d_minus - d_plus) / (2 * eps * 365.0)
+        charm = calc_charm(95.0, self.K, self.T, self.r, self.sigma, "put")
+        assert abs(charm - fd) < 1e-8
+
+    def test_zero_time_returns_zero(self):
+        assert calc_charm(100, 100, 0, 0.05, 0.20, "call") == 0.0
+        assert calc_charm(100, 100, -0.1, 0.05, 0.20, "put") == 0.0
+
+    def test_atm_charm_negative(self):
+        # Slightly ITM-forward ATM call: delta decays toward 0.5 as T shrinks
+        charm = calc_charm(self.S, self.K, self.T, self.r, self.sigma, "call")
+        assert charm < 0
+
+
+# ---------------------------------------------------------------------------
+# Vanna (dDelta/dVol, per 1% IV move)
+# ---------------------------------------------------------------------------
+
+
+class TestVanna:
+    """vanna = -phi(d1)*d2/sigma / 100 (q=0; same for calls and puts)."""
+
+    S = 100.0
+    K = 100.0
+    T = 1.0
+    r = 0.05
+    sigma = 0.20
+
+    def test_known_value_atm(self):
+        # Hand-computed: phi(0.35)=0.375240, d2=0.15
+        # vanna = -0.375240*0.15/0.2/100 = -2.81430e-3
+        vanna = calc_vanna(self.S, self.K, self.T, self.r, self.sigma)
+        assert abs(vanna - (-2.81430e-3)) < 1e-6
+
+    def test_finite_difference(self):
+        # vanna per 1% = (delta(sig+h) - delta(sig-h)) / (2h) / 100
+        h = 1e-6
+        for S in (85.0, 100.0, 115.0):
+            d_up = calc_delta(S, self.K, self.T, self.r, self.sigma + h, "call")
+            d_dn = calc_delta(S, self.K, self.T, self.r, self.sigma - h, "call")
+            fd = (d_up - d_dn) / (2 * h) / 100.0
+            vanna = calc_vanna(S, self.K, self.T, self.r, self.sigma)
+            assert abs(vanna - fd) < 1e-7, f"S={S}: {vanna} vs FD {fd}"
+
+    def test_same_for_call_and_put_via_delta_fd(self):
+        # delta_put = delta_call - 1, so dDelta/dVol is identical for puts
+        h = 1e-6
+        d_up = calc_delta(90.0, self.K, self.T, self.r, self.sigma + h, "put")
+        d_dn = calc_delta(90.0, self.K, self.T, self.r, self.sigma - h, "put")
+        fd_put = (d_up - d_dn) / (2 * h) / 100.0
+        assert abs(calc_vanna(90.0, self.K, self.T, self.r, self.sigma) - fd_put) < 1e-7
+
+    def test_otm_call_vanna_positive(self):
+        # OTM (d2 < 0): vanna = -phi(d1)*d2/sigma > 0
+        assert calc_vanna(85.0, 100.0, 0.5, 0.05, 0.20) > 0
+
+    def test_itm_call_vanna_negative(self):
+        # Deep ITM (d2 > 0): vanna < 0
+        assert calc_vanna(120.0, 100.0, 0.5, 0.05, 0.20) < 0
+
+    def test_zero_time_returns_zero(self):
+        assert calc_vanna(100, 100, 0, 0.05, 0.20) == 0.0
+        assert calc_vanna(100, 100, -1.0, 0.05, 0.20) == 0.0
 
 
 # ---------------------------------------------------------------------------

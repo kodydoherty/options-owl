@@ -33,10 +33,12 @@ from options_owl.collectors.candle_collector import CandleCollector
 from options_owl.collectors.flow_collector import FlowCollector
 from options_owl.main import LOG_DIR, configure_logging, write_heartbeat
 from options_owl.risk.greeks import (
+    calc_charm,
     calc_delta,
     calc_gamma,
     calc_iv_from_premium,
     calc_theta,
+    calc_vanna,
     calc_vega,
 )
 
@@ -155,7 +157,13 @@ async def _fetch_chain(
             return []
         return resp.json().get("results", []) or []
     except Exception as exc:
-        logger.warning(f"Polygon chain fetch error for {ticker}: {type(exc).__name__}: {exc}")
+        # Transient per-ticker timeouts at market-open load are recovered by the
+        # next poll (which logs "0 errors") — log at DEBUG to avoid WARNING spam.
+        # Real/unexpected fetch errors still surface as WARNING.
+        if isinstance(exc, (httpx.TimeoutException, httpx.ConnectError)):
+            logger.debug(f"Polygon chain fetch timeout for {ticker}: {type(exc).__name__}")
+        else:
+            logger.warning(f"Polygon chain fetch error for {ticker}: {type(exc).__name__}: {exc}")
         return []
 
 
@@ -192,7 +200,7 @@ def _parse_contract(result: dict, underlying_price: float | None) -> dict | None
         midpoint = round((bid + ask) / 2.0, 4)
 
     # Local BS greeks only if we have underlying price + a reasonable premium
-    iv = delta = gamma = theta = vega = None
+    iv = delta = gamma = theta = vega = charm = vanna = None
     if underlying_price and midpoint and midpoint > 0:
         try:
             expiry_dt = date.fromisoformat(expiry)
@@ -226,6 +234,17 @@ def _parse_contract(result: dict, underlying_price: float | None) -> dict | None
                     vega = round(
                         calc_vega(underlying_price, strike, T, RISK_FREE_RATE, iv), 4
                     )
+                    # Second-order greeks for dealer-positioning (GEX) features:
+                    # charm = dDelta/dt (per day), vanna = dDelta/dVol (per 1%).
+                    charm = round(
+                        calc_charm(
+                            underlying_price, strike, T, RISK_FREE_RATE, iv, option_type
+                        ),
+                        6,
+                    )
+                    vanna = round(
+                        calc_vanna(underlying_price, strike, T, RISK_FREE_RATE, iv), 6
+                    )
                     iv = round(iv, 4)
         except Exception as exc:
             logger.debug(f"Greeks computation failed for {contract_ticker}: {exc}")
@@ -256,6 +275,77 @@ def _parse_contract(result: dict, underlying_price: float | None) -> dict | None
         "gamma": gamma,
         "theta": theta,
         "vega": vega,
+        "charm": charm,
+        "vanna": vanna,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Dealer-positioning (GEX) aggregation
+# ---------------------------------------------------------------------------
+
+
+def compute_gex_aggregate(ticker: str, rows: list[dict], spot: float | None) -> dict:
+    """Aggregate per-contract greeks into a per-ticker dealer-positioning row.
+
+    GEX proxy (spec 2026-06-10_feature-pipeline-expansion section 4.1):
+        per contract: gamma_exposure = gamma * open_interest * 100 * spot
+        net_gamma = SUM(call gamma_exposure) - SUM(put gamma_exposure)
+    Charm and vanna are aggregated analogously (call sum minus put sum).
+
+    Notes:
+    - Open interest is fixed at the open (prior-day close OI), so OI-based
+      GEX is serve-time-safe: it never includes same-day future information.
+    - Contracts with NULL open_interest are EXCLUDED from the sums (missing
+      data, not zero positioning). Contracts missing gamma are excluded too.
+    - Empty/sparse chains return an all-zero aggregate (never NaN) so the
+      row is still written and downstream features 0-fill deterministically.
+    - This is a directional proxy, not true dealer positioning (no dealer
+      sign data); validated by out-of-sample regime-model lift.
+    """
+    call_gamma = put_gamma = 0.0
+    call_charm = put_charm = 0.0
+    call_vanna = put_vanna = 0.0
+    total_oi = 0
+    n_contracts = 0
+
+    if spot and spot > 0:
+        for r in rows:
+            oi = r.get("open_interest")
+            gamma = r.get("gamma")
+            # NULL OI = missing data → exclude (don't treat as 0-gamma noise)
+            if oi is None or gamma is None:
+                continue
+            option_type = r.get("option_type")
+            if option_type not in ("call", "put"):
+                continue
+            scale = oi * 100.0 * spot
+            charm = r.get("charm") or 0.0
+            vanna = r.get("vanna") or 0.0
+            if option_type == "call":
+                call_gamma += gamma * scale
+                call_charm += charm * scale
+                call_vanna += vanna * scale
+            else:
+                put_gamma += gamma * scale
+                put_charm += charm * scale
+                put_vanna += vanna * scale
+            total_oi += int(oi)
+            n_contracts += 1
+
+    if n_contracts == 0:
+        logger.debug(f"{ticker}: empty/sparse chain — GEX aggregate is 0")
+
+    return {
+        "ticker": ticker,
+        "net_gamma": call_gamma - put_gamma,
+        "call_gamma": call_gamma,
+        "put_gamma": put_gamma,
+        "net_charm": call_charm - put_charm,
+        "net_vanna": call_vanna - put_vanna,
+        "total_oi": total_oi,
+        "spot": spot,
+        "n_contracts": n_contracts,
     }
 
 
@@ -294,11 +384,24 @@ async def _persist_rows(ticker: str, rows: list[dict]) -> int:
                 "gamma": r["gamma"],
                 "theta": r["theta"],
                 "vega": r["vega"],
+                "charm": r.get("charm"),
+                "vanna": r.get("vanna"),
                 "underlying_price": r["underlying_price"],
             }
             for r in rows
         ]
         await pg.write_option_ticks_batch(option_ticks)
+
+        # Per-ticker dealer-positioning aggregate (GEX proxy) — one small row
+        # per ticker per cycle. gamma*OI*100*spot summed call-minus-put; OI is
+        # fixed at the open so this stays serve-time-safe for the ML models.
+        try:
+            gex_row = compute_gex_aggregate(
+                ticker, rows, rows[0]["underlying_price"]
+            )
+            await pg.write_gex_ticks_batch([gex_row])
+        except Exception as exc:
+            logger.warning(f"GEX aggregate write failed for {ticker}: {exc}")
 
         # Write stock tick (one per ticker per cycle, with real bid/ask/volume)
         _quote = _price_cache.get(ticker)
@@ -341,6 +444,8 @@ async def _persist_rows(ticker: str, rows: list[dict]) -> int:
                             "gamma": r["gamma"],
                             "theta": r["theta"],
                             "vega": r["vega"],
+                            "charm": r.get("charm"),
+                            "vanna": r.get("vanna"),
                             "volume": r["day_volume"],
                             "open_interest": r["open_interest"],
                             "underlying_price": r["underlying_price"],

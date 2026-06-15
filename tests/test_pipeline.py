@@ -319,7 +319,7 @@ class TestStopLossExit:
     @pytest.mark.asyncio
     async def test_grace_period_blocks_stop(self):
         """During grace period, stop should PASS even if premium is down."""
-        from datetime import datetime, timedelta
+        from datetime import timedelta
         ctx = _base_exit_ctx(current_price=558.0)
         ctx["settings"] = _FakeSettings(
             PREMIUM_STOP_ENABLED=True, PREMIUM_STOP_PCT=35.0, STOP_GRACE_PERIOD_MINUTES=5,

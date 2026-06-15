@@ -210,6 +210,63 @@ class Settings(BaseSettings):
     # (e.g., NVDA → EARLY_PROFIT, GOOGL → WIDE_STOP, META → DEFENSIVE)
     ENABLE_V6_PER_TICKER_CONFIG: bool = False
 
+    # V7 convex exits (CALL + PUT): no profit ceiling, widening adaptive trail
+    # (moonshot x1.5/runner x1.3/active x1.1), scaleout + 2PM-tighten OFF, breakeven
+    # ratchet KEPT. CALLs add a faster stall-cut (theta 60/25); PUTs KEEP their
+    # no-hold-limit so they ride slow-building crashes (down-day capture). Exit-only
+    # ablation: both OOS windows beat V6 exits at identical win rate (+72% / +27% P&L).
+    ENABLE_V7_WIDE_TRAIL: bool = False
+    # Stage D: conviction-based bet sizing for UW flow trades (validated 2026-06-13 — same capital
+    # reallocated by conviction beat flat +72% P&L, PF 1.36→1.64, lower DD). Sizes up clustered /
+    # high-ask / (single-stock) big-premium sweeps; sizes down singles + index $1M+ hedges.
+    # Capped by MAX_POSITION_PCT. Default off — paper-first.
+    ENABLE_V7_CONVICTION_SIZING: bool = False
+    UW_FLOW_CLUSTER_WINDOW_MIN: int = 30  # rolling window for cluster_count (matches backtest)
+    # Absolute per-trade $ liquidity cap (0 = disabled). A single 0DTE option can only absorb
+    # ~$25-50k without big slippage; this ceilings position $ on top of MAX_POSITION_PCT. No-op for
+    # small accounts (15% of $23k = $3.45k < cap); the realism brake once compounding grows the book.
+    MAX_POSITION_DOLLARS: float = 50000.0  # no-op for all current bots; engages only at scale
+    # Stage D P(runner) tilt: fold serve-time runner_score into the conviction multiplier. DEFAULT OFF
+    # — must validate serve features ~ training distribution on live data (no skew) before activating.
+    ENABLE_V7_RUNNER_TILT: bool = False
+    # B2 market-tide gate (validated point-in-time, no lookahead): PUT flow misaligned with the market
+    # whale tide (bullish tide) is a net loser (PF 0.56 vs 1.66 aligned) → size it down. Calls unaffected
+    # (tide doesn't discriminate, PF ~1.0). DEFAULT OFF — validate live before enabling.
+    ENABLE_V7_TIDE_GATE: bool = False
+    V7_TIDE_MISALIGNED_PUT_MULT: float = 0.30  # conviction factor for a put against a bullish tide
+
+    # ── UW flow signal source (Track 4) ──────────────────────────────────────
+    # Follow whale ask-side option SWEEPS (real-money conviction) as a signal source.
+    # Validated: PUT sweeps -> drops (META/AMZN/AAPL/TSLA), CALL sweeps -> rises
+    # (TSLA/AAPL/AMD/AVGO/PLTR). Flow signals BYPASS the pattern/entry-timing ML gates
+    # (they're a source, like Discord) + bearish-confirm/regime, but keep risk gates.
+    ENABLE_UW_FLOW_SIGNAL: bool = False          # master flag (default OFF — paper-first)
+    UNUSUAL_WHALES_API_KEY: str = ""
+    # PUT whitelist + MU (2026-06-13 new-ticker discovery: MU PUT PF1.12, 75% months, n=137 —
+    # consistent volume; MU is blocklisted for general-ML but flow bypasses that, see BlockedTickerGate).
+    # +SPY (2026-06-15): the gold-standard flow book is PUT_UNIV = CUR_PUT | {SPY} — SPY puts were the
+    # #2 flow contributor (n=365, +$16,758). Was missing in prod, so SPY-put flow edge wasn't deployed.
+    UW_FLOW_PUT_TICKERS: str = "META,AMZN,AAPL,TSLA,MU,SPY"
+    # CALL whitelist revised 2026-06-13 (uw_ticker_discovery + per-month split): added the real
+    # edge META(PF2.37)/SPY(1.31)/AMZN(1.22) — each +ve in 75% of months — and dropped AVGO
+    # (PF0.42, -ve every month). + new-ticker winners ORCL(PF1.95, 100% mo) & INTC(PF1.30, 67% mo).
+    # C1 trim: dropped AAPL(PF0.84)/PLTR(PF0.81) calls (net losers, 33% mo) — +$1.25k. AAPL stays on PUT WL.
+    # New-tier adds 2026-06-14 (expansion discovery): ARM(PF5.08, +ve EVERY month), GOOG(2.53, 67%mo),
+    # LRCX(1.41, 67%mo). Rejected from the tier: IBM/DELL/CRWD/SLV (losers), ASML (PF8.47 but n=11).
+    UW_FLOW_CALL_TICKERS: str = "META,SPY,AMZN,TSLA,AMD,ORCL,INTC,ARM,GOOG,LRCX"
+    UW_FLOW_MIN_PREMIUM: float = 250_000.0       # whale-size floor
+    UW_FLOW_ASK_FRAC: float = 0.60               # >=60% ask-side = bought (bearish/bullish conviction)
+    # Selective OTM strike for flow (2026-06-15 A/B backtest, scripts/backtest_flow_otm_test.py):
+    # on validated ticker/side combos, follow the whale with a cheaper OTM strike (~target premium)
+    # instead of ATM — better risk-adjusted edge + >=60% months positive (AMD/INTC/META/SPY calls,
+    # TSLA puts). All other names stay ATM (MU OTM was a net loser). v6_spread_gate still blocks
+    # wide-spread OTM fills. NOTE: backtest doesn't model OTM spread — watch live fills.
+    ENABLE_FLOW_OTM_STRIKE: bool = False
+    FLOW_OTM_CALL_TICKERS: str = "AMD,INTC,META,SPY"
+    FLOW_OTM_PUT_TICKERS: str = "TSLA"
+    FLOW_OTM_TARGET_PREMIUM: float = 2.0         # $/share target for the OTM strike pick
+    UW_FLOW_REQUIRE_SWEEP: bool = True
+
     # Break-even ratchet: once gain hits trigger %, stop floor moves to entry price
     ENABLE_V6_BREAKEVEN_RATCHET: bool = False
     V6_BREAKEVEN_TRIGGER_PCT: float = 20.0

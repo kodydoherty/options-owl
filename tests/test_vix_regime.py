@@ -16,6 +16,7 @@ def _make_settings(**overrides) -> Settings:
         "VIX_MAX": 35.0,
         "VIX_HIGH_THRESHOLD": 25.0,
         "VIX_POSITION_REDUCTION_PCT": 50.0,
+        "ENABLE_PUT_TRADING": True,
     }
     defaults.update(overrides)
     return Settings(**defaults)

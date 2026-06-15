@@ -4,8 +4,8 @@ Catches cascading bugs like the ATM/OTM parser swap that inflated P&L.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from unittest.mock import patch
+from datetime import datetime
+from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
 import aiosqlite
@@ -113,6 +113,9 @@ def _make_e2e_settings(tmp_db_path: str, **overrides) -> Settings:
         "ENABLE_MORNING_CUTOFF": False,  # disable morning cutoff in tests
         "TOD_LATE_CUTOFF_HOUR": 23,
         "TOD_LATE_CUTOFF_MINUTE": 59,
+        "ENABLE_DIRECTIONAL_REGIME": False,
+        "ENABLE_PUT_TRADING": True,
+        "CB_CLOSING_BUFFER_MINUTES": 0,
     }
     defaults.update(overrides)
     return Settings(**defaults)
@@ -224,19 +227,38 @@ class TestFullTradeLifecycle:
         trader = PaperTrader(settings)
         await trader.init()
 
+        # Mock candle cache with bearish data for PutBearishConfirmGate
+        from options_owl.collectors.candle_cache import CandleBar
+        bearish_bars = [
+            CandleBar(0, 170.0, 170.5, 168.0, 168.5, 1000, vwap=169.5),
+            CandleBar(0, 169.0, 169.5, 167.0, 167.5, 1000, vwap=169.0),
+            CandleBar(0, 168.0, 168.5, 166.0, 166.5, 1000, vwap=168.0),
+            CandleBar(0, 167.0, 167.5, 165.0, 165.5, 1000, vwap=167.0),
+            CandleBar(0, 166.0, 166.5, 164.0, 164.5, 1000, vwap=166.0),
+            CandleBar(0, 165.0, 165.5, 163.0, 163.5, 1000, vwap=165.0),
+        ]
+        mock_cc = AsyncMock()
+        mock_cc.get_candle_data = AsyncMock(return_value={
+            "5m": bearish_bars,
+            "indicators": {"5m": {"rsi": 38.0, "ema9": 164.0, "ema21": 167.0}},
+        })
+        trader._candle_cache = mock_cc
+
         # Mock _get_current_price and pin time to 10:30 AM ET so time_of_day gate passes
         # (without this, the test is flaky after ~9 PM Pacific / midnight ET)
         market_time = datetime(2026, 4, 28, 10, 30, 0, tzinfo=ZoneInfo("America/New_York"))
 
         with patch.object(trader, "_get_current_price", return_value=168.70), \
-             patch("options_owl.execution.paper_trader._today_et", return_value=market_time):
+             patch("options_owl.execution.paper_trader._today_et", return_value=market_time), \
+             patch("options_owl.risk.pipeline._now_et", return_value=market_time), \
+             patch("options_owl.risk.circuit_breaker._now_et", return_value=market_time):
             opened = await trader.evaluate_and_trade(sig, signal_id=10)
         assert opened is not None, "Trade should have been opened"
 
-        # Dollar-target sizing: $10k × 80% / 5 concurrent = $1,600 target
-        # Flat 85% mult → $1,360 / $170 per contract = 8 raw
+        # Dollar-target sizing: $10k × 80% / 5 = $1,600 target
+        # Flat 85% × PUT 50% mult → $680 / $170 per contract = 4 raw
         # pos_cap = 20% → $2,000 / $170 = 11
-        assert opened["contracts"] == 8
+        assert opened["contracts"] == 4
         assert opened["premium"] == pytest.approx(1.70, abs=0.01)
 
         # Verify database state
@@ -252,9 +274,9 @@ class TestFullTradeLifecycle:
         assert trade["ticker"] == "NVDA"
         assert trade["direction"] == "put"
         assert trade["score"] == 164
-        assert trade["contracts"] == 8  # flat 85%: $1360/$170 = 8
+        assert trade["contracts"] == 4  # flat 85% × PUT 50%: $680/$170 = 4
         assert trade["premium_per_contract"] == pytest.approx(1.70, abs=0.01)
-        assert trade["total_cost"] == pytest.approx(8 * 170.0, abs=1.0)
+        assert trade["total_cost"] == pytest.approx(4 * 170.0, abs=1.0)
         assert trade["strike"] == 170.0
         assert trade["target_1"] == 167.89
         assert trade["target_2"] == 167.09
@@ -262,7 +284,7 @@ class TestFullTradeLifecycle:
 
         # DCA should be disabled for Vinny
         assert trade["dca_tranches_remaining"] == 0
-        assert trade["dca_total_contracts"] == 8  # flat 85%: $1360/$170 = 8
+        assert trade["dca_total_contracts"] == 4  # flat 85% × PUT 50%: $680/$170 = 4
 
     @pytest.mark.asyncio
     async def test_otm_first_full_lifecycle(self, tmp_db_path):
@@ -292,7 +314,9 @@ class TestFullTradeLifecycle:
 
         market_time = datetime(2026, 4, 28, 10, 30, 0, tzinfo=ZoneInfo("America/New_York"))
         with patch.object(trader, "_get_current_price", return_value=260.30), \
-             patch("options_owl.execution.paper_trader._today_et", return_value=market_time):
+             patch("options_owl.execution.paper_trader._today_et", return_value=market_time), \
+             patch("options_owl.risk.pipeline._now_et", return_value=market_time), \
+             patch("options_owl.risk.circuit_breaker._now_et", return_value=market_time):
             opened = await trader.evaluate_and_trade(sig, signal_id=20)
         assert opened is not None
 
@@ -323,14 +347,33 @@ class TestFullTradeLifecycle:
         trader = PaperTrader(settings)
         await trader.init()
 
+        # Mock candle cache with bearish data for PutBearishConfirmGate
+        from options_owl.collectors.candle_cache import CandleBar
+        bearish_bars = [
+            CandleBar(0, 170.0, 170.5, 168.0, 168.5, 1000, vwap=169.5),
+            CandleBar(0, 169.0, 169.5, 167.0, 167.5, 1000, vwap=169.0),
+            CandleBar(0, 168.0, 168.5, 166.0, 166.5, 1000, vwap=168.0),
+            CandleBar(0, 167.0, 167.5, 165.0, 165.5, 1000, vwap=167.0),
+            CandleBar(0, 166.0, 166.5, 164.0, 164.5, 1000, vwap=166.0),
+            CandleBar(0, 165.0, 165.5, 163.0, 163.5, 1000, vwap=165.0),
+        ]
+        mock_cc = AsyncMock()
+        mock_cc.get_candle_data = AsyncMock(return_value={
+            "5m": bearish_bars,
+            "indicators": {"5m": {"rsi": 38.0, "ema9": 164.0, "ema21": 167.0}},
+        })
+        trader._candle_cache = mock_cc
+
         market_time = datetime(2026, 4, 28, 10, 30, 0, tzinfo=ZoneInfo("America/New_York"))
         with patch.object(trader, "_get_current_price", return_value=168.70), \
-             patch("options_owl.execution.paper_trader._today_et", return_value=market_time):
+             patch("options_owl.execution.paper_trader._today_et", return_value=market_time), \
+             patch("options_owl.risk.pipeline._now_et", return_value=market_time), \
+             patch("options_owl.risk.circuit_breaker._now_et", return_value=market_time):
             opened = await trader.evaluate_and_trade(sig, signal_id=30)
         assert opened is not None
         trade_id = opened["trade_id"]
         total_contracts = opened["contracts"]
-        assert total_contracts == 8  # flat 85%: $1360/$170 = 8
+        assert total_contracts == 4  # flat 85% × PUT 50%: $680/$170 = 4
 
         # Partial close at T1
         partial = await trader.partial_close_trade(
@@ -635,7 +678,7 @@ class TestDiscordCollectorErrorHandling:
         """If evaluate_and_trade raises, discord_collector catches it and logs
         an error — the bot does not crash.
         """
-        from unittest.mock import AsyncMock, MagicMock, patch as mock_patch
+        from unittest.mock import AsyncMock
 
         settings = _make_e2e_settings(tmp_db_path)
         trader = PaperTrader(settings)
@@ -736,7 +779,7 @@ class TestWebullFillPriceExtraction:
     @pytest.mark.asyncio
     async def test_get_fill_price_retries_on_failure(self):
         """get_fill_price retries when get_order_status returns None (e.g. 429)."""
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import AsyncMock
 
         from options_owl.config.settings import Settings
         from options_owl.execution.webull_executor import WebullExecutor

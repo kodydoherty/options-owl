@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-import pytest
 
 from options_owl.sourcing.scoring.calibration import (
     _score_daily_bias,

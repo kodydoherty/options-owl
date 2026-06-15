@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BUG: ML Scanner Always Fetches CALL Premium (Breaks PUT Signals)</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-light: #dbeafe;
+            --danger: #dc2626;
+            --warning: #f59e0b;
+            --success: #16a34a;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-600: #4b5563;
+            --gray-800: #1f2937;
+            --gray-900: #111827;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            color: var(--gray-800);
+            line-height: 1.6;
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 2rem;
+            background: #fff;
+        }
+        header {
+            border-bottom: 3px solid var(--danger);
+            padding-bottom: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        header h1 { font-size: 1.75rem; color: var(--gray-900); }
+        .meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.5rem 2rem;
+            margin-top: 1rem;
+            font-size: 0.875rem;
+            color: var(--gray-600);
+        }
+        .meta dt { font-weight: 600; display: inline; }
+        .meta dd { display: inline; margin-left: 0.25rem; }
+        .status-badge {
+            display: inline-block;
+            padding: 0.125rem 0.625rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .status-active { background: var(--primary-light); color: var(--primary); }
+        section { margin-bottom: 2rem; }
+        section > h2 {
+            font-size: 1.25rem;
+            color: var(--primary);
+            border-bottom: 1px solid var(--gray-200);
+            padding-bottom: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        section > h3 { font-size: 1rem; margin: 1rem 0 0.5rem; color: var(--gray-900); }
+        ul, ol { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+        li { margin-bottom: 0.25rem; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1rem;
+            font-size: 0.875rem;
+        }
+        th, td {
+            text-align: left;
+            padding: 0.5rem 0.75rem;
+            border: 1px solid var(--gray-200);
+        }
+        th { background: var(--gray-50); font-weight: 600; }
+        pre {
+            background: var(--gray-50);
+            border: 1px solid var(--gray-200);
+            border-radius: 0.375rem;
+            padding: 1rem;
+            overflow-x: auto;
+            font-size: 0.8125rem;
+            line-height: 1.5;
+            margin-bottom: 1rem;
+        }
+        code { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: 0.8125rem; }
+        .callout {
+            padding: 0.75rem 1rem;
+            border-left: 4px solid var(--primary);
+            background: var(--primary-light);
+            border-radius: 0 0.375rem 0.375rem 0;
+            margin-bottom: 1rem;
+            font-size: 0.875rem;
+        }
+        .callout.danger { border-left-color: var(--danger); background: #fef2f2; }
+        .callout.warning { border-left-color: var(--warning); background: #fffbeb; }
+        .negative { color: var(--danger); font-weight: 600; }
+        footer {
+            margin-top: 3rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--gray-200);
+            font-size: 0.75rem;
+            color: var(--gray-600);
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>BUG: ML Scanner Always Fetches CALL Premium (Breaks PUT Signals)</h1>
+    <div class="meta">
+        <div><dt>Spec ID:</dt><dd>OWL-011</dd></div>
+        <div><dt>Status:</dt><dd><span class="status-badge status-active">Active</span></dd></div>
+        <div><dt>Project:</dt><dd>OptionsOwl</dd></div>
+        <div><dt>Category:</dt><dd>bugfix</dd></div>
+        <div><dt>Severity:</dt><dd><span class="negative">CRITICAL</span></dd></div>
+        <div><dt>Created:</dt><dd>2026-06-01</dd></div>
+        <div><dt>Author:</dt><dd>Claude + Kody</dd></div>
+    </div>
+</header>
+
+<section>
+    <h2>1. Problem Statement</h2>
+    <div class="callout danger">
+        <strong>Impact:</strong> 100% of PUT signals from the ML scanner are rejected by smart entry due to premium deviation.
+        On 2026-06-01, 8 PUT signals were detected but ALL rejected. Zero trades executed.
+    </div>
+
+    <p>The ML scanner in <code>bot_runner.py</code> hardcodes <code>"call"</code> when fetching option snapshots from Redis.
+    When the ML model detects a bearish pattern and emits a PUT signal, the premium attached to the signal is the
+    CALL premium (e.g., $0.26 for a deep OTM call), not the PUT premium (e.g., $3.45 for an ITM put).
+    Smart entry then fetches the actual PUT premium and sees a 100-1000% deviation, blocking the trade.</p>
+</section>
+
+<section>
+    <h2>2. Root Cause</h2>
+
+    <h3>2.1 The Hardcoded CALL Key</h3>
+    <pre><code># bot_runner.py line 211
+contract_key = f"{ticker}:call:{strike}:{expiry}"  # ALWAYS "call"</code></pre>
+
+    <h3>2.2 ATM Resolution Also CALL-Only</h3>
+    <pre><code># bot_runner.py line 228
+calls = [s for s in snaps if "call" in s.get("contract_key", "").lower()]</code></pre>
+
+    <h3>2.3 Direction Determined AFTER Data Collection</h3>
+    <p>The scanner accumulates CALL premium data into the state arrays. The ML model runs on this CALL data.
+    Direction (CALL vs PUT) is determined after the model fires, by checking underlying price movement
+    (lines 712-719). But the premium in the signal is still the CALL premium from <code>state.asks[-1]</code>.</p>
+
+    <h3>2.4 Evidence from 2026-06-01 Logs</h3>
+    <table>
+        <thead>
+            <tr><th>Signal</th><th>Scanner Premium (CALL)</th><th>Live Premium (PUT)</th><th>Deviation</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>AAPL PUT $310 min=60</td><td>$0.27</td><td>$1.17</td><td class="negative">+333%</td></tr>
+            <tr><td>AAPL PUT $310 min=66</td><td>$0.26</td><td>$1.35</td><td class="negative">+419%</td></tr>
+            <tr><td>AAPL PUT $310 min=67</td><td>$0.26</td><td>$1.82</td><td class="negative">+600%</td></tr>
+            <tr><td>AAPL PUT $310 min=71</td><td>$0.23</td><td>$2.55</td><td class="negative">+1009%</td></tr>
+            <tr><td>IWM PUT $287 min=69</td><td>$0.57</td><td>$1.00</td><td class="negative">+75%</td></tr>
+            <tr><td>IWM PUT $287 min=76</td><td>$0.52</td><td>$1.10</td><td class="negative">+112%</td></tr>
+            <tr><td>IWM PUT $287 min=84</td><td>$0.44</td><td>$1.10</td><td class="negative">+150%</td></tr>
+        </tbody>
+    </table>
+    <p>Redis had correct PUT data: AAPL PUT $310 bid=$3.30 ask=$3.60. The scanner never looked at it.</p>
+</section>
+
+<section>
+    <h2>3. Fix Design</h2>
+
+    <h3>3.1 After Direction is Determined, Fetch Correct Option Type</h3>
+    <p>Once the ML model fires and direction is determined (line 712-719), if direction is PUT:</p>
+    <ol>
+        <li>Fetch the PUT snapshot from Redis using <code>{ticker}:put:{strike}:{expiry}</code></li>
+        <li>If Redis has no PUT data, try Polygon REST fallback</li>
+        <li>Use the PUT premium (ask) as the signal premium</li>
+        <li>If PUT data unavailable, use the CALL premium as fallback (preserves existing behavior)</li>
+    </ol>
+
+    <h3>3.2 Files to Modify</h3>
+    <table>
+        <thead>
+            <tr><th>File</th><th>Change</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>options_owl/bot_runner.py</code></td>
+                <td>Add <code>_fetch_put_snapshot_from_redis()</code>; in <code>_run_ml_for_ticker()</code>,
+                after direction is determined as PUT, fetch PUT premium and override signal premium</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3>3.3 Why Not Track Both CALL and PUT States?</h3>
+    <p>Tracking dual states doubles memory, Redis reads, and complexity. The pattern model was trained on
+    generic option premium patterns (not direction-specific). The simpler fix is: detect pattern on CALL data
+    (working as trained), then fetch the correct premium for the actual direction before emitting the signal.</p>
+</section>
+
+<section>
+    <h2>4. Testing</h2>
+    <ul>
+        <li>Unit test: verify <code>_run_ml_for_ticker</code> returns PUT premium when direction=PUT</li>
+        <li>Integration test: PUT signal with Redis PUT data available passes smart entry</li>
+        <li>Edge case: PUT data not in Redis, falls back to CALL premium</li>
+        <li>Manual: deploy, wait for PUT signal, verify smart entry deviation is reasonable</li>
+    </ul>
+</section>
+
+<section>
+    <h2>5. Secondary Bug: Score Floor Mismatch</h2>
+    <div class="callout warning">
+        <strong>Also discovered:</strong> Pipeline approves at score &ge; 75, but <code>score_to_contracts()</code>
+        rejects at score &lt; 78. The one IWM CALL signal that passed all gates was killed by sizing:
+        <code>SIZING: score 75 &lt; 78 &rarr; 0 contracts (rejected)</code>
+    </div>
+    <p>The pipeline score gate and the sizing score floor should match. Either raise the pipeline gate to 78
+    or lower the sizing floor to 75.</p>
+</section>
+
+<footer>
+    OptionsOwl &mdash; Bug Specification | 2026-06-01
+</footer>
+
+</body>
+</html>

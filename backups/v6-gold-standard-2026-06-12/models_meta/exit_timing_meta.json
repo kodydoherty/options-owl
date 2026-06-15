@@ -1,0 +1,32 @@
+{
+  "features": [
+    "minutes_in_trade",
+    "current_pnl_pct",
+    "peak_pnl_pct",
+    "drop_from_peak_pct",
+    "premium_momentum_5m",
+    "premium_velocity",
+    "premium_acceleration",
+    "underlying_price",
+    "underlying_momentum_5m",
+    "underlying_from_entry",
+    "current_spread_pct",
+    "current_iv",
+    "current_delta",
+    "current_theta",
+    "current_volume",
+    "minutes_since_open",
+    "is_call"
+  ],
+  "n_train": 11439804,
+  "n_test": 155367,
+  "split": "date_walk_forward",
+  "embargo_days": 1,
+  "walk_forward_folds": 22,
+  "walk_forward_mean": 0.5991561733668314,
+  "walk_forward_std": 0.014439719615007951,
+  "auc": 0.627788976036372,
+  "accuracy": 0.5856649095367742,
+  "precision": 0.5737097088074729,
+  "recall": 0.7111226782789747
+}

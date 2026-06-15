@@ -15,7 +15,11 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
-from options_owl.risk.exit_v5.config import V5Config, get_ticker_config
+from options_owl.risk.exit_v5.config import (
+    V5Config,
+    apply_v7_wide_trail_exits,
+    get_ticker_config,
+)
 from options_owl.risk.exit_v5.fsm import ExitFSM, TradeState
 from options_owl.risk.exit_v5.types import ExitReason
 
@@ -52,10 +56,29 @@ class V5MonitorBridge:
 
     def __init__(self, settings: Settings):
         self.settings = settings
+        # V7 wide-trail exits. CALL + PUT FSMs use a settings copy with scaleout +
+        # 2PM-tighten OFF (breakeven ratchet stays ON). The per-side cfg transform
+        # differs: CALLs get the faster stall-cut (theta 60); PUTs keep no-hold-limit
+        # so they can ride slow-building crashes (see apply_v7_wide_trail_exits).
+        self._v7_wide_trail = getattr(settings, "ENABLE_V7_WIDE_TRAIL", False)
+        self._v7_settings = settings
+        if self._v7_wide_trail:
+            self._v7_settings = settings.model_copy(
+                update={
+                    "ENABLE_V6_SCALEOUT": False,
+                    "ENABLE_V6_2PM_TIGHTEN": False,
+                    "ENABLE_V6_BREAKEVEN_RATCHET": True,
+                }
+            )
         self.cfg = V5Config.from_settings(settings)
         self._use_per_ticker = getattr(settings, "ENABLE_V6_PER_TICKER_CONFIG", False)
-        # Default FSM for tickers without per-ticker config
-        self.fsm = ExitFSM(self.cfg, settings=settings)
+        # Default FSM for CALL tickers without per-ticker config
+        _default_cfg = (
+            apply_v7_wide_trail_exits(self.cfg, is_put=False)
+            if self._v7_wide_trail
+            else self.cfg
+        )
+        self.fsm = ExitFSM(_default_cfg, settings=self._v7_settings)
         self._states: dict[int, TradeState] = {}
         # Cache per-ticker FSMs to avoid re-creating each cycle
         self._ticker_fsms: dict[str, ExitFSM] = {}
@@ -189,7 +212,14 @@ class V5MonitorBridge:
                 use_per_ticker=self._use_per_ticker,
                 option_type=option_type,
             )
-            self._ticker_fsms[cache_key] = ExitFSM(cfg, settings=self.settings)
+            # V7 wide-trail applies to both CALL and PUT; the per-side cfg transform
+            # differs (CALLs get theta 60 stall-cut; PUTs keep no-hold-limit).
+            if self._v7_wide_trail:
+                cfg = apply_v7_wide_trail_exits(cfg, is_put=is_put)
+                fsm_settings = self._v7_settings
+            else:
+                fsm_settings = self.settings
+            self._ticker_fsms[cache_key] = ExitFSM(cfg, settings=fsm_settings)
         return self._ticker_fsms[cache_key]
 
     def evaluate(

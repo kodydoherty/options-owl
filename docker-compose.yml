@@ -98,10 +98,10 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=23000
-      - PAPER_TRADE=true
-      - WEBULL_KILL_SWITCH=true
+      - PAPER_TRADE=false
+      - WEBULL_KILL_SWITCH=false
       - EXIT_ENGINE=v5
-      - MAX_CONCURRENT=5
+      - MAX_CONCURRENT=8
       - MAX_POSITION_PCT=15
       - MAX_DCA_POSITION_PCT=10
       - MAX_TRADE_LOSS_EXIT_PCT=8
@@ -118,24 +118,99 @@ services:
       - ENABLE_DISCORD_SIGNALS=false
       # V6 enhancements
       - ENABLE_V6_PER_TICKER_CONFIG=true
+      # V7 Phase A (CALL wide-trail exits) — kody only, staged rollout 2026-06-12.
+      # Exit-only ablation: both OOS windows beat V6 exits at identical win rate
+      # (OOS +72% / OOS2 +27% P&L, higher PF). PUTs unchanged.
+      - ENABLE_V7_WIDE_TRAIL=true
+      # V7 gate-volume fix (multi-value sweep 2026-06-13, 3 OOS windows): pattern 0.74→0.62
+      # at entry 0.80. ~1.8× volume (1.7→3.1 trades/day), PF holds ~3.8, DD 6.5→10.
+      - ML_PATTERN_THRESHOLD=0.62
+      # UW whale-flow signals on all bots 2026-06-13 (live on kody/dennis, paper on adam/vinny/yank).
+      - ENABLE_UW_FLOW_SIGNAL=true
+      # Selective OTM flow strike (validated combos: AMD/INTC/META/SPY calls, TSLA puts) — 2026-06-15.
+      - ENABLE_FLOW_OTM_STRIKE=true
+      # Stage D conviction sizing — kody LIVE 2026-06-14 (validated +72% / combined PF 1.78; vinny paper canary).
+      - ENABLE_V7_CONVICTION_SIZING=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true
       - ENABLE_V6_2PM_TIGHTEN=true
-      - ENABLE_V6_PREMIUM_CAP=true
+      - ENABLE_V6_PREMIUM_CAP=false
+      - ENABLE_OTM_DISTANCE_GATE=false
+      - ENABLE_DELTA_GATE=true
       - ENABLE_V6_SPREAD_GATE=true
       - ENABLE_V6_SCALEOUT=true
       - ENABLE_V6_DCA=true
       - ENABLE_V6_EARLY_POP_GATE=true
       - ENABLE_DIP_CONFIRM=true
-
+      # Polygon WS disabled — Kody's key is used by harvester for centralized flow capture.
+      # Premium monitoring uses Polygon REST (accurate, ~1s delay). All agents get
+      # real-time flow data from harvester via Redis pub/sub.
+      - ENABLE_POLYGON_WS=false
       - AGENT_ID=owlet_kody
       - ENABLE_POSTGRES=true
       - DATABASE_URL=postgresql://owl:${POSTGRES_PASSWORD:-owl_dev_2026}@postgres:5432/options_owl
       - ENABLE_REDIS=true
       - REDIS_URL=redis://redis:6379/0
-      - SHARED_CANDLE_DB=/app/shared_harvester/options_data.db
+
     volumes:
       - ./journal/owlet-kody:/app/journal
-      - ./journal/owlet-harvester:/app/shared_harvester:rw
+      - ./journal/models:/app/journal/models:ro
+
+  owlet-dennis:
+    <<: *bot-common
+    container_name: owlet-dennis
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PORTFOLIO_SIZE=10000
+      - PAPER_TRADE=false
+      - WEBULL_KILL_SWITCH=false
+      - EXIT_ENGINE=v5
+      - MAX_CONCURRENT=8
+      - MAX_POSITION_PCT=15
+      - MAX_DCA_POSITION_PCT=10
+      - MAX_TRADE_LOSS_EXIT_PCT=8
+      - MAX_PORTFOLIO_RISK_PCT=75
+      - ENABLE_WEBULL_PAPER=true
+      - WEBULL_APP_KEY=${DENNIS_WEBULL_APP_KEY}
+      - WEBULL_APP_SECRET=${DENNIS_WEBULL_APP_SECRET}
+      # Signal source: sourcing pipeline only (no Discord signals)
+      - ENABLE_DISCORD_SIGNALS=false
+      # V6 enhancements
+      - ENABLE_V6_PER_TICKER_CONFIG=true
+      # V7 wide-trail exits (CALL + PUT) — enabled for dennis 2026-06-12
+      - ENABLE_V7_WIDE_TRAIL=true
+      # V7 gate-volume fix (multi-value sweep 2026-06-13, 3 OOS windows): pattern 0.74→0.62
+      # at entry 0.80. ~1.8× volume (1.7→3.1 trades/day), PF holds ~3.8, DD 6.5→10.
+      - ML_PATTERN_THRESHOLD=0.62
+      # UW whale-flow signals on all bots 2026-06-13 (live on kody/dennis, paper on adam/vinny/yank).
+      - ENABLE_UW_FLOW_SIGNAL=true
+      # Selective OTM flow strike (validated combos: AMD/INTC/META/SPY calls, TSLA puts) — 2026-06-15.
+      - ENABLE_FLOW_OTM_STRIKE=true
+      - ENABLE_V6_BREAKEVEN_RATCHET=true
+      - ENABLE_V6_2PM_TIGHTEN=true
+      - ENABLE_V6_PREMIUM_CAP=false
+      - ENABLE_OTM_DISTANCE_GATE=false
+      - ENABLE_DELTA_GATE=true
+      - ENABLE_V6_SPREAD_GATE=true
+      - ENABLE_V6_SCALEOUT=true
+      - ENABLE_V6_DCA=true
+      - ENABLE_V6_EARLY_POP_GATE=true
+      - ENABLE_DIP_CONFIRM=true
+      - ENABLE_POLYGON_WS=false
+      - ENABLE_V7_CONVICTION_SIZING=true
+      - AGENT_ID=owlet_dennis
+      - ENABLE_POSTGRES=true
+      - DATABASE_URL=postgresql://owl:${POSTGRES_PASSWORD:-owl_dev_2026}@postgres:5432/options_owl
+      - ENABLE_REDIS=true
+      - REDIS_URL=redis://redis:6379/0
+
+    volumes:
+      - ./journal/owlet-dennis:/app/journal
+      - ./journal/models:/app/journal/models:ro
 
   owlet-adam:
     <<: *bot-common
@@ -149,13 +224,13 @@ services:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=4685
       - POLYGON_API_KEY=${ADAM_POLYGON_API_KEY}
-      - ENABLE_POLYGON_WS=true
+      - ENABLE_POLYGON_WS=false
       - WEBULL_APP_KEY=${ADAM_WEBULL_APP_KEY}
       - WEBULL_APP_SECRET=${ADAM_WEBULL_APP_SECRET}
       - PAPER_TRADE=true
       - WEBULL_KILL_SWITCH=true
       - EXIT_ENGINE=v5
-      - MAX_CONCURRENT=5
+      - MAX_CONCURRENT=8
       - MAX_POSITION_PCT=15
       - MAX_DCA_POSITION_PCT=10
       - MAX_TRADE_LOSS_EXIT_PCT=8
@@ -165,24 +240,34 @@ services:
       - ENABLE_DISCORD_SIGNALS=false
       # V6 enhancements
       - ENABLE_V6_PER_TICKER_CONFIG=true
+      # Same V7 strategy as kody/dennis (identical code+config; only PAPER_TRADE differs).
+      - ENABLE_V7_WIDE_TRAIL=true
+      - ML_PATTERN_THRESHOLD=0.62
+      # UW whale-flow signals on all bots 2026-06-13 (live on kody/dennis, paper on adam/vinny/yank).
+      - ENABLE_UW_FLOW_SIGNAL=true
+      # Selective OTM flow strike (validated combos: AMD/INTC/META/SPY calls, TSLA puts) — 2026-06-15.
+      - ENABLE_FLOW_OTM_STRIKE=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true
       - ENABLE_V6_2PM_TIGHTEN=true
-      - ENABLE_V6_PREMIUM_CAP=true
+      - ENABLE_V6_PREMIUM_CAP=false
+      - ENABLE_OTM_DISTANCE_GATE=false
+      - ENABLE_DELTA_GATE=true
       - ENABLE_V6_SPREAD_GATE=true
       - ENABLE_V6_SCALEOUT=true
       - ENABLE_V6_DCA=true
       - ENABLE_V6_EARLY_POP_GATE=true
       - ENABLE_DIP_CONFIRM=true
 
+      - ENABLE_V7_CONVICTION_SIZING=true
       - AGENT_ID=owlet_adam
       - ENABLE_POSTGRES=true
       - DATABASE_URL=postgresql://owl:${POSTGRES_PASSWORD:-owl_dev_2026}@postgres:5432/options_owl
       - ENABLE_REDIS=true
       - REDIS_URL=redis://redis:6379/0
-      - SHARED_CANDLE_DB=/app/shared_harvester/options_data.db
+
     volumes:
       - ./journal/owlet-adam:/app/journal
-      - ./journal/owlet-harvester:/app/shared_harvester:rw
+      - ./journal/models:/app/journal/models:ro
 
   owlet-vinny:
     <<: *bot-common
@@ -196,13 +281,13 @@ services:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=3123
       - POLYGON_API_KEY=${VINNY_POLYGON_API_KEY}
-      - ENABLE_POLYGON_WS=true
+      - ENABLE_POLYGON_WS=false
       - WEBULL_APP_KEY=${VINNY_WEBULL_APP_KEY}
       - WEBULL_APP_SECRET=${VINNY_WEBULL_APP_SECRET}
       - PAPER_TRADE=true
       - WEBULL_KILL_SWITCH=true
       - EXIT_ENGINE=v5
-      - MAX_CONCURRENT=5
+      - MAX_CONCURRENT=8
       - MAX_POSITION_PCT=15
       - MAX_DCA_POSITION_PCT=10
       - MAX_TRADE_LOSS_EXIT_PCT=8
@@ -212,13 +297,24 @@ services:
       - ENABLE_DISCORD_SIGNALS=false
       # V6 enhancements
       - ENABLE_V6_PER_TICKER_CONFIG=true
+      # Same V7 strategy as kody/dennis (identical code+config; only PAPER_TRADE differs).
+      - ENABLE_V7_WIDE_TRAIL=true
+      - ML_PATTERN_THRESHOLD=0.62
+      # UW whale-flow signals on all bots 2026-06-13 (live on kody/dennis, paper on adam/vinny/yank).
+      - ENABLE_UW_FLOW_SIGNAL=true
+      # Selective OTM flow strike (validated combos: AMD/INTC/META/SPY calls, TSLA puts) — 2026-06-15.
+      - ENABLE_FLOW_OTM_STRIKE=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true
       - ENABLE_V6_2PM_TIGHTEN=true
-      - ENABLE_V6_PREMIUM_CAP=true
+      - ENABLE_V6_PREMIUM_CAP=false
+      - ENABLE_OTM_DISTANCE_GATE=false
+      - ENABLE_DELTA_GATE=true
       - ENABLE_V6_SPREAD_GATE=true
       - ENABLE_V6_SCALEOUT=true
       - ENABLE_V6_DCA=true
       - ENABLE_V6_SIDEWAYS_SCALP=true
+      # Stage D conviction sizing — vinny FIRST (paper canary), validated +72%/PF1.64; then kody.
+      - ENABLE_V7_CONVICTION_SIZING=true
       - ENABLE_V6_EARLY_POP_GATE=true
       - ENABLE_DIP_CONFIRM=true
 
@@ -227,10 +323,10 @@ services:
       - DATABASE_URL=postgresql://owl:${POSTGRES_PASSWORD:-owl_dev_2026}@postgres:5432/options_owl
       - ENABLE_REDIS=true
       - REDIS_URL=redis://redis:6379/0
-      - SHARED_CANDLE_DB=/app/shared_harvester/options_data.db
+
     volumes:
       - ./journal/owlet-vinny:/app/journal
-      - ./journal/owlet-harvester:/app/shared_harvester:rw
+      - ./journal/models:/app/journal/models:ro
 
   owlet-yank:
     <<: *bot-common
@@ -244,13 +340,13 @@ services:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=3600
       - POLYGON_API_KEY=${YANK_POLYGON_API_KEY}
-      - ENABLE_POLYGON_WS=true
+      - ENABLE_POLYGON_WS=false
       - WEBULL_APP_KEY=${YANK_WEBULL_APP_KEY}
       - WEBULL_APP_SECRET=${YANK_WEBULL_APP_SECRET}
       - PAPER_TRADE=true
       - WEBULL_KILL_SWITCH=true
       - EXIT_ENGINE=v5
-      - MAX_CONCURRENT=5
+      - MAX_CONCURRENT=8
       - MAX_POSITION_PCT=15
       - MAX_DCA_POSITION_PCT=10
       - MAX_TRADE_LOSS_EXIT_PCT=8
@@ -260,75 +356,110 @@ services:
       - ENABLE_DISCORD_SIGNALS=false
       # V6 enhancements
       - ENABLE_V6_PER_TICKER_CONFIG=true
+      # Same V7 strategy as kody/dennis (identical code+config; only PAPER_TRADE differs).
+      - ENABLE_V7_WIDE_TRAIL=true
+      - ML_PATTERN_THRESHOLD=0.62
+      # UW whale-flow signals on all bots 2026-06-13 (live on kody/dennis, paper on adam/vinny/yank).
+      - ENABLE_UW_FLOW_SIGNAL=true
+      # Selective OTM flow strike (validated combos: AMD/INTC/META/SPY calls, TSLA puts) — 2026-06-15.
+      - ENABLE_FLOW_OTM_STRIKE=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true
       - ENABLE_V6_2PM_TIGHTEN=true
-      - ENABLE_V6_PREMIUM_CAP=true
+      - ENABLE_V6_PREMIUM_CAP=false
+      - ENABLE_OTM_DISTANCE_GATE=false
+      - ENABLE_DELTA_GATE=true
       - ENABLE_V6_SPREAD_GATE=true
       - ENABLE_V6_SCALEOUT=true
       - ENABLE_V6_DCA=true
       - ENABLE_V6_EARLY_POP_GATE=true
       - ENABLE_DIP_CONFIRM=true
 
+      - ENABLE_V7_CONVICTION_SIZING=true
       - AGENT_ID=owlet_yank
       - ENABLE_POSTGRES=true
       - DATABASE_URL=postgresql://owl:${POSTGRES_PASSWORD:-owl_dev_2026}@postgres:5432/options_owl
       - ENABLE_REDIS=true
       - REDIS_URL=redis://redis:6379/0
-      - SHARED_CANDLE_DB=/app/shared_harvester/options_data.db
+
     volumes:
       - ./journal/owlet-yank:/app/journal
-      - ./journal/owlet-harvester:/app/shared_harvester:rw
+      - ./journal/models:/app/journal/models:ro
 
-  # ── Signal generation engine (replaces N8N) ──
-  owlet-sourcing:
+  # ── Signal generation engine — DISABLED ──
+  # Each trading bot now runs its own ML scan loop (V3 models) directly in
+  # bot_runner.py, matching the gold standard backtest. The standalone sourcing
+  # container is no longer needed — bots fetch live Polygon data and run
+  # pattern_entry + entry_timing + regime_classifier themselves.
+  # owlet-sourcing:
+  #   <<: *bot-common
+  #   container_name: owlet-sourcing
+  #   command: ["python", "-m", "options_owl.sourcing.ml_pipeline"]
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #     postgres:
+  #       condition: service_healthy
+  #   environment:
+  #     - PYTHONUNBUFFERED=1
+  #     - ENABLE_ML_PIPELINE=true
+  #     - ML_PATTERN_THRESHOLD=0.85
+  #     - ML_ENTRY_THRESHOLD=0.70
+  #     - ML_REGIME_THRESHOLD=0.19
+  #     - ML_SCAN_START_MIN=5
+  #     - ML_SCAN_END_MIN=90
+  #     - DATABASE_URL=postgresql://owl:${POSTGRES_PASSWORD:-owl_dev_2026}@postgres:5432/options_owl
+  #     - AGENT_ID=owlet_sourcing
+  #     - ENABLE_REDIS=true
+  #     - REDIS_URL=redis://redis:6379/0
+  #   volumes:
+  #     - ./journal/owlet-sourcing:/app/journal:rw
+  #     - ./journal/models:/app/journal/models:ro
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 512M
+
+  # ── Agent Dashboard (web UI for monitoring + controls) ──
+  owlet-dashboard:
     <<: *bot-common
-    container_name: owlet-sourcing
-    command: ["python", "-m", "options_owl.sourcing.scanner"]
+    container_name: owlet-dashboard
+    command: ["python", "-m", "options_owl.dashboard.app"]
+    ports:
+      - "0.0.0.0:8443:8443"
     depends_on:
-      redis:
-        condition: service_healthy
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     environment:
       - PYTHONUNBUFFERED=1
-      - SOURCING_MODE=true
-      - SCAN_INTERVAL_SECONDS=180
-      - SCORE_THRESHOLD=60
       - DATABASE_URL=postgresql://owl:${POSTGRES_PASSWORD:-owl_dev_2026}@postgres:5432/options_owl
-      # Data sources
-      - ENABLE_SOURCE_HARVESTER_CANDLES=true
-      - ENABLE_SOURCE_TWELVE_DATA=false
-      - ENABLE_SOURCE_POLYGON_OPTIONS=true
-      - ENABLE_SOURCE_POLYGON_NEWS=false
-      - ENABLE_SOURCE_UNUSUAL_WHALES=false
-      - ENABLE_SOURCE_GROK_AI=false
-      # Alpha sources
-      - ENABLE_SEC_INSIDER=true
-      - ENABLE_UW_CONGRESS=true
-      - ENABLE_STOCKTWITS_SENTIMENT=true
-      # ML gates (all off until trained)
-      - ENABLE_ML_FLOW_CLASSIFIER=false
-      - ENABLE_ML_ENTRY_OPTIMIZER=false
-      - ENABLE_ML_QUALITY_PREDICTOR=false
-      # Ticker watchlist
-      - SOURCING_TICKERS=SPY,QQQ,NVDA,TSLA,META,AAPL,AMZN,GOOGL,MSFT,AMD,MSTR,PLTR,AVGO
-      # State
-      - AGENT_ID=owlet_sourcing
-      - ENABLE_REDIS=true
       - REDIS_URL=redis://redis:6379/0
-      - SHARED_CANDLE_DB=/app/shared_harvester/options_data.db
+      - DASHBOARD_SECRET_KEY=${DASHBOARD_SECRET_KEY:-change-me-in-production}
+      - DASHBOARD_DEFAULT_PASSWORD=${DASHBOARD_DEFAULT_PASSWORD:-changeme123}
+      - DASHBOARD_PORT=8443
     volumes:
-      - ./journal/owlet-sourcing:/app/journal:rw
-      - ./journal/owlet-harvester:/app/shared_harvester:rw
+      - ./journal:/app/journal:ro
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; r=httpx.get('http://localhost:8443/health'); assert r.status_code==200"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-  # Standalone data harvester — captures Polygon options chain snapshots
-  # (bid/ask/mid/OI/day OHLC) and computes IV + greeks locally via Black-Scholes.
-  # Writes to its own DB (options_data.db) for ML training + backtesting.
-  # Does not trade, does not read Discord — pure data collection.
+  # Centralized data harvester — single source of truth for all market data.
+  # Captures: Polygon options chain snapshots, stock candles (/stocks WS),
+  # institutional option flow (/options WS), and streams to all bots via Redis.
+  # All trading bots have ENABLE_POLYGON_WS=false — they read from Redis/PG.
   owlet-harvester:
     <<: *bot-common
     container_name: owlet-harvester
@@ -336,15 +467,48 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       - PYTHONUNBUFFERED=1
-      - HARVEST_UNIVERSE=SPY,QQQ,IWM,AAPL,TSLA,NVDA,META,AMD,AMZN,GOOGL,MSFT,MU,MSTR,NFLX,SMCI,PLTR,COIN,BA,JPM,XLK,XLF,DIA,GLD,SLV,TLT,VIX
-      - HARVEST_POLL_INTERVAL=60
+      # + new UW-flow CALL tickers (ORCL,INTC,ARM,GOOG,LRCX) so agents get real-time Redis price/
+      # candle/premium streams for them (else they fall back to Polygon REST). GOOG ≠ GOOGL.
+      - HARVEST_UNIVERSE=SPY,QQQ,IWM,AAPL,TSLA,NVDA,META,AMD,AMZN,GOOGL,MSFT,MU,MSTR,NFLX,SMCI,PLTR,COIN,BA,JPM,AVGO,XLK,XLF,DIA,GLD,SLV,TLT,VIX,ORCL,INTC,ARM,GOOG,LRCX
+      - HARVEST_POLL_INTERVAL=15
       - HARVEST_MAX_DTE=7
       - HARVEST_STRIKE_WINDOW=5
       - HARVEST_MARKET_HOURS_ONLY=true
-      # PostgreSQL for tick data capture (stock prices, option snapshots)
+      # PostgreSQL for tick data capture (stock prices, option snapshots, flow)
       - ENABLE_POSTGRES=true
       - DATABASE_URL=postgresql://owl:${POSTGRES_PASSWORD:-owl_dev_2026}@postgres:5432/options_owl
+      # Redis for real-time streaming to all trading bots
+      - ENABLE_REDIS=true
+      - REDIS_URL=redis://redis:6379/0
+      # Centralized flow capture — uses Kody's key for /options WS.
+      # All bots have ENABLE_POLYGON_WS=false so this key's slot is free.
+      - FLOW_POLYGON_API_KEY=${POLYGON_API_KEY}
     volumes:
       - ./journal/owlet-harvester:/app/journal
+
+  # SHADOW MODE: logs whale ask-side put-sweep signals (META/AMZN/AAPL/TSLA), does NOT
+  # trade. Phase 6 of down-day-capture — validate live signals vs backtest before wiring
+  # into the entry pipeline. Needs UNUSUAL_WHALES_API_KEY in .env (env_file).
+  owlet-flow-shadow:
+    <<: *bot-common
+    container_name: owlet-flow-shadow
+    command: ["python", "scripts/uw_flow_shadow.py"]
+    healthcheck:
+      disable: true
+    volumes:
+      - ./journal:/app/journal   # shared journal so uw_flow/uw_flow_alerts.db is queryable alongside other data
+
+  # Forward-collects darkpool prints (UW has no history) → journal/darkpool/darkpool.db, for B3
+  # (darkpool S/R) research. Observe-only, REST poll every 5min market hours; zero trade impact.
+  owlet-darkpool-shadow:
+    <<: *bot-common
+    container_name: owlet-darkpool-shadow
+    command: ["python", "scripts/uw_darkpool_shadow.py"]
+    healthcheck:
+      disable: true
+    volumes:
+      - ./journal:/app/journal

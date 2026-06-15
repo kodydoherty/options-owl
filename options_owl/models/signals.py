@@ -37,6 +37,7 @@ class BotSource(str, Enum):
     RUFIO = "Rufio"
     UNKNOWN = "unknown"
     ML_SOURCING = "ml_sourcing"
+    UW_FLOW = "uw_flow"  # Unusual Whales whale-sweep signal source (Track 4)
 
 
 class TradeOutcome(str, Enum):
@@ -96,6 +97,12 @@ class TradeSignal(BaseModel):
     author: str = ""
     timestamp: datetime | None = None
     raw_text: str = ""
+
+    # UW flow conviction fields (Stage D sizing) — carried from the flow collector to
+    # score_to_contracts so high-conviction whale flow gets a bigger bet. None for non-flow.
+    flow_cluster_count: int | None = None
+    flow_total_premium: float | None = None
+    flow_ask_frac: float | None = None
 
 
 class PriceBar(BaseModel):

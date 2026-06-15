@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Feature-Pipeline Expansion: Harvester GEX/Charm/Vanna + Shared Feature Module + Serving Wiring</title>
+    <style>
+        :root { --primary:#2563eb; --primary-light:#dbeafe; --danger:#dc2626; --warning:#f59e0b; --success:#16a34a; --gray-50:#f9fafb; --gray-100:#f3f4f6; --gray-200:#e5e7eb; --gray-600:#4b5563; --gray-800:#1f2937; --gray-900:#111827; }
+        * { box-sizing:border-box; margin:0; padding:0; }
+        body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; color:var(--gray-800); line-height:1.6; max-width:960px; margin:0 auto; padding:2rem; background:#fff; }
+        header { border-bottom:3px solid var(--primary); padding-bottom:1.5rem; margin-bottom:2rem; }
+        header h1 { font-size:1.6rem; color:var(--gray-900); }
+        .meta { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:0.5rem 2rem; margin-top:1rem; font-size:0.875rem; color:var(--gray-600); }
+        .meta dt { font-weight:600; display:inline; } .meta dd { display:inline; margin-left:0.25rem; }
+        .status-badge { display:inline-block; padding:0.125rem 0.625rem; border-radius:9999px; font-size:0.75rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; }
+        .status-todo { background:var(--gray-200); color:var(--gray-600); }
+        section { margin-bottom:2rem; }
+        section > h2 { font-size:1.25rem; color:var(--primary); border-bottom:1px solid var(--gray-200); padding-bottom:0.5rem; margin-bottom:1rem; }
+        section > h3 { font-size:1rem; margin:1rem 0 0.5rem; color:var(--gray-900); }
+        ul,ol { padding-left:1.5rem; margin-bottom:0.75rem; } li { margin-bottom:0.25rem; }
+        table { width:100%; border-collapse:collapse; margin-bottom:1rem; font-size:0.875rem; }
+        th,td { text-align:left; padding:0.5rem 0.75rem; border:1px solid var(--gray-200); vertical-align:top; }
+        th { background:var(--gray-50); font-weight:600; }
+        pre { background:var(--gray-50); border:1px solid var(--gray-200); border-radius:0.375rem; padding:1rem; overflow-x:auto; font-size:0.8125rem; line-height:1.5; margin-bottom:1rem; }
+        code { font-family:'SF Mono','Fira Code','Consolas',monospace; font-size:0.8125rem; }
+        .callout { padding:0.75rem 1rem; border-left:4px solid var(--primary); background:var(--primary-light); border-radius:0 0.375rem 0.375rem 0; margin-bottom:1rem; font-size:0.875rem; }
+        .callout.warning { border-left-color:var(--warning); background:#fffbeb; }
+        .callout.danger { border-left-color:var(--danger); background:#fef2f2; }
+        .changelog { font-size:0.875rem; } .changelog dt { font-weight:600; margin-top:0.5rem; } .changelog dd { margin-left:1rem; color:var(--gray-600); }
+        footer { margin-top:3rem; padding-top:1rem; border-top:1px solid var(--gray-200); font-size:0.75rem; color:var(--gray-600); }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Feature-Pipeline Expansion: Harvester GEX/Charm/Vanna + Shared Feature Module + Serving Wiring</h1>
+    <div class="meta">
+        <div><dt>Spec ID:</dt><dd>feature-pipeline-expansion</dd></div>
+        <div><dt>Status:</dt><dd><span class="status-badge status-todo">Todo</span></dd></div>
+        <div><dt>Project:</dt><dd>OptionsOwl</dd></div>
+        <div><dt>Category:</dt><dd>pipeline / data-capture</dd></div>
+        <div><dt>Created:</dt><dd>2026-06-10</dd></div>
+        <div><dt>Updated:</dt><dd>2026-06-10</dd></div>
+        <div><dt>Version:</dt><dd>v1</dd></div>
+        <div><dt>Author:</dt><dd>Kody Doherty (via Claude)</dd></div>
+    </div>
+</header>
+
+<section>
+    <h2>1. Overview</h2>
+    <p>The 2026-06-10 ML review proved that the regime model's real edge collapses to ~0.53 (coin-flip) once data leakage is removed, but recovers to a genuine walk-forward AUC of <strong>0.636</strong> when fed serve-time-safe cross-market and dealer-positioning (GEX) features. ticker_selection recovered from broken/NaN to <strong>0.711</strong>. Those models cannot be deployed yet because the live serving path (<code>ml_pipeline.py:compute_regime_features</code>) only produces the old 18 features, and the GEX features were sourced from a stale external Unusual Whales sqlite (<code>uw_historical.db</code>, ends 2026-05-21) that is never fed live. This spec expands the harvester to <strong>self-compute and persist</strong> the missing feature inputs (GEX / charm / vanna) and introduces a <strong>single shared feature module</strong> used by both the trainer and the owlet serving path, so training and serving features are identical by construction.</p>
+</section>
+
+<section>
+    <h2>2. Problem Statement</h2>
+    <ul>
+        <li><strong>Train/serve skew (root cause):</strong> training computes features from historical sqlite DBs (thetadata + UW) while serving computes a different, smaller subset from Postgres/in-memory. They drift apart — this is the "40 vs 18" gap and the same class of bug as the V2 feature skew already fixed.</li>
+        <li><strong>No live GEX source:</strong> dealer gamma/charm/vanna currently come from a stale external UW sqlite. At serve time they zero-fill, degrading the regime model.</li>
+        <li><strong>Hardcoded data-provider credentials:</strong> <code>scripts/download_thetadata.py</code> falls back to hardcoded ThetaData creds instead of reading <code>.env</code> (pre-existing; flagged for cleanup here).</li>
+    </ul>
+</section>
+
+<section>
+    <h2>3. Goals &amp; Success Criteria</h2>
+    <ul>
+        <li>Harvester computes charm + vanna (in addition to existing delta/gamma/theta/vega) and persists a per-ticker dealer-positioning aggregate (net GEX, charm, vanna, call/put gamma) to a new Postgres table every harvest cycle — <strong>no external UW dependency</strong>.</li>
+        <li>A single shared feature module produces the regime feature set; both <code>scripts/train_ml_models_v3.py</code> and <code>ml_pipeline.py:compute_regime_features</code> import it. A unit test asserts training features == serving features (zero skew).</li>
+        <li>The deployed regime + ticker_selection models receive their full feature set live (no silent zero-fill).</li>
+        <li>signal_quality reworked the same way regime/ticker_selection were (label + serve-time features + robust validation); no longer a leakage artifact.</li>
+        <li>Full local test suite green; models retrained on the 190-day dataset; gold-standard backtest re-run before any production deploy.</li>
+    </ul>
+</section>
+
+<section>
+    <h2>4. Business Logic</h2>
+    <p>Dealer Gamma Exposure (GEX) is approximated from the option chain the harvester already snapshots, removing the need for a third-party feed.</p>
+    <h3>4.1 Rules &amp; Constraints</h3>
+    <ul>
+        <li><strong>GEX proxy:</strong> per strike, <code>gamma_exposure = gamma × open_interest × 100 × spot</code>; net GEX = Σ(call_gamma_exposure) − Σ(put_gamma_exposure) over the snapshotted chain. Charm/vanna aggregated analogously from the new per-contract greeks.</li>
+        <li><strong>Serve-time safety (CRITICAL):</strong> every feature must be computable from <em>only past data</em> at the model's serve time (~9:45 ET). No same-day full-day aggregates, no future bars. Open-interest is fixed at the open (prior-day close OI), so OI-based GEX is serve-time-safe.</li>
+        <li><strong>Leakage features remain banned:</strong> <code>day_range_pct</code>, <code>day_volume</code>, and same-day options-volume aggregates stay dropped (asserted in code).</li>
+        <li><strong>Single feature definition:</strong> a feature is defined exactly once in the shared module; trainer and serving call the same function against the same Postgres tables.</li>
+        <li><strong>Underlying universe:</strong> SPY/QQQ/VIX candles are already harvested — cross-market features read from <code>stock_candles</code>; no new capture needed for those.</li>
+    </ul>
+    <h3>4.2 Edge Cases</h3>
+    <ul>
+        <li>Empty / sparse chain (illiquid ticker, pre-open) → GEX returns 0 with a logged reason, never NaN.</li>
+        <li>Missing OI (Polygon returns null) → contract excluded from the GEX sum, not treated as 0-gamma noise.</li>
+        <li>New <code>gex_ticks</code> table empty during rollout → serving feature module returns 0 for GEX features and logs once (model still loads).</li>
+        <li>VIX absent in some windows → feature 0-filled with a logged warning (handled by the missing-feature warner already added).</li>
+    </ul>
+</section>
+
+<section>
+    <h2>5. Technical Design</h2>
+    <h3>5.1 Architecture</h3>
+    <p>Capture → persist → shared compute → serve. The harvester writes raw inputs (chain greeks incl. charm/vanna, OI, and a per-ticker GEX aggregate) to Postgres. A shared feature module reads those Postgres tables and computes the feature vector. Both the trainer (offline, may also read the historical thetadata sqlite via the same logic) and the owlets (online, read Postgres) call this one module.</p>
+    <h3>5.2 Files to Modify</h3>
+    <table>
+        <thead><tr><th>File</th><th>Change</th><th>Why</th></tr></thead>
+        <tbody>
+            <tr><td>options_owl/risk/greeks.py</td><td>Add charm &amp; vanna to the Black-Scholes greeks</td><td>Needed for charm/vanna aggregates; we already compute delta/gamma/theta/vega here</td></tr>
+            <tr><td>options_owl/harvester.py</td><td>Aggregate per-ticker GEX/charm/vanna from the chain snapshot each cycle; write to gex_ticks</td><td>Self-source dealer positioning; remove UW dependency</td></tr>
+            <tr><td>options_owl/db/postgres.py</td><td>Add gex_ticks CREATE TABLE + idempotent migration + write_gex_ticks_batch() + fetch helper</td><td>Persist + expose GEX aggregates</td></tr>
+            <tr><td>options_owl/sourcing/ml_pipeline.py</td><td>compute_regime_features() delegates to the shared module (produces full 40 features)</td><td>Close the 40-vs-18 serving gap</td></tr>
+            <tr><td>scripts/train_ml_models_v3.py</td><td>regime + signal_quality feature builders call the shared module; rework signal_quality label/validation like regime/ticker_selection</td><td>Zero train/serve skew; fix signal_quality</td></tr>
+            <tr><td>scripts/download_thetadata.py</td><td>Read THETADATA_EMAIL/PASSWORD from settings/.env; remove hardcoded fallback creds</td><td>Security cleanup</td></tr>
+        </tbody>
+    </table>
+    <h3>5.3 Files to Create</h3>
+    <table>
+        <thead><tr><th>File</th><th>Purpose</th></tr></thead>
+        <tbody>
+            <tr><td>options_owl/sourcing/features/regime_features.py</td><td>Single source of truth for the regime feature vector; reads Postgres (stock_candles SPY/QQQ/VIX + lags, option_ticks + gex_ticks, option_flow_5m). Imported by trainer and serving.</td></tr>
+            <tr><td>tests/test_feature_parity.py</td><td>Asserts the shared module yields identical feature names/order for trainer and serving paths; GEX math unit tests; serve-time-safety assertions.</td></tr>
+        </tbody>
+    </table>
+    <h3>5.4 Database Changes</h3>
+    <pre><code>CREATE TABLE IF NOT EXISTS gex_ticks (
+    id          BIGSERIAL PRIMARY KEY,
+    ticker      TEXT NOT NULL,
+    net_gamma   REAL,   -- Σ call gamma-exposure − Σ put gamma-exposure
+    call_gamma  REAL,
+    put_gamma   REAL,
+    net_charm   REAL,
+    net_vanna   REAL,
+    total_oi    BIGINT,
+    spot        REAL,
+    n_contracts INTEGER,
+    captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_gex_ticks_time ON gex_ticks(ticker, captured_at);
+-- migrations (table already-exists safety; harvester runs SCHEMA_SQL on init)
+ALTER TABLE option_ticks ADD COLUMN IF NOT EXISTS charm REAL;
+ALTER TABLE option_ticks ADD COLUMN IF NOT EXISTS vanna REAL;</code></pre>
+    <h3>5.5 Code Comments Required</h3>
+    <ul>
+        <li>regime_features.py — document each feature's data source and an explicit "serve-time-safe because…" note per feature.</li>
+        <li>harvester.py GEX block — document the gamma×OI×100×spot proxy and the OI-fixed-at-open assumption.</li>
+        <li>greeks.py — cite the charm/vanna BS formulas used.</li>
+    </ul>
+</section>
+
+<section>
+    <h2>6. Security Considerations</h2>
+    <ul>
+        <li>Remove hardcoded ThetaData creds from <code>download_thetadata.py</code>; read from env. Do not log secret values.</li>
+        <li>All new Postgres queries use parameterized placeholders (no string interpolation of ticker/date).</li>
+        <li>gex_ticks writes are server-side (harvester) only; no user input path.</li>
+    </ul>
+    <div class="callout danger"><strong>Security checklist:</strong> input validation, parameterized SQL, secrets out of source, no secret leakage in logs.</div>
+</section>
+
+<section>
+    <h2>7. Implementation Plan</h2>
+    <table>
+        <thead><tr><th>#</th><th>Task</th><th>Effort</th><th>Status</th></tr></thead>
+        <tbody>
+            <tr><td>1</td><td>greeks.py charm/vanna + harvester GEX aggregation + gex_ticks table/writer/migration (Agent A)</td><td>M</td><td>Todo</td></tr>
+            <tr><td>2</td><td>Shared regime_features module + wire serving + trainer to it (Agent B)</td><td>L</td><td>Todo</td></tr>
+            <tr><td>3</td><td>Rework signal_quality (label/features/validation) like regime/ticker_selection (Agent B)</td><td>M</td><td>Todo</td></tr>
+            <tr><td>4</td><td>download_thetadata.py creds → env (Agent A)</td><td>S</td><td>Todo</td></tr>
+            <tr><td>5</td><td>Integrate, retrain regime/ticker/signal_quality on 190-day data, full test suite</td><td>M</td><td>Todo</td></tr>
+            <tr><td>6</td><td>Gold-standard OOS rerun; refresh CLAUDE.md decision records</td><td>M</td><td>Todo</td></tr>
+            <tr><td>7</td><td>Deploy (harvester + serving) via rebuild.sh — after explicit approval</td><td>S</td><td>Todo</td></tr>
+        </tbody>
+    </table>
+</section>
+
+<section>
+    <h2>8. Testing Plan</h2>
+    <h3>8.1 Unit Tests</h3>
+    <table>
+        <thead><tr><th>Test File</th><th>What It Verifies</th></tr></thead>
+        <tbody>
+            <tr><td>tests/test_feature_parity.py</td><td>Trainer and serving produce identical feature names/order; no feature silently zero-filled</td></tr>
+            <tr><td>tests/test_greeks.py</td><td>charm/vanna BS formulas vs known values; sign conventions</td></tr>
+            <tr><td>tests/test_gex.py</td><td>GEX aggregation math (gamma×OI×100×spot), empty/sparse-chain → 0 not NaN, missing-OI exclusion</td></tr>
+            <tr><td>tests/test_option_tick_sizes.py (extend)</td><td>gex_ticks INSERT columns/placeholders; charm/vanna columns present</td></tr>
+        </tbody>
+    </table>
+    <h3>8.2 Integration Tests</h3>
+    <ul>
+        <li>Mock Postgres rows → shared module emits the full feature vector with no missing-feature warnings.</li>
+        <li>compute_regime_features() output matches the regime model's meta feature list exactly.</li>
+    </ul>
+    <h3>8.3 Edge Case Tests</h3>
+    <ul>
+        <li>Empty gex_ticks → features 0, model loads, one warning.</li>
+        <li>VIX gap, single-class day, sparse chain.</li>
+    </ul>
+    <h3>8.4 Manual Verification</h3>
+    <ul>
+        <li>Run harvester locally for one cycle (or replay) → confirm gex_ticks rows written with sane values.</li>
+        <li>Retrain regime on 190-day data → confirm AUC holds (~0.6+) and feature parity test passes.</li>
+        <li>Gold-standard backtest runs clean on new models before deploy.</li>
+    </ul>
+</section>
+
+<section>
+    <h2>9. Risks &amp; Rollback</h2>
+    <ul>
+        <li><strong>Live-bot risk:</strong> serving + harvester changes require a production deploy. Mitigate: full local test + gold-standard rerun first; deploy off-hours; journal/ (models) excluded from rsync so model swap is deliberate.</li>
+        <li><strong>GEX proxy ≠ true dealer positioning</strong> (no dealer-sign data) — it is a directional approximation; validated by whether it lifts regime AUC out-of-sample, not by matching UW exactly.</li>
+        <li><strong>Harvester write load:</strong> one extra small INSERT per ticker per cycle — negligible vs existing option_ticks batch.</li>
+    </ul>
+    <h3>Rollback Plan</h3>
+    <p>Models are backed up at <code>journal/models/ml_v3_backup_pre_walkforward/</code>; the prior bug-fix deploy is commit <code>f9497c2</code>. Revert by restoring the old serving code + redeploying; the gex_ticks table and harvester writes are additive and harmless if unused.</p>
+</section>
+
+<section>
+    <h2>10. Dependencies</h2>
+    <ul>
+        <li>Completed backfill (thetadata_options.db now 2025-09-08 → 2026-06-09, 190 days).</li>
+        <li>Validation rework already landed in train_ml_models_v3.py (regime/ticker_selection date-split + features).</li>
+        <li>Postgres harvester DB schema (option_ticks already has bid_size/ask_size from f9497c2).</li>
+    </ul>
+</section>
+
+<section>
+    <h2>11. Changelog</h2>
+    <dl class="changelog">
+        <dt>v1 — 2026-06-10</dt>
+        <dd>Initial spec created.</dd>
+    </dl>
+</section>
+
+<footer>OptionsOwl — Business Logic Specification | 2026-06-10</footer>
+
+</body>
+</html>

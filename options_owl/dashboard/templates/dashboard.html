@@ -1,0 +1,381 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — OptionsOwl{% endblock %}
+
+{% block content %}
+<!-- Portfolio Summary -->
+<div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+    <div class="bg-owl-card border border-owl-border rounded-lg p-4">
+        <div class="text-xs text-gray-500 uppercase tracking-wide">Portfolio</div>
+        <div class="text-xl font-bold text-white" id="portfolio-size">
+            {{ (agent_state.portfolio_size if agent_state else 0) | money }}
+        </div>
+    </div>
+    <div class="bg-owl-card border border-owl-border rounded-lg p-4">
+        <div class="text-xs text-gray-500 uppercase tracking-wide">Today P&L</div>
+        <div class="text-xl font-bold {{ stats.daily_pnl | pnl_class }}" id="daily-pnl">
+            {{ stats.daily_pnl | money }}
+        </div>
+        <div class="text-xs text-gray-500">{{ stats.today_trades }} trades today</div>
+    </div>
+    <div class="bg-owl-card border border-owl-border rounded-lg p-4">
+        <div class="text-xs text-gray-500 uppercase tracking-wide">Open Trades</div>
+        <div class="text-xl font-bold text-white">{{ stats.open_count }} / 5</div>
+    </div>
+    <div class="bg-owl-card border border-owl-border rounded-lg p-4">
+        <div class="text-xs text-gray-500 uppercase tracking-wide">Win Rate</div>
+        <div class="text-xl font-bold {% if stats.win_rate >= 60 %}text-green-400{% elif stats.win_rate >= 50 %}text-yellow-400{% else %}text-red-400{% endif %}">{{ stats.win_rate }}%</div>
+        <div class="text-xs text-gray-500">{{ stats.total_wins }}W / {{ stats.total_losses }}L</div>
+    </div>
+    <div class="bg-owl-card border border-owl-border rounded-lg p-4">
+        <div class="text-xs text-gray-500 uppercase tracking-wide">Total P&L</div>
+        <div class="text-xl font-bold {{ stats.total_pnl | pnl_class }}">
+            {{ stats.total_pnl | money }}
+        </div>
+        <div class="text-xs text-gray-500">{{ stats.total_trades }} total trades</div>
+    </div>
+</div>
+
+<!-- P&L Sparkline -->
+{% if sparkline %}
+<div class="bg-owl-card border border-owl-border rounded-lg p-3 mb-6">
+    <div class="flex items-center justify-between mb-1">
+        <span class="text-xs text-gray-500 uppercase">Recent Daily P&L</span>
+        <a href="/analytics" class="text-xs text-owl-accent hover:underline">View Full Analytics &rarr;</a>
+    </div>
+    <canvas id="sparkline" height="50"></canvas>
+</div>
+{% endif %}
+
+<!-- Agent Controls -->
+<div class="bg-owl-card border border-owl-border rounded-lg p-4 mb-6 flex flex-wrap items-center gap-4">
+    <div class="flex items-center gap-2">
+        <span class="text-sm text-gray-400">Paper Mode:</span>
+        <button id="btn-paper" onclick="togglePaper()" class="px-3 py-1 rounded text-sm font-medium transition
+            {% if paper_mode %}bg-yellow-600 text-white{% else %}bg-gray-700 text-gray-300{% endif %}">
+            {{ "ON" if paper_mode else "OFF" if paper_mode is not none else "UNKNOWN" }}
+        </button>
+    </div>
+    <div class="flex items-center gap-2">
+        <span class="text-sm text-gray-400">Kill Switch:</span>
+        <button id="btn-kill" onclick="toggleKill()" class="px-3 py-1 rounded text-sm font-medium transition
+            {% if kill_switch %}bg-red-600 text-white{% else %}bg-gray-700 text-gray-300{% endif %}">
+            {{ "ACTIVE" if kill_switch else "OFF" if kill_switch is not none else "UNKNOWN" }}
+        </button>
+    </div>
+    <div class="ml-auto flex items-center gap-3 text-xs text-gray-500">
+        {% if heartbeat %}
+        <span class="flex items-center gap-1">
+            <span class="w-2 h-2 rounded-full bg-green-500 inline-block"></span>
+            Online
+        </span>
+        {% else %}
+        <span class="flex items-center gap-1">
+            <span class="w-2 h-2 rounded-full bg-red-500 inline-block"></span>
+            Offline
+        </span>
+        {% endif %}
+        <span>Agent: {{ agent_id }}</span>
+    </div>
+</div>
+
+<!-- Open Trades -->
+<div class="mb-6">
+    <h2 class="text-lg font-semibold text-white mb-3">Open Trades</h2>
+    {% if open_trades %}
+    <div class="grid gap-3">
+        {% for t in open_trades %}
+        <a href="/trade/{{ t.id }}" class="block bg-owl-card border border-owl-border rounded-lg p-4 hover:border-owl-accent transition">
+            <div class="flex items-center justify-between mb-2">
+                <div class="flex items-center gap-3">
+                    <span class="text-white font-bold text-lg">{{ t.ticker }}</span>
+                    <span class="px-2 py-0.5 rounded text-xs font-medium
+                        {% if t.direction == 'call' or t.direction == 'CALL' %}bg-green-900 text-green-300{% else %}bg-red-900 text-red-300{% endif %}">
+                        {{ t.direction | upper }}
+                    </span>
+                    <span class="text-gray-400 text-sm">${{ "%.0f" | format(t.strike) }} strike</span>
+                    <span class="text-gray-400 text-sm">{{ t.contracts }} contracts</span>
+                </div>
+                <div class="text-right">
+                    <div class="text-sm text-gray-400">Entry: ${{ "%.2f" | format(t.premium_per_contract) }}</div>
+                    <div class="text-xs text-gray-500">{{ t.opened_at | ftime }}</div>
+                </div>
+            </div>
+            {% if t.peak_gain_pct %}
+            <div class="flex gap-4 text-sm">
+                <span class="text-gray-400">Peak: <span class="text-green-400">+{{ "%.1f" | format(t.peak_gain_pct) }}%</span></span>
+                {% if t.dca_count and t.dca_count > 0 %}
+                <span class="text-yellow-400">DCA x{{ t.dca_count }}</span>
+                {% endif %}
+            </div>
+            {% endif %}
+        </a>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="bg-owl-card border border-owl-border rounded-lg p-8 text-center text-gray-500">
+        No open trades
+    </div>
+    {% endif %}
+</div>
+
+<!-- Closed Trades -->
+<div class="mb-6">
+    <div class="flex items-center justify-between mb-3">
+        <h2 class="text-lg font-semibold text-white">Closed Trades</h2>
+        <div class="flex gap-2 items-center">
+            <input type="text" id="trade-search" placeholder="Filter ticker..."
+                class="bg-owl-bg border border-owl-border rounded px-3 py-1 text-sm text-white focus:border-owl-accent focus:outline-none w-32"
+                oninput="filterTrades()">
+            <a href="/api/export?days={{ days }}" title="Export CSV"
+               class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm text-gray-300">CSV</a>
+            {% for d in [1, 7, 14, 30] %}
+            <a href="/?days={{ d }}"
+               class="px-3 py-1 rounded text-sm transition
+               {% if days == d %}bg-owl-accent text-white{% else %}bg-gray-700 text-gray-300 hover:bg-gray-600{% endif %}">
+                {{ d }}d
+            </a>
+            {% endfor %}
+        </div>
+    </div>
+
+    {% if closed_trades %}
+    <div class="bg-owl-card border border-owl-border rounded-lg overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-owl-bg">
+                <tr class="text-gray-500 text-xs uppercase">
+                    <th class="text-left px-4 py-2">#</th>
+                    <th class="text-left px-4 py-2">Ticker</th>
+                    <th class="text-left px-4 py-2">Dir</th>
+                    <th class="text-right px-4 py-2">Entry</th>
+                    <th class="text-right px-4 py-2">Exit</th>
+                    <th class="text-right px-4 py-2">P&L</th>
+                    <th class="text-left px-4 py-2">Exit Reason</th>
+                    <th class="text-right px-4 py-2">Hold</th>
+                    <th class="text-left px-4 py-2">Source</th>
+                    <th class="text-left px-4 py-2">Closed</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for t in closed_trades %}
+                <tr class="border-t border-owl-border hover:bg-owl-bg/50 cursor-pointer"
+                    onclick="window.location='/trade/{{ t.id }}'">
+                    <td class="px-4 py-2 text-gray-500">{{ t.sqlite_id or t.id }}</td>
+                    <td class="px-4 py-2 font-medium text-white">{{ t.ticker }}</td>
+                    <td class="px-4 py-2">
+                        <span class="{% if t.direction == 'call' or t.direction == 'CALL' %}text-green-400{% else %}text-red-400{% endif %}">
+                            {{ t.direction | upper }}
+                        </span>
+                    </td>
+                    <td class="px-4 py-2 text-right">${{ "%.2f" | format(t.premium_per_contract) }}</td>
+                    <td class="px-4 py-2 text-right">{{ "$%.2f" | format(t.exit_premium) if t.exit_premium else "—" }}</td>
+                    <td class="px-4 py-2 text-right font-medium {{ t.pnl_dollars | pnl_class }}">
+                        {{ t.pnl_dollars | money }}
+                        <span class="text-xs">({{ t.pnl_pct | pct }})</span>
+                    </td>
+                    <td class="px-4 py-2 text-gray-400">{{ t.exit_reason or "—" }}</td>
+                    <td class="px-4 py-2 text-right text-gray-400">
+                        {{ "%.0f" | format(t.hold_minutes) if t.hold_minutes else "—" }}m
+                    </td>
+                    <td class="px-4 py-2">
+                        <span class="{% if t.exit_source == 'manual' %}text-yellow-400{% else %}text-gray-400{% endif %}">
+                            {{ t.exit_source or "ai" }}
+                        </span>
+                    </td>
+                    <td class="px-4 py-2 text-gray-500 text-xs">{{ t.closed_at | fdate }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="bg-owl-card border border-owl-border rounded-lg p-8 text-center text-gray-500">
+        No closed trades in the last {{ days }} days
+    </div>
+    {% endif %}
+</div>
+
+<!-- Logs -->
+<div class="mb-6">
+    <div class="flex items-center justify-between mb-3">
+        <h2 class="text-lg font-semibold text-white">Logs</h2>
+        <div class="flex gap-2 items-center">
+            <!-- Level filter buttons -->
+            <div class="flex rounded overflow-hidden border border-owl-border">
+                <button onclick="setLogLevel('ERROR')" id="log-btn-error"
+                    class="px-2 py-1 text-xs font-medium bg-red-900/50 text-red-300 hover:bg-red-800/60 transition log-level-btn active">
+                    ERROR
+                </button>
+                <button onclick="setLogLevel('WARNING')" id="log-btn-warning"
+                    class="px-2 py-1 text-xs font-medium bg-yellow-900/50 text-yellow-300 hover:bg-yellow-800/60 transition log-level-btn active">
+                    WARN
+                </button>
+                <button onclick="setLogLevel('INFO')" id="log-btn-info"
+                    class="px-2 py-1 text-xs font-medium bg-gray-700 text-gray-400 hover:bg-gray-600 transition log-level-btn">
+                    INFO
+                </button>
+                <button onclick="setLogLevel('DEBUG')" id="log-btn-debug"
+                    class="px-2 py-1 text-xs font-medium bg-gray-700 text-gray-400 hover:bg-gray-600 transition log-level-btn">
+                    DEBUG
+                </button>
+            </div>
+            <input type="text" id="log-search" placeholder="Search logs..."
+                class="bg-owl-bg border border-owl-border rounded px-3 py-1 text-sm text-white focus:border-owl-accent focus:outline-none w-48">
+            <button onclick="refreshLogs()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm text-gray-300">Refresh</button>
+        </div>
+    </div>
+    <div id="error-log" class="bg-owl-card border border-owl-border rounded-lg p-3 max-h-80 overflow-y-auto scrollbar-thin font-mono text-xs">
+        {% if errors %}
+        {% for e in errors %}
+        <div class="py-1 border-b border-owl-border/50
+            {% if e.level == 'ERROR' %}text-red-400
+            {% elif e.level == 'WARNING' %}text-yellow-400
+            {% elif e.level == 'INFO' %}text-blue-400
+            {% else %}text-gray-400{% endif %}">
+            <span class="text-gray-600">{{ e.timestamp }}</span>
+            <span class="font-bold px-1 rounded
+                {% if e.level == 'ERROR' %}bg-red-900/40
+                {% elif e.level == 'WARNING' %}bg-yellow-900/40
+                {% elif e.level == 'INFO' %}bg-blue-900/40
+                {% else %}bg-gray-800{% endif %}">{{ e.level }}</span>
+            <span class="text-gray-300">{{ e.message }}</span>
+        </div>
+        {% endfor %}
+        {% else %}
+        <div class="text-gray-500 py-4 text-center">No errors today</div>
+        {% endif %}
+    </div>
+    <div class="flex justify-between items-center mt-2 text-xs text-gray-500">
+        <span id="log-count">{{ errors | length }} entries</span>
+        <span>Auto-refresh: 30s</span>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="/static/ws.js"></script>
+<script>
+    let paperMode = {{ 'true' if paper_mode else 'false' }};
+    let killSwitch = {{ 'true' if kill_switch else 'false' }};
+    let activeLogLevels = new Set(['ERROR', 'WARNING']);
+
+    async function togglePaper() {
+        paperMode = !paperMode;
+        const res = await fetch('/api/paper-mode', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({enabled: paperMode})
+        });
+        const data = await res.json();
+        const btn = document.getElementById('btn-paper');
+        btn.textContent = data.paper_mode ? 'ON' : 'OFF';
+        btn.className = btn.className.replace(/bg-\w+-\d+/g, '');
+        btn.classList.add(data.paper_mode ? 'bg-yellow-600' : 'bg-gray-700');
+    }
+
+    async function toggleKill() {
+        const newState = !killSwitch;
+        if (newState && !confirm('Enable kill switch? This will block ALL Webull orders.')) return;
+        killSwitch = newState;
+        const res = await fetch('/api/kill-switch', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({enabled: killSwitch})
+        });
+        const data = await res.json();
+        const btn = document.getElementById('btn-kill');
+        btn.textContent = data.kill_switch ? 'ACTIVE' : 'OFF';
+        btn.className = btn.className.replace(/bg-\w+-\d+/g, '');
+        btn.classList.add(data.kill_switch ? 'bg-red-600' : 'bg-gray-700');
+    }
+
+    // Trade search filter
+    function filterTrades() {
+        const q = document.getElementById('trade-search').value.toLowerCase();
+        const rows = document.querySelectorAll('tbody tr');
+        rows.forEach(row => {
+            const ticker = row.querySelector('td:nth-child(2)')?.textContent?.toLowerCase() || '';
+            row.style.display = ticker.includes(q) ? '' : 'none';
+        });
+    }
+
+    // Log level filter
+    function setLogLevel(level) {
+        if (activeLogLevels.has(level)) {
+            activeLogLevels.delete(level);
+        } else {
+            activeLogLevels.add(level);
+        }
+        // Update button styles
+        document.querySelectorAll('.log-level-btn').forEach(btn => {
+            const btnLevel = btn.id.replace('log-btn-', '').toUpperCase();
+            if (activeLogLevels.has(btnLevel)) {
+                btn.classList.add('active');
+                btn.style.opacity = '1';
+            } else {
+                btn.classList.remove('active');
+                btn.style.opacity = '0.4';
+            }
+        });
+        refreshLogs();
+    }
+
+    async function refreshLogs() {
+        const search = document.getElementById('log-search').value;
+        const levels = Array.from(activeLogLevels).join(',') || 'ERROR,WARNING';
+        const res = await fetch(`/api/logs?level=${levels}&search=${encodeURIComponent(search)}&limit=100`);
+        const entries = await res.json();
+        const container = document.getElementById('error-log');
+        if (entries.length === 0) {
+            container.innerHTML = '<div class="text-gray-500 py-4 text-center">No matching entries</div>';
+        } else {
+            container.innerHTML = entries.map(e => {
+                let colorClass = 'text-gray-400';
+                let bgClass = 'bg-gray-800';
+                if (e.level === 'ERROR') { colorClass = 'text-red-400'; bgClass = 'bg-red-900/40'; }
+                else if (e.level === 'WARNING') { colorClass = 'text-yellow-400'; bgClass = 'bg-yellow-900/40'; }
+                else if (e.level === 'INFO') { colorClass = 'text-blue-400'; bgClass = 'bg-blue-900/40'; }
+                return `<div class="py-1 border-b border-owl-border/50 ${colorClass}">
+                    <span class="text-gray-600">${e.timestamp}</span>
+                    <span class="font-bold px-1 rounded ${bgClass}">${e.level}</span>
+                    <span class="text-gray-300">${e.message}</span>
+                </div>`;
+            }).join('');
+            container.scrollTop = container.scrollHeight;
+        }
+        document.getElementById('log-count').textContent = entries.length + ' entries';
+    }
+
+    // Auto-refresh logs every 30s
+    setInterval(refreshLogs, 30000);
+
+    // P&L Sparkline
+    const sparkData = {{ sparkline | tojson }};
+    if (sparkData.length > 0 && document.getElementById('sparkline')) {
+        new Chart(document.getElementById('sparkline'), {
+            type: 'bar',
+            data: {
+                labels: sparkData.map(d => d.date.slice(5)),
+                datasets: [{
+                    data: sparkData.map(d => d.pnl),
+                    backgroundColor: sparkData.map(d =>
+                        d.pnl >= 0 ? 'rgba(74,222,128,0.7)' : 'rgba(248,113,113,0.7)'
+                    ),
+                    borderRadius: 2,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false }, tooltip: {
+                    callbacks: { label: ctx => '$' + ctx.parsed.y.toFixed(2) }
+                }},
+                scales: {
+                    x: { ticks: { font: { size: 10 }, color: '#6b7280' }, grid: { display: false } },
+                    y: { display: false }
+                }
+            }
+        });
+    }
+</script>
+{% endblock %}

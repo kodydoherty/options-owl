@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Production Upgrades — Sizing, Exits, Gates, Feature Pipeline</title>
+<style>
+:root{--primary:#2563eb;--primary-light:#dbeafe;--danger:#dc2626;--warning:#f59e0b;--success:#16a34a;--gray-50:#f9fafb;--gray-200:#e5e7eb;--gray-600:#4b5563;--gray-800:#1f2937;--gray-900:#111827;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:var(--gray-800);line-height:1.6;max-width:980px;margin:0 auto;padding:2rem;background:#fff;}
+header{border-bottom:3px solid var(--primary);padding-bottom:1.5rem;margin-bottom:2rem;}
+header h1{font-size:1.55rem;color:var(--gray-900);}
+.meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:.5rem 2rem;margin-top:1rem;font-size:.875rem;color:var(--gray-600);}
+.meta dt{font-weight:600;display:inline;}.meta dd{display:inline;margin-left:.25rem;}
+.badge{display:inline-block;padding:.1rem .55rem;border-radius:9999px;font-size:.7rem;font-weight:700;text-transform:uppercase;}
+.b-live{background:#dcfce7;color:var(--success);}.b-val{background:var(--primary-light);color:var(--primary);}.b-prog{background:#fef9c3;color:#a16207;}.b-todo{background:var(--gray-200);color:var(--gray-600);}
+section{margin-bottom:1.8rem;}section>h2{font-size:1.2rem;color:var(--primary);border-bottom:1px solid var(--gray-200);padding-bottom:.4rem;margin-bottom:.9rem;}
+table{width:100%;border-collapse:collapse;margin-bottom:1rem;font-size:.85rem;}th,td{text-align:left;padding:.45rem .7rem;border:1px solid var(--gray-200);vertical-align:top;}th{background:var(--gray-50);font-weight:600;}
+code{font-family:'SF Mono','Consolas',monospace;font-size:.82rem;background:var(--gray-50);padding:.05rem .25rem;border-radius:3px;}
+.callout{padding:.7rem 1rem;border-left:4px solid var(--warning);background:#fffbeb;border-radius:0 .375rem .375rem 0;margin-bottom:1rem;font-size:.875rem;}
+.callout.danger{border-left-color:var(--danger);background:#fef2f2;}
+footer{margin-top:2.5rem;padding-top:1rem;border-top:1px solid var(--gray-200);font-size:.75rem;color:var(--gray-600);}
+</style></head>
+<body>
+<header>
+<h1>Production Upgrades — Sizing, Exits, Gates, Feature Pipeline</h1>
+<div class="meta">
+<div><dt>Spec ID:</dt><dd>prod-upgrades</dd></div>
+<div><dt>Status:</dt><dd><span class="badge b-prog">Active</span></dd></div>
+<div><dt>Project:</dt><dd>OptionsOwl</dd></div>
+<div><dt>Created:</dt><dd>2026-06-11</dd></div>
+<div><dt>Author:</dt><dd>Kody (via Claude)</dd></div>
+</div>
+</header>
+
+<section>
+<h2>1. Why this exists</h2>
+<p>The 2026-06-10/11 review + sweeps surfaced a set of validated and in-progress production improvements. This spec tracks what is live, what is OOS-validated and ready to stage, and what still needs multi-window validation before touching real money. <strong>Guardrail for every item: no live change until it beats the current config on risk-adjusted return across multiple historical windows (OOS), not just one.</strong></p>
+<div class="callout"><strong>Motivating observation (2026-06-11, kody live):</strong> day ≈ −$146 = NVDA call +$100 (profit_target) vs SMCI −$88 + MSTR −$158 (confirmed_stop). <strong>Every position was 2 contracts</strong> (multi-day cap on 1-DTE contracts) — so a single conviction winner can't outweigh two stops. Tiny flat sizing is the core problem this spec addresses. Also: QQQ entry rejected by Webull (limit not filled in 30s → cancelled → paper $0).</div>
+</section>
+
+<section>
+<h2>2. Upgrade ledger</h2>
+<table>
+<thead><tr><th>#</th><th>Change</th><th>Status</th><th>Evidence</th><th>Deploy mechanism</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><strong>Critical bug fixes</strong> (DCA-grace timezone, balance double-credit, sell-abandonment categories, SDK timeouts, FSM restart-durability, 3 revived gates, ML serve-time skew)</td><td><span class="badge b-live">Live</span></td><td>commit f9497c2; 2498 tests pass; verified on droplet</td><td>rebuild.sh (done 2026-06-10)</td></tr>
+<tr><td>2</td><td><strong>Gate change:</strong> <code>ANTI_CHASE_MAX_MOVE_PCT=100</code> (off) + <code>ENABLE_MOMENTUM_CONFIRM=false</code></td><td><span class="badge b-live">Live</span></td><td>OOS-validated: +45% P&amp;L, ~3 trades/day, PF ~2.0; anti_chase was the #1 P&amp;L killer</td><td>droplet .env + staggered up -d (done 2026-06-11, all 5 bots)</td></tr>
+<tr><td>3</td><td><strong>Harvester GEX/charm/vanna capture</strong> + <code>gex_ticks</code> table; flow-5m timestamp fix; timeout log downgrade</td><td><span class="badge b-live">Live</span></td><td>gex_ticks populating (1100+ rows); option_flow_5m now 2026 timestamps, 0 write errors</td><td>rebuild.sh owlet-harvester (done 2026-06-11)</td></tr>
+<tr><td>4</td><td><strong>Exit tuning "candA":</strong> grace 8min, scaleout +25% (was 20), soft-keep 0.5, adaptive-mult 0.8</td><td><span class="badge b-val">Validated</span></td><td>OOS +18% P&amp;L ($51.5K→$60.7K) AND higher PF (2.14→2.23), same trade count</td><td>STAGE: per-ticker V5 config / env (next deploy)</td></tr>
+<tr><td>5</td><td><strong>Position sizing overhaul</strong> — fix the backwards 60% conf tier (0.80–0.90 sized smaller than 0.70–0.80); loosen/scale the multi-day contract cap (currently hard 2); test scaling % by conviction; revisit <code>MAX_CONCURRENT=8</code> (÷8 makes each slot ~9% so the $19K book is under-deployed)</td><td><span class="badge b-prog">In progress</span></td><td>Sizing experiment running: predictiveness check (does conf predict return?) + conf-scaled / multi-day-cap sweep; then multi-window validation</td><td>vinny_strategy.score_to_contracts + paper_trader cap; via rebuild.sh after OOS pass</td></tr>
+<tr><td>6</td><td><strong>Ticker-exclusion re-validation</strong> — confirm MSTR-puts / MSFT,COIN,AVGO,MU CALL exclusions still hold; decide SMCI; across historical ranges</td><td><span class="badge b-todo">Queued</span></td><td>Live data: MSTR calls +$276 (4-4), MSTR puts +$517 (excluded for puts only); SMCI ~no history (1 put −$160)</td><td>ml_pipeline EXCLUDED_TICKERS / settings PUT_EXCLUDED_TICKERS</td></tr>
+<tr><td>7</td><td><strong>Improved regime + signal_quality models</strong> (walk-forward, leakage removed) + shared feature module/serving wiring</td><td><span class="badge b-todo">Staged (local)</span></td><td>regime WF AUC 0.64 (was leak-inflated 0.62→0.53 honest), ticker_select 0.71, signal_quality 0.76; NOT deployed</td><td>rebuild.sh full + SCP models; needs live GEX history first (now collecting via #3)</td></tr>
+</tbody>
+</table>
+</section>
+
+<section>
+<h2>3. Sizing design targets (item 5 — the priority)</h2>
+<ul>
+<li><strong>Make size track conviction.</strong> A high-confidence signal should deploy a meaningful fraction of the book, not $442 of $19K. Test a monotonic confidence→budget% curve (replacing the non-monotonic 100/60/95 tiers).</li>
+<li><strong>Multi-day cap.</strong> The hard 2-contract cap on DTE≥1 is the dominant throttle on non-0DTE days. Test scaling it (e.g. by DTE / by premium / disable) — measuring drawdown, since multi-day options can take outsized losses (the reason it exists).</li>
+<li><strong>Capital utilization.</strong> Per-slot = deployable ÷ MAX_CONCURRENT(8). With typically 2–3 concurrent, the book is under-deployed. Test fewer/bigger slots or dynamic sizing off <em>available</em> capital.</li>
+<li><strong>Risk metric, not just P&amp;L.</strong> Bigger size = bigger drawdown. Judge on P&amp;L AND Sharpe / max-DD across multiple windows.</li>
+</ul>
+</section>
+
+<section>
+<h2>4. Validation protocol (mandatory before any item goes live)</h2>
+<ol>
+<li>Sweep on the in-sample window (2026-02-01 → 2026-05-20).</li>
+<li><strong>Multi-window walk-forward</strong>: month-by-month across 2025-09 → 2026-06; a candidate must hold (P&amp;L + max-DD) in <em>most</em> regimes, not just one.</li>
+<li>OOS window (2025-09-08 → 2025-12-07, OOS for the primary CALL/PUT models).</li>
+<li>Reject in-sample-only winners (this discipline already caught <code>put_bearish</code> and the regime-0.19 threshold traps).</li>
+<li>Deploy via rebuild.sh / staggered <code>up -d</code>; verify live container env; keep <code>.env.bak</code> for rollback.</li>
+</ol>
+</section>
+
+<section>
+<h2>5. Open follow-ups / risks</h2>
+<ul>
+<li><strong>Webull entry no-fills</strong> (QQQ #253 today: not filled in 30s → cancelled). Review entry limit aggressiveness / chase logic — missed entries, not losses, but lost edge.</li>
+<li><strong>confirmed_stop on multi-day trades</strong> (SMCI/MSTR ~−32% today): verify multi-day stops use the wider multi-day thresholds, not 0DTE-tight ones.</li>
+<li><strong>P&amp;L source:</strong> use <code>scripts/trade-pnl.py</code> for authoritative P&amp;L (the <code>pnl_dollars</code> column is approximate).</li>
+<li><strong>Backtest absolute $ is optimistic</strong> (window partly in-sample for V3/PUT models); weight relative comparisons + OOS.</li>
+</ul>
+</section>
+
+<footer>OptionsOwl — Production upgrade tracking | created 2026-06-11. See memory: gate-sweep-findings, live-gate-config, review-2026-06-10-remaining-fixes.</footer>
+</body>
+</html>

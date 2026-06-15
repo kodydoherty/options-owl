@@ -16,4 +16,4 @@ RUN pip install --no-cache-dir .
 # Persist the SQLite database
 VOLUME ["/app/journal"]
 
-CMD ["python", "-m", "options_owl.main", "collect"]
+CMD ["python", "-m", "options_owl.bot_runner"]
