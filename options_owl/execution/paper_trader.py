@@ -2522,6 +2522,16 @@ class PaperTrader:
             logger.info(f"[TradeLifecycle] {signal.ticker}: PUT blocked — ENABLE_PUT_TRADING=false")
             return None
 
+        # Fleet staggering: this bot only takes its assigned K-of-5 share of signals so the 5 bots
+        # hold different books and don't all win/lose together (decorrelation). Deterministic, no
+        # coordinator — every bot computes the same assignment. Off (fail-open) when disabled.
+        from options_owl.risk.vinny_strategy import fleet_takes_signal
+        if not fleet_takes_signal(signal.ticker, getattr(signal.direction, "value", signal.direction),
+                                  _today_et(), self.settings):
+            logger.info(f"[TradeLifecycle] {signal.ticker}: FLEET_STAGGER — sitting this one out "
+                        f"(rank {getattr(self.settings, 'FLEET_RANK', 0)} not in window)")
+            return None
+
         # Daily circuit breaker: stop trading if today's realized + unrealized losses exceed threshold.
         # Includes open-trade unrealized P&L so a string of underwater positions triggers the breaker.
         cb_pct = getattr(self.settings, "DAILY_LOSS_CIRCUIT_BREAKER_PCT", 0)

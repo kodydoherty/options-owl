@@ -71,7 +71,7 @@ def fleet(trades, K):
     corrs = [np.corrcoef(M[a], M[b])[0, 1] for a in range(NB) for b in range(a + 1, NB)
              if M[a].std() > 0 and M[b].std() > 0]
     return (sum(bot_pnl), R.maxdd(fleet_daily), np.mean(corrs) if corrs else 0.0,
-            min(fleet_daily.values()), bot_pnl)
+            min(fleet_daily.values()), bot_pnl, bot_daily)
 
 
 def main():
@@ -82,14 +82,27 @@ def main():
           f"(kody>adam>dennis>yank>vinny), $50k cap each\n")
     print(f"{'scheme':<24}{'fleet P&L':>11}{'fleet DD':>11}{'corr':>7}{'worst day':>11}{'ret/DD':>8}")
     print("-" * 72)
+    detail = {}
     for K in (5, 3, 2, 1):
-        pnl, dd, corr, worst, _ = fleet(trades, K)
+        pnl, dd, corr, worst, bot_pnl, bot_daily = fleet(trades, K)
+        detail[K] = (bot_pnl, bot_daily)
         lbl = "K=5 IDENTICAL (today)" if K == 5 else f"K={K} (each sig -> {K} bots)"
         rdd = pnl / abs(dd) if dd else float("inf")
         print(f"{lbl:<24}${pnl:>10,.0f}${dd:>+10,.0f}{corr:>7.2f}${worst:>+10,.0f}{rdd:>8.1f}")
     print("\ncorr = avg pairwise daily-P&L correlation across bots (1.0 = all move together = lose-ass-"
           "together risk). Lower K = more decorrelated + less crowding, but fewer total bets (lower P&L).")
-    print("The knee trades a bit of fleet P&L for a big cut in synchronized drawdown.")
+
+    # Per-bot detail at the DEPLOYED config (K=2, $50k cap) — the real per-account 60-day projection.
+    bot_pnl, bot_daily = detail[2]
+    print(f"\n=== DEPLOYED config: K={2}, $50k take-profit cap — per-account 60-day projection ===")
+    print(f"{'bot (rank)':<16}{'start':>9}{'P&L':>12}{'end':>12}{'maxDD':>11}{'ret%':>7}")
+    print("-" * 67)
+    for bi, (name, sz) in enumerate(BOTS):
+        pnl = bot_pnl[bi]
+        dd = R.maxdd(bot_daily[bi])
+        print(f"{name+' (r'+str(bi)+')':<16}${sz:>8,.0f}${pnl:>+11,.0f}${sz+pnl:>11,.0f}${dd:>+10,.0f}{100*pnl/sz:>6.0f}%")
+    print(f"\n$ are illustrative (impact/crowd estimates); KODY is the headline. Real fills + edge decay "
+          f"sit on top. Flat-$750 edge reference = +$52.6k.")
 
 
 if __name__ == "__main__":

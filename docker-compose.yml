@@ -98,6 +98,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=23000
+      - FLEET_RANK=0
       - PAPER_TRADE=false
       - WEBULL_KILL_SWITCH=false
       - EXIT_ENGINE=v5
@@ -139,6 +140,11 @@ services:
       - ENABLE_V7_PROFIT_LOCK=true
       # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
       - MAX_SIZING_BALANCE=50000
+      # Fleet staggering K=2: each signal → 2 of 5 bots (priority round-robin) so they don't all crater
+      # together (corr 0.95→0.22, fleet DD 5x smaller) — 2026-06-16. FLEET_RANK is per-bot (below).
+      - ENABLE_FLEET_STAGGER=true
+      - FLEET_SIZE=5
+      - FLEET_OVERLAP=2
       # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
       - ENABLE_V7_TIDE_GATE=true
       # Stage D conviction sizing — kody LIVE 2026-06-14 (validated +72% / combined PF 1.78; vinny paper canary).
@@ -178,6 +184,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=10000
+      - FLEET_RANK=2
       - PAPER_TRADE=false
       - WEBULL_KILL_SWITCH=false
       - EXIT_ENGINE=v5
@@ -212,6 +219,11 @@ services:
       - ENABLE_V7_PROFIT_LOCK=true
       # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
       - MAX_SIZING_BALANCE=50000
+      # Fleet staggering K=2: each signal → 2 of 5 bots (priority round-robin) so they don't all crater
+      # together (corr 0.95→0.22, fleet DD 5x smaller) — 2026-06-16. FLEET_RANK is per-bot (below).
+      - ENABLE_FLEET_STAGGER=true
+      - FLEET_SIZE=5
+      - FLEET_OVERLAP=2
       # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
       - ENABLE_V7_TIDE_GATE=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true
@@ -247,6 +259,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=4685
+      - FLEET_RANK=1
       - POLYGON_API_KEY=${ADAM_POLYGON_API_KEY}
       - ENABLE_POLYGON_WS=false
       - WEBULL_APP_KEY=${ADAM_WEBULL_APP_KEY}
@@ -281,6 +294,11 @@ services:
       - ENABLE_V7_PROFIT_LOCK=true
       # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
       - MAX_SIZING_BALANCE=50000
+      # Fleet staggering K=2: each signal → 2 of 5 bots (priority round-robin) so they don't all crater
+      # together (corr 0.95→0.22, fleet DD 5x smaller) — 2026-06-16. FLEET_RANK is per-bot (below).
+      - ENABLE_FLEET_STAGGER=true
+      - FLEET_SIZE=5
+      - FLEET_OVERLAP=2
       # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
       - ENABLE_V7_TIDE_GATE=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true
@@ -316,6 +334,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=3123
+      - FLEET_RANK=4
       - POLYGON_API_KEY=${VINNY_POLYGON_API_KEY}
       - ENABLE_POLYGON_WS=false
       - WEBULL_APP_KEY=${VINNY_WEBULL_APP_KEY}
@@ -350,6 +369,11 @@ services:
       - ENABLE_V7_PROFIT_LOCK=true
       # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
       - MAX_SIZING_BALANCE=50000
+      # Fleet staggering K=2: each signal → 2 of 5 bots (priority round-robin) so they don't all crater
+      # together (corr 0.95→0.22, fleet DD 5x smaller) — 2026-06-16. FLEET_RANK is per-bot (below).
+      - ENABLE_FLEET_STAGGER=true
+      - FLEET_SIZE=5
+      - FLEET_OVERLAP=2
       # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
       - ENABLE_V7_TIDE_GATE=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true
@@ -387,6 +411,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=3600
+      - FLEET_RANK=3
       - POLYGON_API_KEY=${YANK_POLYGON_API_KEY}
       - ENABLE_POLYGON_WS=false
       - WEBULL_APP_KEY=${YANK_WEBULL_APP_KEY}
@@ -421,6 +446,11 @@ services:
       - ENABLE_V7_PROFIT_LOCK=true
       # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
       - MAX_SIZING_BALANCE=50000
+      # Fleet staggering K=2: each signal → 2 of 5 bots (priority round-robin) so they don't all crater
+      # together (corr 0.95→0.22, fleet DD 5x smaller) — 2026-06-16. FLEET_RANK is per-bot (below).
+      - ENABLE_FLEET_STAGGER=true
+      - FLEET_SIZE=5
+      - FLEET_OVERLAP=2
       # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
       - ENABLE_V7_TIDE_GATE=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true

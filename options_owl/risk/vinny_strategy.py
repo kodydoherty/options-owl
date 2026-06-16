@@ -634,6 +634,33 @@ def flow_conviction_mult(
     return final, f"cluster={cc} prem=${prem/1e3:.0f}k ask={af:.2f} idx={is_index} pRun={p_runner:.2f} mult={final:.2f}"
 
 
+def fleet_takes_signal(ticker, option_type, now_et, settings) -> bool:
+    """Priority round-robin fleet staggering — does THIS bot take this signal?
+
+    Each signal is deterministically assigned to FLEET_OVERLAP of FLEET_SIZE bots via a stable
+    market-derived hash (date+hour+ticker+type), so the 5 bots hold DIFFERENT books and don't all
+    win/lose together (validated 2026-06-16: K=2 cuts fleet drawdown 5x, correlation 0.95→0.22).
+    No coordinator needed — every bot computes the same window from the same key and checks its rank.
+    Returns True (take) when staggering is off or misconfigured (fail-open).
+    """
+    import hashlib
+
+    if not getattr(settings, "ENABLE_FLEET_STAGGER", False):
+        return True
+    try:
+        n = int(getattr(settings, "FLEET_SIZE", 5))
+        k = int(getattr(settings, "FLEET_OVERLAP", 2))
+        rank = int(getattr(settings, "FLEET_RANK", 0))
+    except (TypeError, ValueError):
+        return True
+    if n <= 1 or k >= n or k <= 0:   # misconfigured → fail-open (take the signal)
+        return True
+    key = f"{now_et.strftime('%Y-%m-%d-%H')}|{(ticker or '').upper()}|{(option_type or '').lower()}"
+    start = int(hashlib.md5(key.encode()).hexdigest(), 16) % n
+    window = {(start + j) % n for j in range(k)}
+    return (rank % n) in window
+
+
 def score_to_contracts(
     score: int,
     cost_per_contract: float | None = None,

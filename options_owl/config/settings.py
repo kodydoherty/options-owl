@@ -223,6 +223,13 @@ class Settings(BaseSettings):
     # Take-profit sizing cap: once the account exceeds this $ balance, freeze position sizing here
     # (trade a fixed-size book, bank the excess). Bounds absolute drawdown. 0 = disabled (compound).
     MAX_SIZING_BALANCE: float = 0.0
+    # Fleet staggering: each signal is assigned to FLEET_OVERLAP of FLEET_SIZE bots (by FLEET_RANK,
+    # priority round-robin) so the bots hold different books and don't all win/lose together.
+    # Validated 2026-06-16: K=2 cuts fleet drawdown 5x (corr 0.95→0.22). Off = every bot takes every signal.
+    ENABLE_FLEET_STAGGER: bool = False
+    FLEET_SIZE: int = 5          # number of bots in the fleet
+    FLEET_OVERLAP: int = 2       # K: how many bots take each signal (lower = more decorrelated)
+    FLEET_RANK: int = 0          # this bot's priority rank (0-based; kody=0, adam=1, dennis=2, yank=3, vinny=4)
     ENABLE_V7_PROFIT_LOCK: bool = False
     V7_PROFIT_LOCK_KEEP_FRAC: float = 0.6        # keep 60% of the peak gain
     V7_PROFIT_LOCK_ACTIVATE_PCT: float = 30.0    # only arms once peak gain >= +30%
