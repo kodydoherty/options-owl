@@ -332,6 +332,18 @@ class Settings(BaseSettings):
     V6_DCA_MAX_DIP_PCT: float = 35.0             # maximum dip (beyond this, thesis is broken)
     V6_DCA_UNDERLYING_THRESHOLD: float = 0.5     # block DCA if underlying moved against > this %
 
+    # Anti-martingale ADD: buy MORE on a CONFIRMED runner (premium up >= level%), the OPPOSITE of
+    # DCA (which adds on dips). Validated 2026-06-15 (scripts/backtest_pyramid_ladder.py): CALL +30
+    # add PF 1.64->1.71; PUT +30 & +100 pyramid PF 1.39->1.68 (puts are the bigger edge). LEAST-RISK:
+    # only adds contracts + blends the DB entry; never touches the FSM, so the trail keeps protecting.
+    ENABLE_ANTIMARTINGALE_ADD: bool = False
+    ANTIMG_CALL_LEVELS: str = "30"               # CALL: single add at +30%
+    ANTIMG_PUT_LEVELS: str = "100,30"            # PUT: pyramid — add at +30% AND +100%
+    ANTIMG_MIN_MINUTES: float = 3.0              # earliest the add can fire
+    ANTIMG_MAX_MINUTES: float = 60.0             # latest (still early enough to ride)
+    ANTIMG_UND_CONFIRM_PCT: float = 0.10         # underlying must confirm direction by >= this %
+    ANTIMG_ADD_FRACTION: float = 1.0             # add up to 1x the original contract count
+
     # --- v5 dynamic exit gates (signal-driven, no fixed time windows) ---
 
     # Dynamic scalp: take profit when premium peaked AND fading AND underlying NOT confirming

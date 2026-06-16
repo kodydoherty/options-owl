@@ -86,6 +86,7 @@ def _cleanup_trade_state(trade_id: int) -> None:
     _thesis_cut_states.pop(trade_id, None)
     _premium_fail_count.pop(trade_id, None)
     _v6_dca_fired.discard(trade_id)
+    _antimg_fired.difference_update({k for k in _antimg_fired if k[0] == trade_id})
     _transient_sell_failures.pop(trade_id, None)
     _premium_tick_last_write.pop(trade_id, None)
     if _v5_bridge is not None:
@@ -614,6 +615,132 @@ async def _check_v6_dca(
 
     except Exception as exc:
         logger.error(f"  #{trade_id} {ticker} V6 DCA DB update failed: {exc}")
+
+
+# Anti-martingale ADD: buy MORE once a position CONFIRMS a runner (premium up >= level%).
+# Validated (scripts/backtest_pyramid_ladder.py): CALL +30 add (PF 1.64->1.71); PUT +30 & +100
+# pyramid (PF 1.39->1.68). LEAST-RISK BY DESIGN: this ONLY places a Webull BUY + updates the DB
+# (blended entry + new contracts). It does NOT touch the FSM/exit logic — the monitor_bridge
+# already re-syncs `contracts` from the DB each cycle and keeps its own entry/peak, so the
+# trailing stop keeps protecting the runner exactly as before. Opposite of V6 DCA (which averages
+# DOWN on dips and DOES reset the FSM to GRACE). One add per (trade, level).
+_antimg_fired: set[tuple] = set()
+
+
+async def _check_antimartingale_add(
+    trade: dict,
+    exit_premium: float,
+    current_price: float,
+    settings,
+    paper_trader: PaperTrader,
+    db_path: str,
+) -> bool:
+    """Add to a CONFIRMED winner; returns True if it added (caller re-fetches the trade)."""
+    trade_id = trade["id"]
+    ticker = trade["ticker"]
+    otype = trade.get("option_type", "call").lower()
+    entry_prem = trade.get("premium_per_contract", 0.0) or 0.0
+    if entry_prem <= 0 or not exit_premium or exit_premium <= 0:
+        return False
+    gain_pct = (exit_premium - entry_prem) / entry_prem * 100
+
+    # Per-direction add levels (PUT pyramids +30 & +100; CALL single +30). Highest crossed wins.
+    levels_str = (getattr(settings, "ANTIMG_PUT_LEVELS", "100,30") if otype == "put"
+                  else getattr(settings, "ANTIMG_CALL_LEVELS", "30"))
+    levels = sorted({int(x) for x in str(levels_str).split(",") if x.strip()}, reverse=True)
+    level = next((L for L in levels if gain_pct >= L and (trade_id, L) not in _antimg_fired), None)
+    if level is None:
+        return False
+
+    # Time window — early enough to ride, not in the first moments.
+    try:
+        elapsed_min = (datetime.now() - datetime.fromisoformat(trade.get("opened_at", ""))).total_seconds() / 60
+    except (ValueError, TypeError):
+        return False
+    if not (getattr(settings, "ANTIMG_MIN_MINUTES", 3.0) <= elapsed_min
+            <= getattr(settings, "ANTIMG_MAX_MINUTES", 60.0)):
+        return False
+
+    # Underlying must CONFIRM the direction (call up / put down).
+    u_conf = getattr(settings, "ANTIMG_UND_CONFIRM_PCT", 0.10)
+    entry_price = trade.get("entry_price", 0.0) or 0.0
+    if entry_price <= 0 or not current_price or current_price <= 0:
+        return False
+    u_move = (current_price - entry_price) / entry_price * 100
+    if (otype == "call" and u_move < u_conf) or (otype == "put" and u_move > -u_conf):
+        return False
+
+    # Size the add: ANTIMG_ADD_FRACTION x original, capped by MAX_POSITION_PCT of balance.
+    add_contracts = max(1, int(trade["contracts"] * getattr(settings, "ANTIMG_ADD_FRACTION", 1.0)))
+    cost_per = exit_premium * 100
+    balance = getattr(settings, "PORTFOLIO_SIZE", 2000.0)
+    try:
+        lb = await paper_trader.get_portfolio_balance()
+        if lb and lb > 0:
+            balance = lb
+    except Exception:
+        pass
+    cap_pct = getattr(settings, "MAX_POSITION_PCT", 15.0)
+    max_ct = int(balance * (cap_pct / 100) / cost_per) if cost_per > 0 else 0
+    if max_ct < 1:
+        return False
+    add_contracts = min(add_contracts, max_ct)
+
+    # Mark this level + all lower un-fired levels (don't later fire a low add at a high price).
+    for L in levels:
+        if L <= level:
+            _antimg_fired.add((trade_id, L))
+    logger.info(
+        f"  #{trade_id} {ticker} ANTIMG ADD +{level}%: gain {gain_pct:.0f}%, underlying {u_move:+.2f}%, "
+        f"elapsed {elapsed_min:.0f}min — adding {add_contracts} @ ${exit_premium:.2f}"
+    )
+
+    # Place the Webull add (mirror DCA). A failure marks fired + bails (no DB blend).
+    fill_price = exit_premium
+    if paper_trader.webull_executor is not None:
+        try:
+            limit = round(exit_premium * (1 + getattr(settings, "WEBULL_ENTRY_AGGRESS_PCT", 2.0) / 100), 2)
+            result = await paper_trader.webull_executor.buy_option(
+                ticker=ticker, strike=trade["strike"], expiry_date=trade.get("expiry_date", "") or "",
+                option_type=otype.upper(), contracts=add_contracts, limit_price=limit,
+            )
+            if not result.success:
+                logger.error(f"  #{trade_id} {ticker} ANTIMG Webull FAILED: {result.error}")
+                await log_trade_event(db_path, ticker, "webull_antimg_failed",
+                                      f"trade#{trade_id} +{level}% error={result.error}", trade_id=trade_id)
+                return True
+            wb = (await paper_trader.webull_executor.get_fill_price(result.client_order_id)
+                  if result.client_order_id else None)
+            if wb and wb > 0:
+                fill_price = wb
+            await log_trade_event(db_path, ticker, "webull_antimg_filled",
+                                  f"trade#{trade_id} +{level}% order_id={result.order_id} "
+                                  f"x{add_contracts} @ ${fill_price:.2f}", trade_id=trade_id)
+        except Exception as exc:
+            logger.error(f"  #{trade_id} {ticker} ANTIMG Webull ERROR: {exc}")
+            return True
+
+    # DB only: blend entry + new contracts. The FSM is NOT touched — the bridge re-syncs
+    # contracts from the DB and keeps its own entry/peak, so the trail keeps protecting.
+    new_total = trade["contracts"] + add_contracts
+    orig_entry = trade.get("webull_entry_fill_price") or entry_prem
+    old_cost = trade["contracts"] * orig_entry * 100
+    new_cost = add_contracts * fill_price * 100
+    new_avg = (old_cost + new_cost) / (new_total * 100)
+    try:
+        async with _connect_db(db_path) as conn:
+            await conn.execute(
+                "UPDATE paper_trades SET contracts = ?, premium_per_contract = ?, total_cost = ? WHERE id = ?",
+                (new_total, round(new_avg, 4), round(old_cost + new_cost, 2), trade_id),
+            )
+            await conn.commit()
+        logger.info(
+            f"  #{trade_id} {ticker} ANTIMG ADD complete: {trade['contracts']}+{add_contracts}={new_total} "
+            f"@ avg ${new_avg:.2f} — FSM untouched, trail rides on"
+        )
+    except Exception as exc:
+        logger.error(f"  #{trade_id} {ticker} ANTIMG DB update failed: {exc}")
+    return True
 
 
 async def _update_mfe_mae(
@@ -1361,6 +1488,22 @@ async def run_position_monitor(
                             f"skipping exit eval this cycle to let trade develop"
                         )
                         continue
+
+                # Anti-martingale ADD: buy MORE on a CONFIRMED runner (calls + puts). LEAST-RISK
+                # by design — only adds contracts + blends the DB entry; never touches the FSM, so
+                # the trailing stop keeps protecting. Exit eval proceeds normally this cycle.
+                if (
+                    getattr(settings, "ENABLE_ANTIMARTINGALE_ADD", False)
+                    and exit_premium is not None
+                    and await _check_antimartingale_add(
+                        trade, exit_premium, current_price, settings, paper_trader, db_path,
+                    )
+                ):
+                    trades_refreshed = await get_open_trades(db_path)
+                    for t in trades_refreshed:
+                        if t["id"] == trade["id"]:
+                            trade = t
+                            break
 
                 # Record premium history for velocity/decel calculations
                 trade_id = trade["id"]
