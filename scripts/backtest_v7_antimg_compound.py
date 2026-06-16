@@ -72,8 +72,8 @@ def run_sim(pp, mp, up, ets, cfg, dte, otype, start_idx=0, settings=None):
         a = fsm.evaluate(st, prem, prem * (1 - HAIRCUT), prem, now,
                          current_underlying=up[k], minutes_to_close=mtc, candle_data={})
         if a.should_exit:
-            return (prem * (1 - HAIRCUT) - ep) / ep * 100, (peak - ep) / ep * 100
-    return (last * (1 - HAIRCUT) - ep) / ep * 100, (peak - ep) / ep * 100
+            return (prem * (1 - HAIRCUT) - ep) / ep * 100, (peak - ep) / ep * 100, int(mp[k])
+    return (last * (1 - HAIRCUT) - ep) / ep * 100, (peak - ep) / ep * 100, int(mp[-1])
 
 
 def add_idx(pp, mp, ep, L):
@@ -134,18 +134,19 @@ def flow_paths():
                     if np.isnan(pp[0]) or pp[0] <= 0:
                         continue
                     ets = datetime(*map(int, d.split("-")), 9, 30, tzinfo=D.ET) + timedelta(minutes=mb)
-                    ret_nl, peak = run_sim(pp, list(mp), list(up), ets, cfg, int(dte0), otype, settings=D._S())
-                    ret_lk, _ = run_sim(pp, list(mp), list(up), ets, cfg, int(dte0), otype, settings=_SL())
+                    ret_nl, peak, _ = run_sim(pp, list(mp), list(up), ets, cfg, int(dte0), otype, settings=D._S())
+                    ret_lk, _, exit_min = run_sim(pp, list(mp), list(up), ets, cfg, int(dte0), otype, settings=_SL())
                     adds = []
                     for L in levels:
                         ai = add_idx(pp, mp, pp[0], L)
                         if ai is None:
                             continue
-                        ar, _ = run_sim(pp, list(mp), list(up), ets, cfg, int(dte0), otype, start_idx=ai, settings=_SL())
+                        ar, _, _ = run_sim(pp, list(mp), list(up), ets, cfg, int(dte0), otype, start_idx=ai, settings=_SL())
                         adds.append((L, ar))
                     mult = flow_conviction_mult(csize, float(ev["total_premium"]), float(ev["ask_frac"]), is_idx, None)[0]
                     out.append({"date": d, "src": "flow", "tk": tk, "ret_nl": ret_nl, "ret_lk": ret_lk,
-                                "peak": peak, "mult": mult, "is_put": is_put, "adds": adds})
+                                "peak": peak, "mult": mult, "is_put": is_put, "adds": adds,
+                                "entry_min": int(mb), "exit_min": int(exit_min)})
     return pd.DataFrame(out)
 
 
