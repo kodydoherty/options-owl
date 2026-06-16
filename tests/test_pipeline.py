@@ -237,6 +237,14 @@ class TestBalanceGate:
         r = await BalanceGate().evaluate(ctx)
         assert r.result == GateResult.FAIL
 
+    @pytest.mark.asyncio
+    async def test_fail_closed_when_current_balance_missing(self):
+        # malformed portfolio ctx (no current_balance) must FAIL CLOSED, never silently skip a money gate
+        ctx = _base_entry_ctx(portfolio={"starting_balance": 20000.0})
+        r = await BalanceGate().evaluate(ctx)
+        assert r.result == GateResult.FAIL
+        assert "current_balance" in r.reason
+
 
 class TestCircuitBreakerGate:
     @pytest.mark.asyncio

@@ -65,7 +65,7 @@ def _ctx(settings, signal):
         "bid": 1.95, "ask": 2.05,           # 5% spread — passes spread gate
         "current_price": 100.0, "entry_delta": 0.45,
         "candle_data": {}, "now_et": datetime.now(ET),
-        "portfolio": {"balance": 20000.0, "starting_balance": 20000.0},
+        "portfolio": {"current_balance": 20000.0, "starting_balance": 20000.0},  # key the BalanceGate reads
         "open_count": 0, "open_positions": [], "open_tickers": set(),
         "open_calls": 0, "open_puts": 0,
         "premium_history": [], "underlying_price_history": [],

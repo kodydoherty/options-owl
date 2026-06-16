@@ -1300,9 +1300,13 @@ class BalanceGate(EntryGate):
 
         premium = signal.atm_premium or 0.0
         cost = premium * 100.0  # minimum 1 contract
+        # current_balance is a REAL NOT NULL column → always present in the live ctx. If it's
+        # ever missing the portfolio ctx is malformed (a bug) — FAIL CLOSED (block) so it's
+        # loud + safe, never a silent no-op on a money gate.
         balance = portfolio.get("current_balance")
         if balance is None:
-            return GateOutcome(self.name, GateResult.SKIP, "No balance data")
+            return GateOutcome(self.name, GateResult.FAIL,
+                               "Portfolio ctx missing current_balance — blocking (fail-closed)")
 
         if cost > balance:
             return GateOutcome(self.name, GateResult.FAIL,
