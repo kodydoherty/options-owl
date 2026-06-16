@@ -87,6 +87,7 @@ def _cleanup_trade_state(trade_id: int) -> None:
     _premium_fail_count.pop(trade_id, None)
     _v6_dca_fired.discard(trade_id)
     _antimg_fired.difference_update({k for k in _antimg_fired if k[0] == trade_id})
+    _antimg_children.discard(trade_id)
     _transient_sell_failures.pop(trade_id, None)
     _premium_tick_last_write.pop(trade_id, None)
     if _v5_bridge is not None:
@@ -625,6 +626,8 @@ async def _check_v6_dca(
 # trailing stop keeps protecting the runner exactly as before. Opposite of V6 DCA (which averages
 # DOWN on dips and DOES reset the FSM to GRACE). One add per (trade, level).
 _antimg_fired: set[tuple] = set()
+# trade_ids that ARE anti-martingale add-legs (children) — never add to an add-leg (no cascading).
+_antimg_children: set[int] = set()
 
 
 async def _check_antimartingale_add(
@@ -637,6 +640,8 @@ async def _check_antimartingale_add(
 ) -> bool:
     """Add to a CONFIRMED winner; returns True if it added (caller re-fetches the trade)."""
     trade_id = trade["id"]
+    if trade_id in _antimg_children:
+        return False  # an add-leg is never itself added to (prevents cascading adds)
     ticker = trade["ticker"]
     otype = trade.get("option_type", "call").lower()
     entry_prem = trade.get("premium_per_contract", 0.0) or 0.0
@@ -695,8 +700,9 @@ async def _check_antimartingale_add(
         f"elapsed {elapsed_min:.0f}min — adding {add_contracts} @ ${exit_premium:.2f}"
     )
 
-    # Place the Webull add (mirror DCA). A failure marks fired + bails (no DB blend).
+    # Place the Webull add (mirror DCA). A failure marks fired + bails (no leg created).
     fill_price = exit_premium
+    add_order_id = None
     if paper_trader.webull_executor is not None:
         try:
             limit = round(exit_premium * (1 + getattr(settings, "WEBULL_ENTRY_AGGRESS_PCT", 2.0) / 100), 2)
@@ -709,6 +715,7 @@ async def _check_antimartingale_add(
                 await log_trade_event(db_path, ticker, "webull_antimg_failed",
                                       f"trade#{trade_id} +{level}% error={result.error}", trade_id=trade_id)
                 return True
+            add_order_id = str(result.order_id) if result.order_id else None
             wb = (await paper_trader.webull_executor.get_fill_price(result.client_order_id)
                   if result.client_order_id else None)
             if wb and wb > 0:
@@ -720,26 +727,75 @@ async def _check_antimartingale_add(
             logger.error(f"  #{trade_id} {ticker} ANTIMG Webull ERROR: {exc}")
             return True
 
-    # DB only: blend entry + new contracts. The FSM is NOT touched — the bridge re-syncs
-    # contracts from the DB and keeps its own entry/peak, so the trail keeps protecting.
-    new_total = trade["contracts"] + add_contracts
-    orig_entry = trade.get("webull_entry_fill_price") or entry_prem
-    old_cost = trade["contracts"] * orig_entry * 100
-    new_cost = add_contracts * fill_price * 100
-    new_avg = (old_cost + new_cost) / (new_total * 100)
+    # SEPARATE-LEG accounting: the add is its OWN open trade (own entry = the +L fill, own V7 trail),
+    # NOT blended into the parent. So the original leg's protected gains are never dragged down by a
+    # faded add — it matches the backtest (which models the add as a separate leg riding to its own
+    # exit). The parent is untouched; the monitor picks up the child as a new open trade and rides its
+    # own trail. The child is excluded from further adds (no cascading). When each leg's FSM exits it
+    # sells ONLY its own contracts — a partial close of the combined Webull position.
+    from datetime import datetime as _dt
+    add_cost = round(add_contracts * fill_price * 100, 2)
+
+    # PRIMARY: record the add as its own open leg (separate-leg accounting).
     try:
+        async with _connect_db(db_path) as conn:
+            cur = await conn.execute(
+                "INSERT INTO paper_trades "
+                "(signal_id, ticker, direction, sentiment, score, strength, bot_source, entry_price, "
+                "strike, option_type, contracts, premium_per_contract, total_cost, stop_price, exit_by, "
+                "expiry_date, strategy, webull_order_id, webull_entry_fill_price, status, opened_at, "
+                "parent_trade_id) "
+                "SELECT signal_id, ticker, direction, sentiment, score, strength, bot_source, entry_price, "
+                "strike, option_type, ?, ?, ?, stop_price, exit_by, expiry_date, strategy, ?, ?, 'open', ?, ? "
+                "FROM paper_trades WHERE id = ?",
+                (add_contracts, round(fill_price, 4), add_cost, add_order_id, round(fill_price, 4),
+                 _dt.now().isoformat(), trade_id, trade_id),
+            )
+            await conn.commit()
+            child_id = cur.lastrowid
+        try:
+            _antimg_children.add(int(child_id))
+        except (TypeError, ValueError):
+            child_id = None
+        logger.info(
+            f"  #{trade_id} {ticker} ANTIMG ADD complete: +{add_contracts} as SEPARATE leg #{child_id} "
+            f"@ ${fill_price:.2f} — parent #{trade_id} untouched (its trail keeps protecting), add rides its own"
+        )
+        return True
+    except Exception as exc:
+        logger.error(f"  #{trade_id} {ticker} ANTIMG child-leg insert FAILED: {exc} — "
+                     f"falling back to BLEND so the {add_contracts} filled contracts stay TRACKED")
+
+    # FALLBACK: Webull ALREADY filled add_contracts but the child-leg insert failed. Blend them into
+    # the parent so the position is NEVER untracked (you can't be left holding the bag on extra
+    # contracts). Less ideal accounting than a separate leg, but the contracts are tracked + sellable.
+    try:
+        new_total = trade["contracts"] + add_contracts
+        orig_entry = trade.get("webull_entry_fill_price") or entry_prem
+        old_cost = trade["contracts"] * orig_entry * 100
+        new_avg = (old_cost + add_cost) / (new_total * 100)
         async with _connect_db(db_path) as conn:
             await conn.execute(
                 "UPDATE paper_trades SET contracts = ?, premium_per_contract = ?, total_cost = ? WHERE id = ?",
-                (new_total, round(new_avg, 4), round(old_cost + new_cost, 2), trade_id),
+                (new_total, round(new_avg, 4), round(old_cost + add_cost, 2), trade_id),
             )
             await conn.commit()
-        logger.info(
-            f"  #{trade_id} {ticker} ANTIMG ADD complete: {trade['contracts']}+{add_contracts}={new_total} "
-            f"@ avg ${new_avg:.2f} — FSM untouched, trail rides on"
-        )
-    except Exception as exc:
-        logger.error(f"  #{trade_id} {ticker} ANTIMG DB update failed: {exc}")
+        await log_trade_event(db_path, ticker, "webull_antimg_blended_fallback",
+                              f"trade#{trade_id} +{level}% child-insert failed → blended {add_contracts} "
+                              f"into parent (TRACKED, not a separate leg)", trade_id=trade_id)
+        logger.warning(f"  #{trade_id} {ticker} ANTIMG FALLBACK: blended {add_contracts} into parent "
+                       f"— TRACKED (separate-leg failed)")
+    except Exception as exc2:
+        # CATASTROPHIC: Webull filled but we cannot record it anywhere. Loudest possible alert so it
+        # is caught + manually reconciled — never silently held.
+        logger.critical(f"  #{trade_id} {ticker} ANTIMG UNTRACKED CONTRACTS: bought {add_contracts} on "
+                        f"Webull but BOTH child-insert AND blend-fallback failed ({exc2}). MANUAL RECONCILE.")
+        try:
+            await log_trade_event(db_path, ticker, "webull_antimg_UNTRACKED",
+                                  f"trade#{trade_id} +{level}% {add_contracts} contracts bought but NOT "
+                                  f"recorded — MANUAL RECONCILE", trade_id=trade_id)
+        except Exception:
+            pass
     return True
 
 

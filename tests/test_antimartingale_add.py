@@ -43,8 +43,10 @@ def _trade(option_type="call", premium=2.00):
 def _clear_fired():
     from options_owl.execution import position_monitor as pm
     pm._antimg_fired.difference_update({k for k in pm._antimg_fired if k[0] == 700})
+    pm._antimg_children.clear()
     yield
     pm._antimg_fired.difference_update({k for k in pm._antimg_fired if k[0] == 700})
+    pm._antimg_children.clear()
 
 
 async def _run(trade, exit_premium, current_price, settings):
@@ -55,6 +57,7 @@ async def _run(trade, exit_premium, current_price, settings):
     conn = AsyncMock()
     conn.__aenter__ = AsyncMock(return_value=conn)
     conn.__aexit__ = AsyncMock(return_value=None)
+    conn.execute = AsyncMock(return_value=MagicMock(lastrowid=9001))  # child-leg insert returns an id
 
     @asynccontextmanager
     async def _fake_connect(path):
@@ -109,6 +112,63 @@ class TestAntimartingaleAdd:
         # function itself doesn't check the flag (caller does), but a non-eligible gain returns False
         added, _ = await _run(_trade("call"), 2.00, 130.6, _settings())  # 0% gain
         assert added is False
+
+    @pytest.mark.asyncio
+    async def test_creates_separate_child_leg_not_blend(self):
+        """The add must create a SEPARATE child trade (own entry/trail), NOT blend the parent."""
+        from options_owl.execution import position_monitor as pm
+        added, conn = await _run(_trade("call"), 2.60, 130.6, _settings())  # +30% → fires
+        assert added is True
+        sql = " ".join(str(c.args[0]) for c in conn.execute.call_args_list if c.args)
+        assert "INSERT INTO paper_trades" in sql and "parent_trade_id" in sql, "must insert a child leg"
+        assert "UPDATE paper_trades SET contracts" not in sql, "must NOT blend the parent"
+        assert 9001 in pm._antimg_children, "child id must be tracked to prevent cascading adds"
+
+    @pytest.mark.asyncio
+    async def test_child_leg_is_never_added_to(self):
+        """An add-leg (child) must never itself trigger an add (no cascading)."""
+        from options_owl.execution import position_monitor as pm
+        tr = _trade("call")
+        tr["id"] = 9001
+        pm._antimg_children.add(9001)
+        added, _ = await _run(tr, 2.60, 130.6, _settings())  # +30% but it's a child → no add
+        assert added is False
+
+    @pytest.mark.asyncio
+    async def test_fallback_blends_into_parent_if_child_insert_fails(self):
+        """SAFETY: if Webull filled the add but the child-leg insert fails, the contracts MUST be
+        blended into the parent (TRACKED) — never left as untracked Webull contracts (holding the bag)."""
+        import sqlite3 as _sql
+        from options_owl.execution import position_monitor as pm
+
+        def _exec(sql, *a, **k):
+            if "INSERT INTO paper_trades" in str(sql) and "SELECT" in str(sql):
+                raise _sql.OperationalError("child insert boom")
+            return MagicMock(lastrowid=0)
+
+        conn = AsyncMock()
+        conn.__aenter__ = AsyncMock(return_value=conn)
+        conn.__aexit__ = AsyncMock(return_value=None)
+        conn.execute = AsyncMock(side_effect=_exec)
+
+        @asynccontextmanager
+        async def _fake_connect(path):
+            yield conn
+
+        mock_pt = MagicMock()
+        mock_pt.get_portfolio_balance = AsyncMock(return_value=23000.0)
+        mock_pt.webull_executor = None
+        with _patch("options_owl.execution.position_monitor.datetime") as mdt, \
+             _patch("options_owl.execution.position_monitor._connect_db", _fake_connect), \
+             _patch("options_owl.execution.position_monitor.log_trade_event", AsyncMock()):
+            mdt.fromisoformat.return_value = datetime(2026, 6, 15, 13, 30, 0)
+            mdt.now.return_value = datetime(2026, 6, 15, 13, 40, 0)
+            added = await pm._check_antimartingale_add(
+                _trade("call"), 2.60, 130.6, _settings(), mock_pt, "test.db")  # +30% → fires
+        assert added is True
+        sql_all = " ".join(str(c.args[0]) for c in conn.execute.call_args_list if c.args)
+        assert "UPDATE paper_trades SET contracts" in sql_all, (
+            "fallback blend must fire so the filled contracts stay TRACKED, never untracked")
 
     def test_does_not_touch_the_fsm(self):
         """CRITICAL: the add must NOT mutate the FSM (no GRACE/peak/state reset) — the trail
