@@ -220,6 +220,9 @@ class Settings(BaseSettings):
     # KEEP_FRAC of the peak gain — locks profit instead of riding the wide trail back to break-even.
     # Validated 2026-06-16 layered on the V7 stops: +7% call P&L, +3pts WR, consistent per-month
     # (the same rule HURTS puts, so PUTs keep the V7 wide trail). FSM gate 3.6, call-only.
+    # Take-profit sizing cap: once the account exceeds this $ balance, freeze position sizing here
+    # (trade a fixed-size book, bank the excess). Bounds absolute drawdown. 0 = disabled (compound).
+    MAX_SIZING_BALANCE: float = 0.0
     ENABLE_V7_PROFIT_LOCK: bool = False
     V7_PROFIT_LOCK_KEEP_FRAC: float = 0.6        # keep 60% of the peak gain
     V7_PROFIT_LOCK_ACTIVATE_PCT: float = 30.0    # only arms once peak gain >= +30%

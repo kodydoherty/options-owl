@@ -137,6 +137,8 @@ services:
       - ANTIMG_CALL_LEVELS=30,80,150
       # CALL-only profit-lock (keep 60% of peak gain once +30%) — the runner-capture win, stays ON.
       - ENABLE_V7_PROFIT_LOCK=true
+      # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
+      - MAX_SIZING_BALANCE=50000
       # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
       - ENABLE_V7_TIDE_GATE=true
       # Stage D conviction sizing — kody LIVE 2026-06-14 (validated +72% / combined PF 1.78; vinny paper canary).
@@ -208,6 +210,8 @@ services:
       - ANTIMG_CALL_LEVELS=30,80,150
       # CALL-only profit-lock (keep 60% of peak gain once +30%) — the runner-capture win, stays ON.
       - ENABLE_V7_PROFIT_LOCK=true
+      # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
+      - MAX_SIZING_BALANCE=50000
       # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
       - ENABLE_V7_TIDE_GATE=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true
@@ -275,6 +279,8 @@ services:
       - ANTIMG_CALL_LEVELS=30,80,150
       # CALL-only profit-lock (keep 60% of peak gain once +30%) — the runner-capture win, stays ON.
       - ENABLE_V7_PROFIT_LOCK=true
+      # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
+      - MAX_SIZING_BALANCE=50000
       # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
       - ENABLE_V7_TIDE_GATE=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true
@@ -342,6 +348,8 @@ services:
       - ANTIMG_CALL_LEVELS=30,80,150
       # CALL-only profit-lock (keep 60% of peak gain once +30%) — the runner-capture win, stays ON.
       - ENABLE_V7_PROFIT_LOCK=true
+      # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
+      - MAX_SIZING_BALANCE=50000
       # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
       - ENABLE_V7_TIDE_GATE=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true
@@ -411,6 +419,8 @@ services:
       - ANTIMG_CALL_LEVELS=30,80,150
       # CALL-only profit-lock (keep 60% of peak gain once +30%) — the runner-capture win, stays ON.
       - ENABLE_V7_PROFIT_LOCK=true
+      # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
+      - MAX_SIZING_BALANCE=50000
       # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
       - ENABLE_V7_TIDE_GATE=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true

@@ -1250,6 +1250,14 @@ class PaperTrader:
                 portfolio["current_balance"],
                 live_cap,
             )
+            # TAKE-PROFIT sizing cap: once the account grows past MAX_SIZING_BALANCE, FREEZE position
+            # sizing at that level (trade a fixed $X book; the excess sits uninvested / is banked).
+            # Bounds absolute drawdown — validated 2026-06-16 (turns ~-47% DD into ~-9%). 0 = disabled.
+            _tp_cap = getattr(self.settings, "MAX_SIZING_BALANCE", 0.0)
+            if _tp_cap and _tp_cap > 0 and effective_balance > _tp_cap:
+                logger.info(f"TAKE_PROFIT: sizing balance capped ${effective_balance:,.0f} → ${_tp_cap:,.0f} "
+                            f"(trading a fixed ${_tp_cap:,.0f} book; excess banked)")
+                effective_balance = _tp_cap
             # Hard cap at remaining portfolio capacity
             remaining_capacity = portfolio_size - deployed_cost
             effective_balance = min(effective_balance, remaining_capacity)
