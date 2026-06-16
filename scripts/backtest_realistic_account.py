@@ -26,27 +26,29 @@ import backtest_v7_antimg_compound as C  # noqa: E402
 
 START = 23000.0
 RISK_PCT, MAX_CONC, POS_CAP, PUT_BUDGET, FLAT = 0.75, 8, 0.15, 0.50, 0.85
-ENTRY_SLIP = 0.03   # base: buy the ask, not mid (~half a 6% 0DTE spread). exit already haircut 3%.
 DAYS = 60
 
-# Per-trade LIQUIDITY ceiling — the most $ you can push into ONE 0DTE contract without serious
-# market impact. THE realism lever: once the account is big enough that 15% > this, per-trade size
-# plateaus here and compounding goes from geometric to ~linear. Conservative for a mixed universe.
-LIQ = {"SPY": 60000.0, "QQQ": 60000.0}
-LIQ_BIG = {"AMZN", "META", "TSLA", "NVDA", "GOOG", "AMD", "AVGO"}  # $20k
-LIQ_DEFAULT = 8000.0  # thin names (MU/ARM/LRCX/INTC/ORCL/AAPL/...) — small fillable size
+# Per-trade LIQUIDITY ceiling + per-ticker SPREAD — MEASURED from PG option_ticks (14d, near-ATM,
+# 0-2 DTE, 2026-06-16). LIQ = ~3% of median daily $ volume (day_vol x mid x 100) = realistic max
+# without serious impact. SPR = measured median spread (the real per-trade cost). SPY is effectively
+# uncapped at our size; the thin names (ARM-type) are gated by SPREAD more than size.
+LIQ = {"SPY": 900000.0, "QQQ": 600000.0, "TSLA": 280000.0, "MU": 140000.0, "AMD": 53000.0,
+       "META": 35000.0, "NVDA": 60000.0, "AMZN": 40000.0, "GOOG": 35000.0, "AVGO": 25000.0,
+       "ARM": 8000.0, "LRCX": 8000.0, "ORCL": 12000.0, "INTC": 15000.0, "AAPL": 40000.0}
+SPR = {"SPY": 0.010, "TSLA": 0.020, "MU": 0.030, "AMD": 0.055, "META": 0.070, "NVDA": 0.040,
+       "AMZN": 0.045, "GOOG": 0.050, "AVGO": 0.060, "ARM": 0.140, "LRCX": 0.120, "ORCL": 0.080,
+       "INTC": 0.070, "AAPL": 0.035}
+LIQ_DEFAULT, SPR_DEFAULT = 15000.0, 0.06
 
 
 def liq_cap(tk):
-    if tk in LIQ:
-        return LIQ[tk]
-    return 20000.0 if tk in LIQ_BIG else LIQ_DEFAULT
+    return LIQ.get(tk, LIQ_DEFAULT)
 
 
-def slip(ret_pct, size, cap):
-    """Entry slippage that GROWS with order size vs the contract's liquidity (impact), on a return
-    already net of the 3% exit haircut. A trade at the liquidity cap eats ~+5% extra."""
-    s = ENTRY_SLIP + 0.05 * min(1.0, size / cap)
+def slip(ret_pct, size, tk, cap):
+    """Real per-trade cost: cross half the MEASURED spread on entry + a size-impact term that grows
+    as the order approaches the contract's liquidity ceiling. (Exit already haircut 3% in ret_lk.)"""
+    s = SPR.get(tk, SPR_DEFAULT) / 2.0 + 0.05 * min(1.0, size / cap)
     return ((1 + ret_pct / 100.0) / (1 + s) - 1) * 100.0
 
 
@@ -97,7 +99,7 @@ def run(trades):
             if committed + size > deployable:
                 skipped_cap += 1
                 continue
-            ret = slip(t.ret, size, lc)            # size-dependent entry slippage
+            ret = slip(t.ret, size, t.tk, lc)      # measured per-ticker spread + size impact
             open_pos.append((t.exit, size, ret))
             committed += size
             taken += 1
