@@ -45,10 +45,11 @@ def liq_cap(tk):
     return LIQ.get(tk, LIQ_DEFAULT)
 
 
-def slip(ret_pct, size, tk, cap):
-    """Real per-trade cost: cross half the MEASURED spread on entry + a size-impact term that grows
-    as the order approaches the contract's liquidity ceiling. (Exit already haircut 3% in ret_lk.)"""
-    s = SPR.get(tk, SPR_DEFAULT) / 2.0 + 0.05 * min(1.0, size / cap)
+def slip(ret_pct, size, tk, cap, crowd=1.0):
+    """Real per-trade cost: cross half the MEASURED spread on entry + a size-impact term. CROWD = how
+    many bots stack the SAME contract at once (5 bots all at the cap → their sizes add, so impact
+    scales with crowd*size vs the contract's liquidity). Mainly bites thin names. Exit haircut in ret."""
+    s = SPR.get(tk, SPR_DEFAULT) / 2.0 + 0.10 * min(1.0, crowd * size / cap)
     return ((1 + ret_pct / 100.0) / (1 + s) - 1) * 100.0
 
 
@@ -69,8 +70,12 @@ def build():
     return allt[allt["dt"] >= maxd - pd.Timedelta(days=DAYS)].copy(), maxd
 
 
-def run(trades):
+def run(trades, cap_at=None, crowd=1.0):
+    """cap_at=None: compound endlessly. cap_at=$X: once working capital hits $X, FREEZE sizing at $X
+    and sweep every dollar above it to 'banked' (withdrawn, never risked). Bounds absolute drawdown.
+    crowd: # of bots stacking the same contract (5 = all bots live at the cap)."""
     bal = START
+    banked = 0.0
     taken = skipped_slot = skipped_cap = 0
     daily = {}
     for d, g in trades.groupby("date", sort=True):
@@ -99,7 +104,7 @@ def run(trades):
             if committed + size > deployable:
                 skipped_cap += 1
                 continue
-            ret = slip(t.ret, size, t.tk, lc)      # measured per-ticker spread + size impact
+            ret = slip(t.ret, size, t.tk, lc, crowd)   # measured spread + size impact (× crowd)
             open_pos.append((t.exit, size, ret))
             committed += size
             taken += 1
@@ -107,7 +112,10 @@ def run(trades):
             day_pnl += cm * r / 100.0
         daily[d] = day_pnl
         bal += day_pnl
-    return bal, daily, taken, skipped_slot, skipped_cap
+        if cap_at and bal > cap_at:                    # take profits: sweep excess off the table
+            banked += bal - cap_at
+            bal = cap_at
+    return bal + banked, banked, daily, taken, skipped_slot, skipped_cap
 
 
 def maxdd(daily):
@@ -117,26 +125,39 @@ def maxdd(daily):
     return dd
 
 
+CAPS = [None, 150000.0, 100000.0, 75000.0, 50000.0, 35000.0, 25000.0]
+
+
+def ddpct_of(daily):
+    eq = pk = 0.0
+    for d in sorted(daily):
+        eq += daily[d]; pk = max(pk, eq)
+    dd = maxdd(daily)
+    return dd, (100 * dd / (START + pk) if (START + pk) else 0)
+
+
+def sweep(trades, crowd, label):
+    print(f"\n=== {label} (crowd={crowd:g}) ===")
+    print(f"{'take-profit cap':<18}{'end wealth':>12}{'banked':>11}{'maxDD':>11}{'DD%':>6}{'ret/DD':>8}")
+    print("-" * 66)
+    for cap in CAPS:
+        total, banked, daily, taken, _, _ = run(trades, cap_at=cap, crowd=crowd)
+        dd, dp = ddpct_of(daily)
+        name = "endless" if cap is None else f"${cap/1000:.0f}k"
+        rdd = (total - START) / abs(dd) if dd else float("inf")
+        print(f"{name:<18}${total:>11,.0f}${banked:>10,.0f}${dd:>+10,.0f}{dp:>5.0f}%{rdd:>8.1f}")
+
+
 def main():
-    print(f"building realistic ${START:,.0f} projection (8 slots + capital cap + slippage)...", flush=True)
+    print(f"building realistic ${START:,.0f} projection (measured liquidity + spreads)...", flush=True)
     trades, maxd = build()
-    sig = len(trades)
-    bal, daily, taken, sk_slot, sk_cap = run(trades)
-    ndays = len(daily)
-    print(f"window ends {maxd.date()} | {sig} signals sourced over {ndays} trading days "
-          f"(~{sig/ndays:.0f}/day)\n")
-    print(f"  start balance        ${START:>12,.0f}")
-    print(f"  end balance          ${bal:>12,.0f}")
-    print(f"  P&L                  ${bal-START:>+12,.0f}   ({(bal/START-1)*100:+.0f}%, "
-          f"{(bal/START)**(1/ (ndays/21)) -1:+.1%}/mo)")
-    print(f"  max drawdown         ${maxdd(daily):>+12,.0f}")
-    print(f"  trades TAKEN         {taken:>12,}   ({taken/ndays:.0f}/day)")
-    print(f"  skipped — slots full {sk_slot:>12,}")
-    print(f"  skipped — no capital {sk_cap:>12,}")
-    print(f"  capture rate         {100*taken/sig:>11.0f}%   (of {sig} sourced signals)")
-    print(f"\nvs fantasy compound ($2.1M off $18k, infinite liquidity) and flat-$750 edge (+$52.6k).")
-    print("Binding constraint at $23k = the 15% position cap + 8 slots/capital, NOT chain liquidity. "
-          "Liquidity/crowding only bites at much larger balances.")
+    print(f"window ends {maxd.date()} | {len(trades)} signals over {trades['date'].nunique()} days")
+    print("ret/DD = P&L per $1 of max drawdown (higher = better risk-adjusted). flat-$750 edge = +$52.6k.")
+    sweep(trades, 1, "1 bot / isolated (paper bots don't compete for fills)")
+    sweep(trades, 5, "all 5 bots LIVE at the cap (sizes stack on the same contract)")
+    print("\nNOTE: crowd hits THIN names (ARM/LRCX ~14% spread, small books) hardest; SPY/liquid names "
+          "barely care. Lower caps = lower DD + less crowding cost but smaller banked income. The knee "
+          "(best ret/DD) is the take-profit target. Each bot is a SEPARATE account — cap is per-account.")
 
 
 if __name__ == "__main__":
