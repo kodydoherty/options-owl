@@ -131,6 +131,8 @@ services:
       - ENABLE_FLOW_OTM_STRIKE=true
       # Anti-martingale ADD: buy more on a confirmed runner (CALL +30 / PUT +30&+100 pyramid) — 2026-06-15.
       - ENABLE_ANTIMARTINGALE_ADD=true
+      # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
+      - ENABLE_V7_TIDE_GATE=true
       # Stage D conviction sizing — kody LIVE 2026-06-14 (validated +72% / combined PF 1.78; vinny paper canary).
       - ENABLE_V7_CONVICTION_SIZING=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true
@@ -194,6 +196,8 @@ services:
       - ENABLE_FLOW_OTM_STRIKE=true
       # Anti-martingale ADD: buy more on a confirmed runner (CALL +30 / PUT +30&+100 pyramid) — 2026-06-15.
       - ENABLE_ANTIMARTINGALE_ADD=true
+      # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
+      - ENABLE_V7_TIDE_GATE=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true
       - ENABLE_V6_2PM_TIGHTEN=true
       - ENABLE_V6_PREMIUM_CAP=false
@@ -253,6 +257,8 @@ services:
       - ENABLE_FLOW_OTM_STRIKE=true
       # Anti-martingale ADD: buy more on a confirmed runner (CALL +30 / PUT +30&+100 pyramid) — 2026-06-15.
       - ENABLE_ANTIMARTINGALE_ADD=true
+      # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
+      - ENABLE_V7_TIDE_GATE=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true
       - ENABLE_V6_2PM_TIGHTEN=true
       - ENABLE_V6_PREMIUM_CAP=false
@@ -312,6 +318,8 @@ services:
       - ENABLE_FLOW_OTM_STRIKE=true
       # Anti-martingale ADD: buy more on a confirmed runner (CALL +30 / PUT +30&+100 pyramid) — 2026-06-15.
       - ENABLE_ANTIMARTINGALE_ADD=true
+      # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
+      - ENABLE_V7_TIDE_GATE=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true
       - ENABLE_V6_2PM_TIGHTEN=true
       - ENABLE_V6_PREMIUM_CAP=false
@@ -373,6 +381,8 @@ services:
       - ENABLE_FLOW_OTM_STRIKE=true
       # Anti-martingale ADD: buy more on a confirmed runner (CALL +30 / PUT +30&+100 pyramid) — 2026-06-15.
       - ENABLE_ANTIMARTINGALE_ADD=true
+      # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
+      - ENABLE_V7_TIDE_GATE=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true
       - ENABLE_V6_2PM_TIGHTEN=true
       - ENABLE_V6_PREMIUM_CAP=false
