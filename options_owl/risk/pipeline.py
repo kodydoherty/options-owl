@@ -1300,7 +1300,9 @@ class BalanceGate(EntryGate):
 
         premium = signal.atm_premium or 0.0
         cost = premium * 100.0  # minimum 1 contract
-        balance = portfolio["current_balance"]
+        balance = portfolio.get("current_balance")
+        if balance is None:
+            return GateOutcome(self.name, GateResult.SKIP, "No balance data")
 
         if cost > balance:
             return GateOutcome(self.name, GateResult.FAIL,
