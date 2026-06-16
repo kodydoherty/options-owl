@@ -170,6 +170,16 @@ class TestAntimartingaleAdd:
         assert "UPDATE paper_trades SET contracts" in sql_all, (
             "fallback blend must fire so the filled contracts stay TRACKED, never untracked")
 
+    def test_add_call_is_flag_guarded(self):
+        """The add must ONLY run behind ENABLE_ANTIMARTINGALE_ADD — when the flag is off the
+        monitor short-circuits and never calls it. Guard against a future edit dropping the gate."""
+        from options_owl.execution import position_monitor as pm
+        src = inspect.getsource(pm.run_position_monitor)
+        call = src.index("await _check_antimartingale_add(")
+        window = src[call - 200:call]
+        assert "ENABLE_ANTIMARTINGALE_ADD" in window, (
+            "the anti-martingale add call must be guarded by the ENABLE_ANTIMARTINGALE_ADD flag")
+
     def test_does_not_touch_the_fsm(self):
         """CRITICAL: the add must NOT mutate the FSM (no GRACE/peak/state reset) — the trail
         keeps protecting the runner. Guard against a future edit reintroducing DCA-style resets."""

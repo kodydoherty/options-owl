@@ -1545,9 +1545,10 @@ async def run_position_monitor(
                         )
                         continue
 
-                # Anti-martingale ADD: buy MORE on a CONFIRMED runner (calls + puts). LEAST-RISK
-                # by design — only adds contracts + blends the DB entry; never touches the FSM, so
-                # the trailing stop keeps protecting. Exit eval proceeds normally this cycle.
+                # Anti-martingale ADD: buy MORE on a CONFIRMED runner (calls + puts), recorded as a
+                # SEPARATE own-trail leg. DEFAULT OFF (ENABLE_ANTIMARTINGALE_ADD=false): flat-+EV but
+                # it dilutes book PF + raises drawdown, hurting compounding (gold standard 2026-06-16).
+                # When the flag is off this short-circuits — _check_antimartingale_add is never called.
                 if (
                     getattr(settings, "ENABLE_ANTIMARTINGALE_ADD", False)
                     and exit_premium is not None
