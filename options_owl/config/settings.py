@@ -216,6 +216,13 @@ class Settings(BaseSettings):
     # no-hold-limit so they ride slow-building crashes (down-day capture). Exit-only
     # ablation: both OOS windows beat V6 exits at identical win rate (+72% / +27% P&L).
     ENABLE_V7_WIDE_TRAIL: bool = False
+    # V7 profit-lock (CALL-only): once a call peaks +ACTIVATE%, exit when current gain drops below
+    # KEEP_FRAC of the peak gain — locks profit instead of riding the wide trail back to break-even.
+    # Validated 2026-06-16 layered on the V7 stops: +7% call P&L, +3pts WR, consistent per-month
+    # (the same rule HURTS puts, so PUTs keep the V7 wide trail). FSM gate 3.6, call-only.
+    ENABLE_V7_PROFIT_LOCK: bool = False
+    V7_PROFIT_LOCK_KEEP_FRAC: float = 0.6        # keep 60% of the peak gain
+    V7_PROFIT_LOCK_ACTIVATE_PCT: float = 30.0    # only arms once peak gain >= +30%
     # Stage D: conviction-based bet sizing for UW flow trades (validated 2026-06-13 — same capital
     # reallocated by conviction beat flat +72% P&L, PF 1.36→1.64, lower DD). Sizes up clustered /
     # high-ask / (single-stock) big-premium sweeps; sizes down singles + index $1M+ hedges.

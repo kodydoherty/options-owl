@@ -42,6 +42,7 @@ _REASON_MAP = {
     ExitReason.THETA_TIMER: "theta_timer",
     ExitReason.PROFIT_TARGET: "profit_target",
     ExitReason.BREAKEVEN_RATCHET: "breakeven_ratchet",
+    ExitReason.PROFIT_LOCK: "profit_lock",
     ExitReason.SCALEOUT: "scaleout_20",
     ExitReason.SIDEWAYS_SCALP: "sideways_scalp",
     ExitReason.SCALP_TARGET: "scalp_target",

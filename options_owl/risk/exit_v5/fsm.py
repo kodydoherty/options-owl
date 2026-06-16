@@ -42,6 +42,7 @@ from options_owl.risk.exit_v5.gates import (
     check_checkpoint_cut,
     check_eod_cutoff,
     check_graduated_stop,
+    check_profit_lock,
     check_profit_target,
     check_scalp_target,
     check_scalp_trail,
@@ -321,6 +322,20 @@ class ExitFSM:
             action, state.breakeven_ratchet_armed = check_breakeven_ratchet(
                 gain, current_premium, state.entry_premium,
                 state.breakeven_ratchet_armed, trigger_pct, debug,
+            )
+            if action:
+                return action
+
+        # V7 Gate 3.6: Profit-lock (CALL-only) — once peaked +N%, keep K% of the peak
+        # gain instead of riding the wide trail back to break-even. PUTs keep the V7
+        # wide trail (a tight give-back clips their slow-building crashes).
+        if (self._settings and getattr(self._settings, "ENABLE_V7_PROFIT_LOCK", False)
+                and state.option_type == "call"):
+            action = check_profit_lock(
+                gain, peak_gain,
+                keep_frac=getattr(self._settings, "V7_PROFIT_LOCK_KEEP_FRAC", 0.6),
+                activate_pct=getattr(self._settings, "V7_PROFIT_LOCK_ACTIVATE_PCT", 30.0),
+                debug=debug,
             )
             if action:
                 return action

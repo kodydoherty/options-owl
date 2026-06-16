@@ -25,6 +25,7 @@ class ExitReason(Enum):
     THETA_TIMER = "theta_timer"
     PROFIT_TARGET = "profit_target"
     BREAKEVEN_RATCHET = "breakeven_ratchet"
+    PROFIT_LOCK = "profit_lock"
     SCALEOUT = "scaleout"
     SIDEWAYS_SCALP = "sideways_scalp"
     SCALP_TARGET = "scalp_target"

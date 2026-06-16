@@ -289,6 +289,38 @@ def check_breakeven_ratchet(
     return None, new_armed
 
 
+def check_profit_lock(
+    gain: float,
+    peak_gain: float,
+    keep_frac: float,
+    activate_pct: float,
+    debug: dict,
+) -> ExitAction | None:
+    """V7 Gate (CALL-only, caller-gated): profit-lock ratchet on the upside.
+
+    Once peak gain reaches +activate_pct%, exit when current gain falls below
+    keep_frac of that peak gain — locking in keep_frac of the best gain instead of
+    riding the wide V7 trail all the way back to break-even. e.g. keep_frac=0.6,
+    activate_pct=30: a trade that peaks at +100% exits at +60%.
+
+    CALLs only (caller enforces): PUTs ride slow-building crashes and a tight
+    give-back would clip exactly the down-day moves we want — they keep the V7
+    wide trail. Backtest 2026-06-16: layered on V7 stops, +7% call P&L / +3pts WR,
+    consistent per-month; the same rule HURTS puts.
+    """
+    if peak_gain < activate_pct:
+        return None
+    floor_gain = keep_frac * peak_gain
+    if gain < floor_gain:
+        return _exit(
+            ExitReason.PROFIT_LOCK,
+            f"Profit-lock: peak +{peak_gain:.0f}%, now +{gain:.0f}% < "
+            f"+{floor_gain:.0f}% (keep {keep_frac:.0%} of peak)",
+            debug=debug,
+        )
+    return None
+
+
 def check_scaleout(
     gain: float,
     contracts: int,

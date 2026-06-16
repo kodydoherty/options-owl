@@ -172,6 +172,27 @@ identical across all 5 bots (only PAPER_TRADE differs — live: kody/dennis).
 | `MAX_POSITION_DOLLARS` | 50000 | active (no-op small accounts) |
 | `ENABLE_V7_RUNNER_TILT` | false | **OFF** — validate before enabling |
 | `ENABLE_FLOW_OTM_STRIKE` | false | **true all bots** — OTM strike for AMD/INTC/META/SPY calls + TSLA puts |
+| `ENABLE_V7_PROFIT_LOCK` | false | **true all bots** — CALL-only profit-lock (keep 60% of peak gain once +30%); puts keep wide trail |
+| `ANTIMG_CALL_LEVELS` | `30` | **`30,80,150` all bots** — multi-level CALL adds (each a separate own-trail leg) |
+
+#### Add handling + profit-lock (2026-06-16) — separate-leg adds, CALL profit-lock
+After the first live anti-martingale adds (TSLA/AMZN/SPY), two things were settled by
+`scripts/backtest_add_handling.py` + `backtest_add_validate.py` (1602 cached flow paths, per-month):
+- **The ADD leg is its own open trade (separate-leg, own V7 trail), NOT blended.** `parent_trade_id`
+  links it; `position_monitor._check_antimartingale_add` INSERTs a child leg (own entry = the +L fill).
+  Backtest: own-trail (M1) CALL book base +3947 → +30+80+150 **+7828**; the old "ride-parent" model
+  (M2, what `backtest_pyramid_ladder.py` wrongly validated) is a big LOSER (−11641) because the wide
+  trail gives the parent back to breakeven, so an add bought high rides down to it. **No rollback —
+  the separate-leg code is correct.** Safety: if the child INSERT fails after a Webull fill, it falls
+  back to blending into the parent (tracked), then a CRITICAL alert, then the `_reconcile_positions`
+  sweep recovers any orphan — a Webull-filled add is never left untracked.
+- **CALL-only profit-lock** (`ENABLE_V7_PROFIT_LOCK`, FSM gate 3.6, `check_profit_lock`): once a call
+  peaks +30%, exit when gain < 60% of peak gain — locks profit instead of round-tripping to breakeven
+  (the TSLA +111%→+34% complaint). Layered ON TOP of the V7 downside stops (additive). Validated +7%
+  call P&L / +3pts WR, consistent per-month. **PUTs are exempt** — the same rule HURTS puts (they ride
+  slow crashes; a tight give-back clips them), so puts keep the V7 wide trail.
+- Multi-level adds are higher-variance (amplify trending months, drag chop) — shipped LOCKED (the
+  profit-lock covers add legs too, since they're calls). Memory: `add-handling-backtest-2026-06-16`.
 
 ### Flow execution — first live session fixes (2026-06-15) — CURRENT
 The flow book was deployed 2026-06-14 but **never placed a single live trade** until 2026-06-15: a chain of
