@@ -257,6 +257,19 @@ class ExitFSM:
         if action:
             return action
 
+        # Gate 2.5: 0DTE premium HARD-STOP — cut a 0DTE contract down >= X% FROM ENTRY regardless of
+        # the underlying. Catches premium melting on theta while the stock barely moves (the NVDA #34
+        # case: -42% premium on a -0.9% stock move). Fires even during grace. 0DTE only.
+        # Validated 2026-06-16: -25% lifts PUT PF 1.39→1.49 + caps the call disaster tail.
+        if (is_0dte and self._settings
+                and getattr(self._settings, "ENABLE_0DTE_PREMIUM_HARDSTOP", False)):
+            hs = getattr(self._settings, "PREMIUM_HARDSTOP_0DTE_PCT", 25.0)
+            if hs > 0 and gain <= -hs:
+                return _exit(
+                    ExitReason.PREMIUM_HARDSTOP,
+                    f"0DTE premium hard-stop: {gain:.0f}% <= -{hs:.0f}% from entry (underlying-independent)",
+                    debug=debug)
+
         # ── 5-minute grace — skip most exits, but backstop still fires ──
         if elapsed_min < cfg.grace_period_min:
             # Never let grace protect a catastrophic loss. The backstop fires

@@ -138,6 +138,10 @@ services:
       - ANTIMG_CALL_LEVELS=30,80,150
       # CALL-only profit-lock (keep 60% of peak gain once +30%) — the runner-capture win, stays ON.
       - ENABLE_V7_PROFIT_LOCK=true
+      # 0DTE premium hard-stop -25%: cut a 0DTE contract down 25% from entry regardless of underlying
+      # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
+      - ENABLE_0DTE_PREMIUM_HARDSTOP=true
+      - PREMIUM_HARDSTOP_0DTE_PCT=25
       # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
       - MAX_SIZING_BALANCE=50000
       # Fleet staggering K=2: each signal → 2 of 5 bots (priority round-robin) so they don't all crater
@@ -217,6 +221,10 @@ services:
       - ANTIMG_CALL_LEVELS=30,80,150
       # CALL-only profit-lock (keep 60% of peak gain once +30%) — the runner-capture win, stays ON.
       - ENABLE_V7_PROFIT_LOCK=true
+      # 0DTE premium hard-stop -25%: cut a 0DTE contract down 25% from entry regardless of underlying
+      # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
+      - ENABLE_0DTE_PREMIUM_HARDSTOP=true
+      - PREMIUM_HARDSTOP_0DTE_PCT=25
       # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
       - MAX_SIZING_BALANCE=50000
       # Fleet staggering K=2: each signal → 2 of 5 bots (priority round-robin) so they don't all crater
@@ -292,6 +300,10 @@ services:
       - ANTIMG_CALL_LEVELS=30,80,150
       # CALL-only profit-lock (keep 60% of peak gain once +30%) — the runner-capture win, stays ON.
       - ENABLE_V7_PROFIT_LOCK=true
+      # 0DTE premium hard-stop -25%: cut a 0DTE contract down 25% from entry regardless of underlying
+      # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
+      - ENABLE_0DTE_PREMIUM_HARDSTOP=true
+      - PREMIUM_HARDSTOP_0DTE_PCT=25
       # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
       - MAX_SIZING_BALANCE=50000
       # Fleet staggering K=2: each signal → 2 of 5 bots (priority round-robin) so they don't all crater
@@ -367,6 +379,10 @@ services:
       - ANTIMG_CALL_LEVELS=30,80,150
       # CALL-only profit-lock (keep 60% of peak gain once +30%) — the runner-capture win, stays ON.
       - ENABLE_V7_PROFIT_LOCK=true
+      # 0DTE premium hard-stop -25%: cut a 0DTE contract down 25% from entry regardless of underlying
+      # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
+      - ENABLE_0DTE_PREMIUM_HARDSTOP=true
+      - PREMIUM_HARDSTOP_0DTE_PCT=25
       # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
       - MAX_SIZING_BALANCE=50000
       # Fleet staggering K=2: each signal → 2 of 5 bots (priority round-robin) so they don't all crater
@@ -444,6 +460,10 @@ services:
       - ANTIMG_CALL_LEVELS=30,80,150
       # CALL-only profit-lock (keep 60% of peak gain once +30%) — the runner-capture win, stays ON.
       - ENABLE_V7_PROFIT_LOCK=true
+      # 0DTE premium hard-stop -25%: cut a 0DTE contract down 25% from entry regardless of underlying
+      # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
+      - ENABLE_0DTE_PREMIUM_HARDSTOP=true
+      - PREMIUM_HARDSTOP_0DTE_PCT=25
       # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
       - MAX_SIZING_BALANCE=50000
       # Fleet staggering K=2: each signal → 2 of 5 bots (priority round-robin) so they don't all crater

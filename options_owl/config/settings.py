@@ -231,6 +231,11 @@ class Settings(BaseSettings):
     FLEET_OVERLAP: int = 2       # K: how many bots take each signal (lower = more decorrelated)
     FLEET_RANK: int = 0          # this bot's priority rank (0-based; kody=0, adam=1, dennis=2, yank=3, vinny=4)
     ENABLE_V7_PROFIT_LOCK: bool = False
+    # 0DTE premium hard-stop: cut any 0DTE trade down >= this % FROM ENTRY regardless of the underlying
+    # (catches premium melting on theta while the stock barely moves). Validated 2026-06-16: -25% lifts
+    # PUT PF 1.39→1.49 + caps the call disaster tail (the NVDA -42% case). 0DTE only.
+    ENABLE_0DTE_PREMIUM_HARDSTOP: bool = False
+    PREMIUM_HARDSTOP_0DTE_PCT: float = 25.0
     V7_PROFIT_LOCK_KEEP_FRAC: float = 0.6        # keep 60% of the peak gain
     V7_PROFIT_LOCK_ACTIVATE_PCT: float = 30.0    # only arms once peak gain >= +30%
     # Stage D: conviction-based bet sizing for UW flow trades (validated 2026-06-13 — same capital
