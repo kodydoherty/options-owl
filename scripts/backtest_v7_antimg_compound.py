@@ -144,7 +144,7 @@ def flow_paths():
                         ar, _ = run_sim(pp, list(mp), list(up), ets, cfg, int(dte0), otype, start_idx=ai, settings=_SL())
                         adds.append((L, ar))
                     mult = flow_conviction_mult(csize, float(ev["total_premium"]), float(ev["ask_frac"]), is_idx, None)[0]
-                    out.append({"date": d, "src": "flow", "ret_nl": ret_nl, "ret_lk": ret_lk,
+                    out.append({"date": d, "src": "flow", "tk": tk, "ret_nl": ret_nl, "ret_lk": ret_lk,
                                 "peak": peak, "mult": mult, "is_put": is_put, "adds": adds})
     return pd.DataFrame(out)
 
