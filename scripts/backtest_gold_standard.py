@@ -152,9 +152,9 @@ GRACE_OVERRIDE = None
 # MULTI_DAY_CAP=2 reproduces the production paper_trader.py multi-day cap that
 # the backtest previously did NOT model. Set to None / large to disable.
 # ---------------------------------------------------------------------------
-SIZING_MODE = "current"           # current|flat|conf_linear|conf_step|score_linear
-CONF_BUDGET_MIN = 0.60            # budget multiplier at conf == CONF_REF_MIN (linear modes)
-CONF_BUDGET_MAX = 1.20            # budget multiplier at conf == CONF_REF_MAX (linear modes)
+SIZING_MODE = os.getenv("SIZING_MODE", "current")   # current|flat|conf_linear|conf_step|score_linear
+CONF_BUDGET_MIN = float(os.getenv("CONF_BUDGET_MIN", "0.60"))  # budget mult at conf == CONF_REF_MIN
+CONF_BUDGET_MAX = float(os.getenv("CONF_BUDGET_MAX", "1.20"))  # budget mult at conf == CONF_REF_MAX (winner-sizing knob)
 CONF_REF_MIN = 0.74              # confidence that maps to CONF_BUDGET_MIN
 CONF_REF_MAX = 0.95              # confidence that maps to CONF_BUDGET_MAX
 SCORE_REF_MIN = 75               # score that maps to CONF_BUDGET_MIN (score_linear)
