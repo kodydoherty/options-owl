@@ -645,6 +645,40 @@ def flow_conviction_mult(
     return final, f"cluster={cc} prem=${prem/1e3:.0f}k ask={af:.2f} idx={is_index} pRun={p_runner:.2f} mult={final:.2f}"
 
 
+def regime_budget_mult(
+    is_put: bool,
+    spy_pct_move: float,
+    *,
+    down_thresh: float = -0.1,
+    up_thresh: float = 0.1,
+    call_down: float = 0.25,
+    put_down: float = 2.0,
+    call_up: float = 1.0,
+    put_up: float = 0.5,
+    call_flat: float = 0.6,
+    put_flat: float = 1.2,
+) -> tuple[float, str]:
+    """Regime-aware call/put budget multiplier (validated 2.5yr, scripts/backtest_2yr_regime.py).
+
+    SPY % move open→now (``spy_pct_move``) classifies the intraday regime; the multiplier shifts
+    budget toward whichever side wins in that regime — cut calls when SPY drifts DOWN (the
+    "caught long" bleed), cut puts when SPY is UP. Multipliers are RELATIVE to the prod baseline
+    (puts already carry PUT_BUDGET_MULTIPLIER), so this folds straight into the conviction mult.
+    Returns (multiplier, description). MAX_POSITION_PCT / MAX_POSITION_DOLLARS still cap the result.
+    """
+    if spy_pct_move < down_thresh:
+        regime = "DOWN"
+        mult = put_down if is_put else call_down
+    elif spy_pct_move > up_thresh:
+        regime = "UP"
+        mult = put_up if is_put else call_up
+    else:
+        regime = "FLAT"
+        mult = put_flat if is_put else call_flat
+    side = "put" if is_put else "call"
+    return float(mult), f"SPY {spy_pct_move:+.2f}% → {regime} regime, {side}×{mult:.2f}"
+
+
 def fleet_takes_signal(ticker, option_type, now_et, settings) -> bool:
     """Priority round-robin fleet staggering — does THIS bot take this signal?
 

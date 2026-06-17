@@ -267,6 +267,9 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=4685
+      # Regime call/put budget (paper canary 2026-06-17): cut calls when SPY drifts down, favor puts —
+      # the only 2.5yr-validated lever for the June call bleed. Paper-test here before kody/dennis.
+      - ENABLE_REGIME_CALL_PUT_BUDGET=true
       - FLEET_RANK=1
       # Winner-concentration sizing PAPER CANARY (adam) — conf_linear, validate before kody/dennis. 2026-06-16
       - ENABLE_CONF_LINEAR_SIZING=true
@@ -348,6 +351,9 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=3123
+      # Regime call/put budget (paper canary 2026-06-17): cut calls when SPY drifts down, favor puts —
+      # the only 2.5yr-validated lever for the June call bleed. Paper-test here before kody/dennis.
+      - ENABLE_REGIME_CALL_PUT_BUDGET=true
       - FLEET_RANK=4
       # Winner-concentration sizing PAPER CANARY (vinny) — conf_linear, validate before kody/dennis. 2026-06-16
       - ENABLE_CONF_LINEAR_SIZING=true

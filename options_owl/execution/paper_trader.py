@@ -1414,6 +1414,38 @@ class PaperTrader:
                         is_put=_is_put, tide_bias=_tide_bias,
                         tide_misaligned_put_mult=getattr(self.settings, "V7_TIDE_MISALIGNED_PUT_MULT", 0.30))
                     logger.info(f"CONVICTION_SIZING: {signal.ticker} {_conv_desc}")
+                # Regime call/put budget (flag-gated, default off): cut calls when SPY drifts down
+                # (the "caught long" bleed), cut puts when SPY is up. Validated 2.5yr — the only lever
+                # that moved PF (entry trend gates + trail tuning were refuted). Folds into the conviction
+                # mult; position caps still bound the result. No lookahead (SPY open→now from shared Redis;
+                # degrades to no-adjustment if SPY data is unavailable).
+                if getattr(self.settings, "ENABLE_REGIME_CALL_PUT_BUDGET", False):
+                    _spy_move = None
+                    try:
+                        from options_owl.db import redis_client
+                        if redis_client.is_connected():
+                            _spy = await asyncio.wait_for(redis_client.get_spy_change(), timeout=2)
+                            if _spy and _spy.get("change_pct") is not None:
+                                _spy_move = _spy["change_pct"]
+                    except Exception:
+                        _spy_move = None
+                    if _spy_move is not None:
+                        from options_owl.risk.vinny_strategy import regime_budget_mult
+                        _rmult, _rdesc = regime_budget_mult(
+                            _is_put, _spy_move,
+                            down_thresh=getattr(self.settings, "REGIME_BUDGET_DOWN_THRESH_PCT", -0.1),
+                            up_thresh=getattr(self.settings, "REGIME_BUDGET_UP_THRESH_PCT", 0.1),
+                            call_down=getattr(self.settings, "REGIME_BUDGET_CALL_DOWN", 0.25),
+                            put_down=getattr(self.settings, "REGIME_BUDGET_PUT_DOWN", 2.0),
+                            call_up=getattr(self.settings, "REGIME_BUDGET_CALL_UP", 1.0),
+                            put_up=getattr(self.settings, "REGIME_BUDGET_PUT_UP", 0.5),
+                            call_flat=getattr(self.settings, "REGIME_BUDGET_CALL_FLAT", 0.6),
+                            put_flat=getattr(self.settings, "REGIME_BUDGET_PUT_FLAT", 1.2),
+                        )
+                        _conv_mult *= _rmult
+                        logger.info(f"REGIME_BUDGET: {signal.ticker} {_rdesc} (conv_mult→{_conv_mult:.2f})")
+                    else:
+                        logger.info(f"REGIME_BUDGET: {signal.ticker} no SPY data — no adjustment")
                 total_contracts = score_to_contracts(
                     signal.score,
                     cost_per_contract=cost_per_contract,

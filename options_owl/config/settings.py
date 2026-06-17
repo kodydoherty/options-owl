@@ -266,6 +266,24 @@ class Settings(BaseSettings):
     ENABLE_V7_TIDE_GATE: bool = False
     V7_TIDE_MISALIGNED_PUT_MULT: float = 0.30  # conviction factor for a put against a bullish tide
 
+    # Regime call/put budget (validated 2.5yr, scripts/backtest_2yr_regime.py): when SPY drifts DOWN
+    # intraday, the call book is structurally on the wrong side ("caught long") — shift budget toward
+    # puts and cut calls; when SPY is UP, the reverse. The ONLY lever that moved 2.5yr PF (entry trend
+    # gates + trail tuning were both refuted). Multipliers are RELATIVE to the prod baseline (puts already
+    # carry PUT_BUDGET_MULTIPLIER=0.5): backtest absolute weights were call1.0/put0.5 (fixed) vs regime
+    # down call0.25/put1.0, up call1.0/put0.25, flat 0.6/0.6 → translated below. No lookahead (SPY
+    # open→now move only, from shared Redis). Folds into the conviction multiplier; position caps still
+    # bound the result. DEFAULT OFF — paper-validate on adam/vinny before kody/dennis (live money).
+    ENABLE_REGIME_CALL_PUT_BUDGET: bool = False
+    REGIME_BUDGET_DOWN_THRESH_PCT: float = -0.1   # SPY % open→now below this = "down" regime
+    REGIME_BUDGET_UP_THRESH_PCT: float = 0.1      # SPY % open→now above this = "up" regime
+    REGIME_BUDGET_CALL_DOWN: float = 0.25         # call mult when SPY down (cut hard)
+    REGIME_BUDGET_PUT_DOWN: float = 2.0           # put mult when SPY down (1.0/0.5 baseline = full size)
+    REGIME_BUDGET_CALL_UP: float = 1.0            # call mult when SPY up (full size)
+    REGIME_BUDGET_PUT_UP: float = 0.5             # put mult when SPY up (0.25/0.5 baseline)
+    REGIME_BUDGET_CALL_FLAT: float = 0.6          # call mult when SPY flat
+    REGIME_BUDGET_PUT_FLAT: float = 1.2           # put mult when SPY flat (0.6/0.5 baseline)
+
     # ── UW flow signal source (Track 4) ──────────────────────────────────────
     # Follow whale ask-side option SWEEPS (real-money conviction) as a signal source.
     # Validated: PUT sweeps -> drops (META/AMZN/AAPL/TSLA), CALL sweeps -> rises
