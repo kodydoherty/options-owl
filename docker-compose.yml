@@ -270,6 +270,9 @@ services:
       # Regime call/put budget (paper canary 2026-06-17): cut calls when SPY drifts down, favor puts —
       # the only 2.5yr-validated lever for the June call bleed. Paper-test here before kody/dennis.
       - ENABLE_REGIME_CALL_PUT_BUDGET=true
+      # runner_v1 P(runner) CALL sizing (paper canary 2026-06-17): bet bigger on high-P(runner) rippers.
+      # Observe the RUNNER_V1 log distribution before trusting; requires runner_v1.lgb on droplet (SCP'd).
+      - ENABLE_RUNNER_V1_SIZING=true
       - FLEET_RANK=1
       # Winner-concentration sizing PAPER CANARY (adam) — conf_linear, validate before kody/dennis. 2026-06-16
       - ENABLE_CONF_LINEAR_SIZING=true
@@ -354,6 +357,9 @@ services:
       # Regime call/put budget (paper canary 2026-06-17): cut calls when SPY drifts down, favor puts —
       # the only 2.5yr-validated lever for the June call bleed. Paper-test here before kody/dennis.
       - ENABLE_REGIME_CALL_PUT_BUDGET=true
+      # runner_v1 P(runner) CALL sizing (paper canary 2026-06-17): bet bigger on high-P(runner) rippers.
+      # Observe the RUNNER_V1 log distribution before trusting; requires runner_v1.lgb on droplet (SCP'd).
+      - ENABLE_RUNNER_V1_SIZING=true
       - FLEET_RANK=4
       # Winner-concentration sizing PAPER CANARY (vinny) — conf_linear, validate before kody/dennis. 2026-06-16
       - ENABLE_CONF_LINEAR_SIZING=true

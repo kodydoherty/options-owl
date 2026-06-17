@@ -1446,6 +1446,32 @@ class PaperTrader:
                         logger.info(f"REGIME_BUDGET: {signal.ticker} {_rdesc} (conv_mult→{_conv_mult:.2f})")
                     else:
                         logger.info(f"REGIME_BUDGET: {signal.ticker} no SPY data — no adjustment")
+                # Runner-v1 P(runner) CALL sizing (flag-gated, default off): bet bigger on high-P(runner)
+                # rippers, shrink round-trippers. Entry TIMING is unexploitable; SELECTION/SIZING is the lever.
+                # CALLS only (runner_v1 abstains on puts). Folds into _conv_mult; position caps still bound it.
+                # Observe the logged P(runner) distribution on paper before trusting (meta warns of drift).
+                if getattr(self.settings, "ENABLE_RUNNER_V1_SIZING", False) and not _is_put:
+                    from options_owl.risk.flow_runner import compute_runner_v1_p
+                    from options_owl.risk.vinny_strategy import runner_v1_size_mult
+                    try:
+                        _p_run = await asyncio.wait_for(compute_runner_v1_p(signal, self.settings), timeout=20)
+                    except (TimeoutError, asyncio.TimeoutError):
+                        _p_run = None
+                    if _p_run is not None:
+                        _rv_mult, _rv_desc = runner_v1_size_mult(
+                            _p_run,
+                            q1=getattr(self.settings, "RUNNER_V1_Q1", 0.580),
+                            q2=getattr(self.settings, "RUNNER_V1_Q2", 0.630),
+                            q3=getattr(self.settings, "RUNNER_V1_Q3", 0.670),
+                            m_q1=getattr(self.settings, "RUNNER_V1_MULT_Q1", 0.5),
+                            m_q2=getattr(self.settings, "RUNNER_V1_MULT_Q2", 0.85),
+                            m_q3=getattr(self.settings, "RUNNER_V1_MULT_Q3", 1.15),
+                            m_q4=getattr(self.settings, "RUNNER_V1_MULT_Q4", 1.5),
+                        )
+                        _conv_mult *= _rv_mult
+                        logger.info(f"RUNNER_V1_SIZING: {signal.ticker} {_rv_desc} (conv_mult→{_conv_mult:.2f})")
+                    else:
+                        logger.info(f"RUNNER_V1_SIZING: {signal.ticker} no P(runner) — no adjustment")
                 total_contracts = score_to_contracts(
                     signal.score,
                     cost_per_contract=cost_per_contract,

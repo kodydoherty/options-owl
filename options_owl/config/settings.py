@@ -284,6 +284,22 @@ class Settings(BaseSettings):
     REGIME_BUDGET_CALL_FLAT: float = 0.6          # call mult when SPY flat
     REGIME_BUDGET_PUT_FLAT: float = 1.2           # put mult when SPY flat (0.6/0.5 baseline)
 
+    # Runner-v1 P(runner) CALL sizing (Stage D serve path). Entry TIMING is unexploitable (settled), but
+    # entry SELECTION/SIZING via P(runner) is the lever: runner_v1 (ml_v3) separates real call outcomes
+    # (AUC 0.74; quartiles −8%→+9%), walk-forward held OOS 2026 (+2.77pp PF+0.18). Bet bigger on the rippers
+    # we can't time into, shrink the round-trippers. Uses runner_v1 (NOT the weak signal_ml_v2 serve model
+    # that produced the 2026-06-15 +0.06 null). CALLS only (model abstains on puts). Quartile map (linear
+    # rejected — fragile OOS); cut points = walk-forward train percentiles. DEFAULT OFF — observe the LIVE
+    # P(runner) distribution on paper (the meta warns thresholds may shift on new data) before trusting it.
+    ENABLE_RUNNER_V1_SIZING: bool = False
+    RUNNER_V1_Q1: float = 0.580        # P(runner) cut: below → Q1 (shrink hardest)
+    RUNNER_V1_Q2: float = 0.630
+    RUNNER_V1_Q3: float = 0.670        # at/above → Q4 (size up)
+    RUNNER_V1_MULT_Q1: float = 0.5
+    RUNNER_V1_MULT_Q2: float = 0.85
+    RUNNER_V1_MULT_Q3: float = 1.15
+    RUNNER_V1_MULT_Q4: float = 1.5
+
     # ── UW flow signal source (Track 4) ──────────────────────────────────────
     # Follow whale ask-side option SWEEPS (real-money conviction) as a signal source.
     # Validated: PUT sweeps -> drops (META/AMZN/AAPL/TSLA), CALL sweeps -> rises

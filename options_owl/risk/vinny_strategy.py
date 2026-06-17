@@ -679,6 +679,33 @@ def regime_budget_mult(
     return float(mult), f"SPY {spy_pct_move:+.2f}% → {regime} regime, {side}×{mult:.2f}"
 
 
+def runner_v1_size_mult(
+    p_runner: float,
+    *,
+    q1: float = 0.580,
+    q2: float = 0.630,
+    q3: float = 0.670,
+    m_q1: float = 0.5,
+    m_q2: float = 0.85,
+    m_q3: float = 1.15,
+    m_q4: float = 1.5,
+) -> tuple[float, str]:
+    """Quartile sizing multiplier from runner_v1 P(runner) — CALLS only (walk-forward validated OOS 2026:
+    +2.77pp per-unit / PF +0.18 vs flat). Bet bigger on high-P(runner) rippers, shrink low-P(runner)
+    round-trippers. Cut points = walk-forward TRAIN percentiles. Linear map was rejected (fragile OOS).
+    Returns (multiplier, description). Position caps still bound the result downstream.
+    """
+    if p_runner < q1:
+        mult, tier = m_q1, "Q1"
+    elif p_runner < q2:
+        mult, tier = m_q2, "Q2"
+    elif p_runner < q3:
+        mult, tier = m_q3, "Q3"
+    else:
+        mult, tier = m_q4, "Q4"
+    return float(mult), f"P(runner)={p_runner:.3f} {tier} ×{mult:.2f}"
+
+
 def fleet_takes_signal(ticker, option_type, now_et, settings) -> bool:
     """Priority round-robin fleet staggering — does THIS bot take this signal?
 
