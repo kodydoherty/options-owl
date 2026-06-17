@@ -268,6 +268,8 @@ services:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=4685
       - FLEET_RANK=1
+      # Winner-concentration sizing PAPER CANARY (adam) — conf_linear, validate before kody/dennis. 2026-06-16
+      - ENABLE_CONF_LINEAR_SIZING=true
       - POLYGON_API_KEY=${ADAM_POLYGON_API_KEY}
       - ENABLE_POLYGON_WS=false
       - WEBULL_APP_KEY=${ADAM_WEBULL_APP_KEY}
@@ -347,6 +349,8 @@ services:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=3123
       - FLEET_RANK=4
+      # Winner-concentration sizing PAPER CANARY (vinny) — conf_linear, validate before kody/dennis. 2026-06-16
+      - ENABLE_CONF_LINEAR_SIZING=true
       - POLYGON_API_KEY=${VINNY_POLYGON_API_KEY}
       - ENABLE_POLYGON_WS=false
       - WEBULL_APP_KEY=${VINNY_WEBULL_APP_KEY}

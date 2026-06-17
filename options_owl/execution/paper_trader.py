@@ -1426,6 +1426,13 @@ class PaperTrader:
                     is_put=_is_put,
                     put_budget_multiplier=getattr(self.settings, "PUT_BUDGET_MULTIPLIER", 0.50),
                     max_position_dollars=getattr(self.settings, "MAX_POSITION_DOLLARS", 0.0),
+                    # Winner-concentration sizing (ML pattern trades only; flow passes ml_confidence=None).
+                    # Monotonic conf→budget curve, validated 2.5yr (PF 1.95→3.78). Paper-canary first.
+                    conf_linear=getattr(self.settings, "ENABLE_CONF_LINEAR_SIZING", False),
+                    conf_budget_min=getattr(self.settings, "CONF_LINEAR_BUDGET_MIN", 0.3),
+                    conf_budget_max=getattr(self.settings, "CONF_LINEAR_BUDGET_MAX", 3.0),
+                    conf_ref_min=getattr(self.settings, "CONF_LINEAR_REF_MIN", 0.74),
+                    conf_ref_max=getattr(self.settings, "CONF_LINEAR_REF_MAX", 0.95),
                 )
                 if total_contracts <= 0:
                     logger.info(f"Score {signal.score} too low for Vinny sizing — 0 contracts")

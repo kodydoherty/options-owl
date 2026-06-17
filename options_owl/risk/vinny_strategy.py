@@ -572,17 +572,28 @@ _MIN_ML_CONFIDENCE_PUT = 0.65  # PUT model validated at 0.65 threshold (AUC 0.80
 
 def _ml_confidence_to_mult(
     ml_confidence: float | None, is_put: bool = False,
+    conf_linear: bool = False, cb_min: float = 0.3, cb_max: float = 3.0,
+    cr_min: float = 0.74, cr_max: float = 0.95,
 ) -> tuple[float, str]:
-    """Map ML confidence to budget multiplier.
+    """Map ML confidence to budget multiplier (ML pattern trades only; flow passes None).
 
-    Returns (multiplier, description).
-    PUT signals use 0.65 floor (PUT model threshold); CALLs use 0.70.
+    Returns (multiplier, description). PUT signals use 0.65 floor; CALLs use 0.62.
+
+    conf_linear=True replaces the legacy buckets (which include a BACKWARDS 0.80-0.90→0.60 tier)
+    with a MONOTONIC curve: starve marginal trades (cb_min at cr_min) and size high-confidence ones
+    up (cb_max at cr_max), linear between. Validated 2.5yr (gold-standard sweep 2026-06-16): 0.3→3.0
+    gave PF 1.95→3.78, P&L 4.6x, ~same drawdown. The top end is bounded downstream by MAX_POSITION_PCT.
     """
     if ml_confidence is None:
         return _FALLBACK_MULT, "no_ml"
     min_conf = _MIN_ML_CONFIDENCE_PUT if is_put else _MIN_ML_CONFIDENCE
     if ml_confidence < min_conf:
         return 0.0, f"ml_conf={ml_confidence:.2f}<{min_conf}"
+    if conf_linear:
+        frac = 1.0 if cr_max <= cr_min else (ml_confidence - cr_min) / (cr_max - cr_min)
+        frac = max(0.0, min(1.0, frac))
+        mult = cb_min + frac * (cb_max - cb_min)
+        return mult, f"ml_conf={ml_confidence:.2f}→{mult:.2f}x conf_linear[{cb_min}-{cb_max}]"
     for threshold, mult in _CONFIDENCE_TIERS:
         if ml_confidence >= threshold:
             return mult, f"ml_conf={ml_confidence:.2f}≥{threshold}"
@@ -673,6 +684,11 @@ def score_to_contracts(
     is_put: bool = False,
     put_budget_multiplier: float = 0.50,
     max_position_dollars: float = 0.0,
+    conf_linear: bool = False,
+    conf_budget_min: float = 0.3,
+    conf_budget_max: float = 3.0,
+    conf_ref_min: float = 0.74,
+    conf_ref_max: float = 0.95,
 ) -> int:
     """Confidence-weighted sizing — allocate more capital where ML edge is strongest.
 
@@ -693,7 +709,9 @@ def score_to_contracts(
         logger.info(f"SIZING: score {score} < {_SCORE_FLOOR} → 0 contracts (rejected)")
         return 0
 
-    score_mult, mult_desc = _ml_confidence_to_mult(ml_confidence, is_put=is_put)
+    score_mult, mult_desc = _ml_confidence_to_mult(
+        ml_confidence, is_put=is_put, conf_linear=conf_linear,
+        cb_min=conf_budget_min, cb_max=conf_budget_max, cr_min=conf_ref_min, cr_max=conf_ref_max)
 
     if score_mult <= 0:
         logger.info(

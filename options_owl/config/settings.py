@@ -236,6 +236,15 @@ class Settings(BaseSettings):
     # PUT PF 1.39→1.49 + caps the call disaster tail (the NVDA -42% case). 0DTE only.
     ENABLE_0DTE_PREMIUM_HARDSTOP: bool = False
     PREMIUM_HARDSTOP_0DTE_PCT: float = 25.0
+    # Winner-concentration sizing: replace the legacy ML-confidence buckets (incl. the backwards
+    # 0.80-0.90 tier) with a MONOTONIC conf→budget curve — starve marginal trades, size up the
+    # high-confidence ones (capped by MAX_POSITION_PCT). ML PATTERN trades only (flow passes None).
+    # Validated 2.5yr (gold-standard sweep 2026-06-16): 0.3→3.0 gave PF 1.95→3.78, P&L 4.6x, ~same DD.
+    ENABLE_CONF_LINEAR_SIZING: bool = False
+    CONF_LINEAR_BUDGET_MIN: float = 0.3      # budget mult at CONF_LINEAR_REF_MIN (marginal trades)
+    CONF_LINEAR_BUDGET_MAX: float = 3.0      # budget mult at CONF_LINEAR_REF_MAX (high-confidence)
+    CONF_LINEAR_REF_MIN: float = 0.74        # confidence mapped to BUDGET_MIN
+    CONF_LINEAR_REF_MAX: float = 0.95        # confidence mapped to BUDGET_MAX
     V7_PROFIT_LOCK_KEEP_FRAC: float = 0.6        # keep 60% of the peak gain
     V7_PROFIT_LOCK_ACTIVATE_PCT: float = 30.0    # only arms once peak gain >= +30%
     # Stage D: conviction-based bet sizing for UW flow trades (validated 2026-06-13 — same capital
