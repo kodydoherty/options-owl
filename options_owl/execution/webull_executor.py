@@ -69,6 +69,12 @@ def _round_option_price(price: float, side: str) -> float:
         return round(math.floor(price / 0.05) * 0.05, 2)
 
 
+def _is_webull_rate_limit(exc: Exception) -> bool:
+    """True if a Webull API exception is a 429 / rate-limit error."""
+    s = str(exc).upper()
+    return "429" in s or "TOO_MANY" in s or "RATE" in s and "LIMIT" in s
+
+
 class WebullExecutor:
     """Manages the Webull OpenAPI connection and order execution."""
 
@@ -86,6 +92,18 @@ class WebullExecutor:
         # Balance cache: (value, timestamp) — avoid hitting API on every signal
         self._balance_cache: tuple[float, float] | None = None
         self._balance_cache_ttl = 60.0  # seconds
+        # Order-status throttle (fix Webull 429 storm): per-order cache + min-interval + 429 cooldown
+        # + a SHARED open-orders snapshot so the fill poll batches (one call covers all pending orders).
+        self._os_cache: dict[str, tuple[dict | None, float]] = {}   # client_order_id -> (result, ts)
+        self._os_cache_ttl = 2.5
+        self._os_min_interval = 1.0      # min seconds between any order-status API calls
+        self._os_cooldown = 6.0          # pause status calls this long after a 429
+        self._os_last_call_ts = 0.0
+        self._os_cooldown_until = 0.0
+        self._oo_snapshot: dict[str, str] = {}   # client_order_id -> status (batch via get_open_orders)
+        self._oo_snapshot_ts = 0.0
+        self._oo_snapshot_ttl = 2.5
+        self._os_lock: object = None     # lazily-created asyncio.Lock (event-loop bound)
 
     # ------------------------------------------------------------------
     # Initialization
@@ -628,7 +646,7 @@ class WebullExecutor:
             # retry quickly with a fresh price if the first attempt doesn't fill.
             timeout = 10.0
             fill_status = await self._wait_for_fill(
-                client_order_id, timeout_seconds=timeout, poll_interval=2.0,
+                client_order_id, timeout_seconds=timeout, poll_interval=3.0,
             )
 
             if fill_status == "FILLED":
@@ -867,7 +885,7 @@ class WebullExecutor:
 
         # Per-attempt wait — short, mirroring the sell ladder's cadence.
         per_attempt_timeout = 12.0
-        poll_interval = 2.0
+        poll_interval = 3.0
 
         # Derive the reference ask from the caller's aggressive limit so the
         # ceiling is anchored to the real ask even when we can't fetch a quote.
@@ -1081,7 +1099,7 @@ class WebullExecutor:
         self,
         client_order_id: str,
         timeout_seconds: float = 15,
-        poll_interval: float = 1.5,
+        poll_interval: float = 3.0,
     ) -> str:
         """Poll order status until filled, cancelled, or timeout.
 
@@ -1095,6 +1113,15 @@ class WebullExecutor:
 
         while time.monotonic() < deadline:
             try:
+                # BATCH first: the shared open-orders snapshot covers ALL pending orders in one call.
+                snap = await self._open_order_status(client_order_id)
+                if snap in ("PARTIAL_FILLED", "PARTIAL"):
+                    return snap
+                if snap and snap not in ("FILLED", "CANCELLED", "REJECTED", "EXPIRED"):
+                    last_status = snap                  # still pending — no per-order call needed
+                    await asyncio.sleep(poll_interval)
+                    continue
+                # Not in the open list (or terminal) -> confirm the final status with ONE detail call.
                 detail = await self.get_order_status(client_order_id)
                 if not detail:
                     await asyncio.sleep(poll_interval)
@@ -1249,6 +1276,10 @@ class WebullExecutor:
         Each position dict has: ticker, strike, expiry_date, option_type, quantity.
         Used for reconciliation against the paper DB.
         """
+        import time
+        if time.monotonic() < self._os_cooldown_until:   # respect the shared 429 cooldown
+            logger.debug("get_open_option_positions: in Webull 429 cooldown — skipping this cycle")
+            return []
         self._ensure_clients()
         try:
             response = await asyncio.to_thread(
@@ -1341,7 +1372,12 @@ class WebullExecutor:
                     )
             return results
         except Exception as exc:
-            logger.warning(f"Failed to get open positions: {exc}")
+            if _is_webull_rate_limit(exc):
+                import time
+                self._os_cooldown_until = time.monotonic() + self._os_cooldown
+                logger.warning(f"Webull 429 on positions — cooldown {self._os_cooldown:.0f}s")
+            else:
+                logger.warning(f"Failed to get open positions: {exc}")
             return []
 
     # ------------------------------------------------------------------
@@ -1584,26 +1620,85 @@ class WebullExecutor:
             return False
 
     async def get_order_status(self, client_order_id: str) -> dict | None:
-        """Get the current status of an order."""
-        self._ensure_clients()
+        """Get the current status of an order — THROTTLED to avoid Webull 429s.
 
-        try:
-            response = await asyncio.to_thread(
-                self._trade_client.order_v2.get_order_detail,
-                self._account_id,
-                client_order_id,
-            )
-            result = response.json() if hasattr(response, 'json') else response
-            logger.debug(
-                f"get_order_status({client_order_id}): "
-                f"type={type(result).__name__}, "
-                f"keys={list(result.keys()) if isinstance(result, dict) else 'N/A'}, "
-                f"preview={str(result)[:400]}"
-            )
-            return result
-        except Exception as exc:
-            logger.warning(f"Failed to get order status for {client_order_id}: {exc}")
-            return None
+        Per-order cache (TTL), a shared min-interval between API calls, and a cooldown after a 429
+        (serve the last cached value instead of hammering the throttled endpoint). Order placement
+        still works; we just check status less aggressively.
+        """
+        import time
+        now = time.monotonic()
+        cached = self._os_cache.get(client_order_id)
+        if cached and (now - cached[1]) < self._os_cache_ttl:
+            return cached[0]
+        if now < self._os_cooldown_until:           # 429 cooldown — serve stale, don't call
+            return cached[0] if cached else None
+        if self._os_lock is None:
+            self._os_lock = asyncio.Lock()
+        async with self._os_lock:
+            now = time.monotonic()
+            cached = self._os_cache.get(client_order_id)
+            if cached and (now - cached[1]) < self._os_cache_ttl:
+                return cached[0]
+            if now < self._os_cooldown_until:
+                return cached[0] if cached else None
+            wait = self._os_min_interval - (now - self._os_last_call_ts)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._os_last_call_ts = time.monotonic()
+            self._ensure_clients()
+            try:
+                response = await asyncio.to_thread(
+                    self._trade_client.order_v2.get_order_detail,
+                    self._account_id, client_order_id,
+                )
+                result = response.json() if hasattr(response, 'json') else response
+                self._os_cache[client_order_id] = (result, time.monotonic())
+                return result
+            except Exception as exc:
+                if _is_webull_rate_limit(exc):
+                    self._os_cooldown_until = time.monotonic() + self._os_cooldown
+                    logger.warning(f"Webull 429 on order status — cooldown {self._os_cooldown:.0f}s "
+                                   f"(serving cached status)")
+                else:
+                    logger.warning(f"Failed to get order status for {client_order_id}: {exc}")
+                return cached[0] if cached else None
+
+    async def _open_order_status(self, client_order_id: str) -> str | None:
+        """BATCH: status via a shared, briefly-cached get_open_orders() snapshot — ONE call covers all
+        pending orders. Returns the status string if the order is still OPEN; None if it's not in the
+        open list (completed/unknown — caller confirms with a single get_order_status). Fails open."""
+        import time
+        now = time.monotonic()
+        if (now - self._oo_snapshot_ts) >= self._oo_snapshot_ttl and now >= self._os_cooldown_until:
+            if self._os_lock is None:
+                self._os_lock = asyncio.Lock()
+            async with self._os_lock:
+                if (time.monotonic() - self._oo_snapshot_ts) >= self._oo_snapshot_ttl:
+                    wait = self._os_min_interval - (time.monotonic() - self._os_last_call_ts)
+                    if wait > 0:
+                        await asyncio.sleep(wait)
+                    self._os_last_call_ts = time.monotonic()
+                    try:
+                        orders = await self.get_open_orders()
+                        snap: dict[str, str] = {}
+                        for o in (orders or []):
+                            if not isinstance(o, dict):
+                                continue
+                            coid = o.get("client_order_id") or o.get("clientOrderId")
+                            st = (o.get("status") or "").upper()
+                            if not st:
+                                sub = o.get("orders")
+                                if isinstance(sub, list) and sub:
+                                    st = (sub[0].get("status") or "").upper()
+                            if coid:
+                                snap[coid] = st
+                        self._oo_snapshot = snap
+                        self._oo_snapshot_ts = time.monotonic()
+                    except Exception as exc:
+                        if _is_webull_rate_limit(exc):
+                            self._os_cooldown_until = time.monotonic() + self._os_cooldown
+        return self._oo_snapshot.get(client_order_id)
 
     async def get_open_orders(self) -> list[dict]:
         """Get all open/pending orders."""
