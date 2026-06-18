@@ -311,6 +311,16 @@ class Settings(BaseSettings):
     ENABLE_DELTA_SIZED_BUDGET: bool = False
     DELTA_SIZING_REF: float = 0.45  # ATM-equivalent |delta|; below this → proportional budget haircut
 
+    # FOMC-day pause: block ALL new entries on Fed announcement days (existing positions still exit
+    # normally). 2026 data: on the 4 FOMC days so far, BOTH sides bled (call PF 0.51 / put PF 0.36 vs
+    # ~0.85/0.75 normal) — Trump-era Fed-pressure days are panic-driven coin flips that punish directional
+    # 0DTE both ways. Deterministic calendar rule (not a prediction). Dates = 2026 FOMC announcement days
+    # (2nd day of each meeting, 2pm ET statement); UPDATE this list for 2027 when the Fed publishes it.
+    ENABLE_FOMC_PAUSE: bool = False
+    FOMC_PAUSE_DATES: str = (
+        "2026-01-28,2026-03-18,2026-04-29,2026-06-17,2026-07-29,2026-09-16,2026-10-28,2026-12-16"
+    )
+
     # ── UW flow signal source (Track 4) ──────────────────────────────────────
     # Follow whale ask-side option SWEEPS (real-money conviction) as a signal source.
     # Validated: PUT sweeps -> drops (META/AMZN/AAPL/TSLA), CALL sweeps -> rises

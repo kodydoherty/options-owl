@@ -2610,6 +2610,15 @@ class PaperTrader:
         """Evaluate a signal through the entry pipeline and open a paper trade if approved."""
         self._current_ml_confidence = ml_confidence
 
+        # FOMC-day pause — block ALL new entries on Fed announcement days (Trump-era Fed-pressure days
+        # punish directional 0DTE both ways: 2026 call PF 0.51 / put PF 0.36). Existing positions still
+        # exit normally (this is the entry path only). Deterministic calendar rule, flag-gated.
+        from options_owl.risk.vinny_strategy import is_fomc_pause
+        if is_fomc_pause(self.settings, _today_et().strftime("%Y-%m-%d")):
+            logger.info(f"[TradeLifecycle] {signal.ticker}: ENTRY BLOCKED — FOMC pause day "
+                        f"(no new entries; existing positions still managed)")
+            return None
+
         # PUT kill switch — block all PUT entries when disabled
         if signal.direction == Direction.PUT and not getattr(self.settings, "ENABLE_PUT_TRADING", False):
             logger.info(f"[TradeLifecycle] {signal.ticker}: PUT blocked — ENABLE_PUT_TRADING=false")

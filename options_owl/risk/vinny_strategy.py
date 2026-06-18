@@ -679,6 +679,15 @@ def regime_budget_mult(
     return float(mult), f"SPY {spy_pct_move:+.2f}% → {regime} regime, {side}×{mult:.2f}"
 
 
+def is_fomc_pause(settings, today_et_str: str) -> bool:
+    """True if the FOMC-day pause is enabled and today (ET date 'YYYY-MM-DD') is an FOMC announcement
+    day → block all new entries. Deterministic calendar rule; existing positions still exit normally."""
+    if not getattr(settings, "ENABLE_FOMC_PAUSE", False):
+        return False
+    dates = {d.strip() for d in str(getattr(settings, "FOMC_PAUSE_DATES", "") or "").split(",") if d.strip()}
+    return today_et_str in dates
+
+
 def delta_size_haircut(entry_delta: float | None, ref: float = 0.45) -> float:
     """Budget haircut for CALL sizing by |delta| (scale-invariant cheap-call tail brake). High-gamma OTM
     lottery calls (low |delta|) get sized down proportionally = min(1, |delta|/ref); ATM (|delta|>=ref)
