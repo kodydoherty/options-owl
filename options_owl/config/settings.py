@@ -300,6 +300,17 @@ class Settings(BaseSettings):
     RUNNER_V1_MULT_Q3: float = 1.15
     RUNNER_V1_MULT_Q4: float = 1.5
 
+    # Delta-sized budget (scale-invariant cheap-CALL tail brake). The SMCI failure mode was a cheap OTM
+    # 0DTE call (delta ~0.18) that flat sizing pumped to 48-95 contracts. High-gamma OTM lottery calls
+    # (low |delta|) get a proportional budget haircut = min(1, |delta|/ref); ATM (|delta|>=ref) passes
+    # through. Targets the gamma CAUSE, not price → scale-invariant (binds the cheap tail at $3k AND $300k,
+    # leaves normal options untouched). CALLS ONLY (cheap PUTs are the best cohort — never haircut them).
+    # Validated 2.5yr: CALL per-trade variance −12% at ref 0.45, PF cost ~0.02 (noise), SMCI 95→38 contracts.
+    # Pure downside protection (only ever shrinks cheap-call positions) → safe for live. Delta from the
+    # harvester snapshot; fail-open (no haircut) when delta is missing.
+    ENABLE_DELTA_SIZED_BUDGET: bool = False
+    DELTA_SIZING_REF: float = 0.45  # ATM-equivalent |delta|; below this → proportional budget haircut
+
     # ── UW flow signal source (Track 4) ──────────────────────────────────────
     # Follow whale ask-side option SWEEPS (real-money conviction) as a signal source.
     # Validated: PUT sweeps -> drops (META/AMZN/AAPL/TSLA), CALL sweeps -> rises

@@ -1472,6 +1472,34 @@ class PaperTrader:
                         logger.info(f"RUNNER_V1_SIZING: {signal.ticker} {_rv_desc} (conv_mult→{_conv_mult:.2f})")
                     else:
                         logger.info(f"RUNNER_V1_SIZING: {signal.ticker} no P(runner) — no adjustment")
+                # Delta-sized budget (flag-gated, default off): high-gamma OTM lottery CALLS (low |delta|)
+                # get a proportional budget haircut — scale-invariant brake on the cheap-call blowup mode
+                # (the SMCI 48-contract loss). CALLS only (cheap puts are winners). Delta from the harvester
+                # snapshot; fail-open (no haircut) if missing. Folds into _conv_mult; position caps still bound it.
+                if getattr(self.settings, "ENABLE_DELTA_SIZED_BUDGET", False) and not _is_put:
+                    from options_owl.risk.vinny_strategy import delta_size_haircut
+                    _edelta = None
+                    try:
+                        from options_owl.db import redis_client
+                        _k = signal.strike or signal.atm_strike or 0
+                        _exp = resolve_expiry_date(signal.expiry) or ""
+                        if _k and _exp and redis_client.is_connected():
+                            _snap = await asyncio.wait_for(
+                                redis_client.get_option_snapshot(
+                                    f"{(signal.ticker or '').upper()}:call:{float(_k)}:{_exp}"),
+                                timeout=3)
+                            if _snap and _snap.get("delta") is not None:
+                                _edelta = abs(float(_snap["delta"]))
+                    except Exception:
+                        _edelta = None
+                    _dref = getattr(self.settings, "DELTA_SIZING_REF", 0.45)
+                    _dh = delta_size_haircut(_edelta, _dref)
+                    if _dh < 1.0:
+                        _conv_mult *= _dh
+                        logger.info(f"DELTA_SIZING: {signal.ticker} delta={_edelta:.2f} ref={_dref} "
+                                    f"haircut={_dh:.2f} (conv_mult→{_conv_mult:.2f})")
+                    elif _edelta is None:
+                        logger.info(f"DELTA_SIZING: {signal.ticker} no delta — no haircut (fail-open)")
                 total_contracts = score_to_contracts(
                     signal.score,
                     cost_per_contract=cost_per_contract,

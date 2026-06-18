@@ -679,6 +679,16 @@ def regime_budget_mult(
     return float(mult), f"SPY {spy_pct_move:+.2f}% → {regime} regime, {side}×{mult:.2f}"
 
 
+def delta_size_haircut(entry_delta: float | None, ref: float = 0.45) -> float:
+    """Budget haircut for CALL sizing by |delta| (scale-invariant cheap-call tail brake). High-gamma OTM
+    lottery calls (low |delta|) get sized down proportionally = min(1, |delta|/ref); ATM (|delta|>=ref)
+    passes through at 1.0. Fail-open (1.0) when delta is missing. Validated 2.5yr: CALL variance −12% at
+    ref 0.45 (targets the SMCI cheap-OTM blowup mode). Returns the multiplier (applied to the call budget)."""
+    if entry_delta is None or ref <= 0:
+        return 1.0
+    return float(min(1.0, abs(entry_delta) / ref))
+
+
 def runner_v1_size_mult(
     p_runner: float,
     *,
