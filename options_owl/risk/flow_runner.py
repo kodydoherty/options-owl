@@ -149,50 +149,63 @@ def _score_runner_v1(feat: dict) -> float:
     return float(model.predict(df)[0])
 
 
+async def _option_vol_5m(ticker: str, otype: str, strike: float, expiry: str) -> float:
+    """5-minute option volume from the harvester's option_ticks tape (cumulative-volume delta over
+    the last 5 min), matching the training feature. Returns 0.0 on any miss (no per-bot API call)."""
+    from options_owl.db import postgres
+    if not postgres.is_connected():
+        return 0.0
+    try:
+        rows = await postgres.fetch(
+            "SELECT volume FROM option_ticks WHERE ticker = $1 AND option_type = $2 "
+            "AND strike = $3 AND expiry_date::text = $4 "
+            "AND captured_at >= now() - interval '5 minutes' ORDER BY captured_at",
+            ticker.upper(), otype, float(strike), expiry,
+        )
+    except Exception:
+        return 0.0
+    if rows and len(rows) >= 2:
+        return max(0.0, float(rows[-1]["volume"] or 0) - float(rows[0]["volume"] or 0))
+    return 0.0
+
+
 async def compute_runner_v1_p(signal, settings) -> float | None:
     """Best-effort P(runner) from runner_v1 for a CALL entry. None if data/model unavailable or PUT
     (the model is ATM-CALL only; abstains on delta<=0). Safe no-op → conviction mult unchanged."""
     try:
         import math
 
-        from options_owl.collectors.polygon_options import (
-            build_option_contract_ticker,
-            polygon_intraday_1m,
-            polygon_option_snapshot_greeks,
-        )
-        from options_owl.db import postgres
+        from options_owl.db import postgres, redis_client
 
         otype = "call" if str(signal.direction).lower().endswith("call") else "put"
         if otype != "call":
             return None  # runner_v1 is a CALL model
-        api_key = getattr(settings, "POLYGON_API_KEY", "") or ""
         ticker = (signal.ticker or "").upper()
         strike = signal.strike or signal.atm_strike or 0
         expiry = signal.expiry or ""
-        if not (api_key and ticker and strike and expiry):
+        if not (ticker and strike and expiry):
             return None
 
         now_et = datetime.now(ET)
-        today = now_et.strftime("%Y-%m-%d")
         entry_min = max(0, (now_et.hour - 9) * 60 + now_et.minute - 30)
-        contract = build_option_contract_ticker(ticker, strike, expiry, otype)
 
-        # Option data from Polygon (snapshot greeks + 1m option bars WORK); underlying from the
-        # HARVESTER's Postgres candles — the per-bot Polygon keys are options-only (stock aggs return
-        # HTTP 403), so 1m underlying + prior-day stats come from the same shared PG store the regime
-        # gate reads (read_stock_candles). This is the data-source fix that makes the scorer functional.
-        snap, opt_bars, intraday, daily5m = await asyncio.gather(
-            asyncio.wait_for(polygon_option_snapshot_greeks(api_key, ticker, strike, expiry, otype), timeout=12),
-            asyncio.wait_for(polygon_intraday_1m(api_key, contract, today), timeout=12),
+        # ALL data from the HARVESTER — the trading bots need NO Polygon subscription of their own.
+        # Greeks snapshot from Redis (owl:snapshot:*, published by the harvester), 1m underlying +
+        # prior-day stats from shared Postgres candles, 5-min option volume from the option_ticks tape.
+        # The single (entitled) Polygon subscription lives only on owlet-harvester.
+        ckey = f"{ticker}:{otype}:{float(strike)}:{expiry}"
+        snap, intraday, daily5m, ovol5 = await asyncio.gather(
+            asyncio.wait_for(redis_client.get_option_snapshot(ckey), timeout=5),
             asyncio.wait_for(postgres.read_stock_candles(ticker, "1m", limit=420), timeout=8),
             asyncio.wait_for(postgres.read_stock_candles(ticker, "5m", limit=200), timeout=8),
+            asyncio.wait_for(_option_vol_5m(ticker, otype, strike, expiry), timeout=5),
             return_exceptions=True,
         )
         if isinstance(snap, Exception) or not snap or (snap.get("delta") or 0) <= 0:
-            return None  # greeks required; delta<=0 → not a tradeable call
-        opt_bars = [] if isinstance(opt_bars, Exception) else (opt_bars or [])
+            return None  # greeks required (harvester snapshot); delta<=0 → not a tradeable call
         intraday = [] if isinstance(intraday, Exception) else (intraday or [])
         daily5m = [] if isinstance(daily5m, Exception) else (daily5m or [])
+        opt_vol_5 = 0.0 if isinstance(ovol5, Exception) else float(ovol5 or 0)
 
         # today's session underlying closes (PG 1m, oldest→newest, current ET date only)
         today_et = now_et.date()
@@ -203,7 +216,7 @@ async def compute_runner_v1_p(signal, settings) -> float | None:
 
         sess = [b for b in intraday if _etdate(b) == today_et and b.get("close")]
         und_closes = [float(b["close"]) for b in sess]
-        entry_prem = snap.get("mid") or signal.atm_premium or (opt_bars[-1]["close"] if opt_bars else 0)
+        entry_prem = snap.get("mid") or signal.atm_premium or 0
         und_now = und_closes[-1] if und_closes else (signal.entry_price or 0)
         day_open = und_closes[0] if und_closes else 0
         if entry_prem <= 0 or und_now <= 0 or day_open <= 0:
@@ -237,7 +250,6 @@ async def compute_runner_v1_p(signal, settings) -> float | None:
             und_rvol_15 = float(np.std(np.diff(arr) / arr[:-1]) * 100)
         else:
             und_rvol_15 = 0.0
-        opt_vol_5 = float(sum(int(b.get("volume") or 0) for b in opt_bars[-5:]))
 
         try:
             dte = max(0, (datetime.strptime(expiry, "%Y-%m-%d").date() - now_et.date()).days)
