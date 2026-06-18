@@ -155,13 +155,12 @@ async def compute_runner_v1_p(signal, settings) -> float | None:
     try:
         import math
 
-        import httpx
-
         from options_owl.collectors.polygon_options import (
             build_option_contract_ticker,
             polygon_intraday_1m,
             polygon_option_snapshot_greeks,
         )
+        from options_owl.db import postgres
 
         otype = "call" if str(signal.direction).lower().endswith("call") else "put"
         if otype != "call":
@@ -178,36 +177,50 @@ async def compute_runner_v1_p(signal, settings) -> float | None:
         entry_min = max(0, (now_et.hour - 9) * 60 + now_et.minute - 30)
         contract = build_option_contract_ticker(ticker, strike, expiry, otype)
 
-        snap, opt_bars, und_bars = await asyncio.gather(
+        # Option data from Polygon (snapshot greeks + 1m option bars WORK); underlying from the
+        # HARVESTER's Postgres candles — the per-bot Polygon keys are options-only (stock aggs return
+        # HTTP 403), so 1m underlying + prior-day stats come from the same shared PG store the regime
+        # gate reads (read_stock_candles). This is the data-source fix that makes the scorer functional.
+        snap, opt_bars, intraday, daily5m = await asyncio.gather(
             asyncio.wait_for(polygon_option_snapshot_greeks(api_key, ticker, strike, expiry, otype), timeout=12),
             asyncio.wait_for(polygon_intraday_1m(api_key, contract, today), timeout=12),
-            asyncio.wait_for(polygon_intraday_1m(api_key, ticker, today), timeout=12),
+            asyncio.wait_for(postgres.read_stock_candles(ticker, "1m", limit=420), timeout=8),
+            asyncio.wait_for(postgres.read_stock_candles(ticker, "5m", limit=200), timeout=8),
             return_exceptions=True,
         )
         if isinstance(snap, Exception) or not snap or (snap.get("delta") or 0) <= 0:
             return None  # greeks required; delta<=0 → not a tradeable call
         opt_bars = [] if isinstance(opt_bars, Exception) else (opt_bars or [])
-        und_bars = [] if isinstance(und_bars, Exception) else (und_bars or [])
+        intraday = [] if isinstance(intraday, Exception) else (intraday or [])
+        daily5m = [] if isinstance(daily5m, Exception) else (daily5m or [])
 
+        # today's session underlying closes (PG 1m, oldest→newest, current ET date only)
+        today_et = now_et.date()
+
+        def _etdate(b):
+            bt = b.get("bar_time")
+            return bt.astimezone(ET).date() if getattr(bt, "astimezone", None) else None
+
+        sess = [b for b in intraday if _etdate(b) == today_et and b.get("close")]
+        und_closes = [float(b["close"]) for b in sess]
         entry_prem = snap.get("mid") or signal.atm_premium or (opt_bars[-1]["close"] if opt_bars else 0)
-        und_closes = [b["close"] for b in und_bars if b.get("close")]
         und_now = und_closes[-1] if und_closes else (signal.entry_price or 0)
         day_open = und_closes[0] if und_closes else 0
         if entry_prem <= 0 or und_now <= 0 or day_open <= 0:
-            return None
+            return None  # no underlying history (harvester gap) → safe no-op
 
-        # prior-day OHLC (gap_pct + prior_range_pct) — one daily-aggs call (no lookahead, prior day closed)
+        # prior-day OHLC (gap_pct + prior_range_pct) from PG 5m candles — most recent day before today
         prior_close = prior_high = prior_low = 0.0
-        try:
-            url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev"
-            async with httpx.AsyncClient(timeout=8) as client:
-                r = await client.get(url, params={"apiKey": api_key, "adjusted": "true"})
-            res = (r.json().get("results") or [{}])[0] if r.status_code == 200 else {}
-            prior_close = float(res.get("c") or 0)
-            prior_high = float(res.get("h") or 0)
-            prior_low = float(res.get("l") or 0)
-        except Exception:
-            pass
+        prior_days: dict = {}
+        for b in daily5m:
+            d = _etdate(b)
+            if d is not None and d < today_et:
+                prior_days.setdefault(d, []).append(b)
+        if prior_days:
+            pb = prior_days[max(prior_days)]
+            prior_close = float(pb[-1]["close"])
+            prior_high = max(float(x["high"]) for x in pb)
+            prior_low = min(float(x["low"]) for x in pb)
         gap_pct = (day_open / prior_close - 1) * 100 if prior_close > 0 else 0.0
         prior_range_pct = (prior_high - prior_low) / prior_close * 100 if prior_close > 0 else 0.0
 
