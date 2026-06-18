@@ -98,13 +98,12 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=23000
-      # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45): high-gamma OTM lottery
-      # calls get a proportional budget haircut. Pure downside protection (only shrinks cheap calls). Live all bots.
-      - ENABLE_DELTA_SIZED_BUDGET=true
       - FLEET_RANK=0
       - PAPER_TRADE=false
       - WEBULL_KILL_SWITCH=false
       - EXIT_ENGINE=v5
+      # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
+      - ENABLE_DELTA_SIZED_BUDGET=true
       - MAX_CONCURRENT=8
       - MAX_POSITION_PCT=15
       - MAX_DCA_POSITION_PCT=10
@@ -191,13 +190,12 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=10000
-      # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45): high-gamma OTM lottery
-      # calls get a proportional budget haircut. Pure downside protection (only shrinks cheap calls). Live all bots.
-      - ENABLE_DELTA_SIZED_BUDGET=true
       - FLEET_RANK=2
       - PAPER_TRADE=false
       - WEBULL_KILL_SWITCH=false
       - EXIT_ENGINE=v5
+      # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
+      - ENABLE_DELTA_SIZED_BUDGET=true
       - MAX_CONCURRENT=8
       - MAX_POSITION_PCT=15
       - MAX_DCA_POSITION_PCT=10
@@ -273,9 +271,6 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=4685
-      # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45): high-gamma OTM lottery
-      # calls get a proportional budget haircut. Pure downside protection (only shrinks cheap calls). Live all bots.
-      - ENABLE_DELTA_SIZED_BUDGET=true
       # Regime call/put budget (paper canary 2026-06-17): cut calls when SPY drifts down, favor puts —
       # the only 2.5yr-validated lever for the June call bleed. Paper-test here before kody/dennis.
       - ENABLE_REGIME_CALL_PUT_BUDGET=true
@@ -301,6 +296,8 @@ services:
       - PAPER_TRADE=true
       - WEBULL_KILL_SWITCH=true
       - EXIT_ENGINE=v5
+      # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
+      - ENABLE_DELTA_SIZED_BUDGET=true
       - MAX_CONCURRENT=8
       - MAX_POSITION_PCT=15
       - MAX_DCA_POSITION_PCT=10
@@ -372,9 +369,6 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=3123
-      # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45): high-gamma OTM lottery
-      # calls get a proportional budget haircut. Pure downside protection (only shrinks cheap calls). Live all bots.
-      - ENABLE_DELTA_SIZED_BUDGET=true
       # Regime call/put budget (paper canary 2026-06-17): cut calls when SPY drifts down, favor puts —
       # the only 2.5yr-validated lever for the June call bleed. Paper-test here before kody/dennis.
       - ENABLE_REGIME_CALL_PUT_BUDGET=true
@@ -400,6 +394,8 @@ services:
       - PAPER_TRADE=true
       - WEBULL_KILL_SWITCH=true
       - EXIT_ENGINE=v5
+      # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
+      - ENABLE_DELTA_SIZED_BUDGET=true
       - MAX_CONCURRENT=8
       - MAX_POSITION_PCT=15
       - MAX_DCA_POSITION_PCT=10
@@ -473,9 +469,6 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=3600
-      # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45): high-gamma OTM lottery
-      # calls get a proportional budget haircut. Pure downside protection (only shrinks cheap calls). Live all bots.
-      - ENABLE_DELTA_SIZED_BUDGET=true
       - FLEET_RANK=3
       - POLYGON_API_KEY=${YANK_POLYGON_API_KEY}
       - ENABLE_POLYGON_WS=false
@@ -484,6 +477,8 @@ services:
       - PAPER_TRADE=true
       - WEBULL_KILL_SWITCH=true
       - EXIT_ENGINE=v5
+      # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
+      - ENABLE_DELTA_SIZED_BUDGET=true
       - MAX_CONCURRENT=8
       - MAX_POSITION_PCT=15
       - MAX_DCA_POSITION_PCT=10
