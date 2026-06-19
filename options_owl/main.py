@@ -121,7 +121,7 @@ def check_polygon_realtime_entitlement(settings: Settings) -> None:
         f"https://api.polygon.io/v3/snapshot/options/SPY"
         f"?strike_price.gte={lo}&strike_price.lte={hi}"
         f"&expiration_date.gte={today}&contract_type=call"
-        f"&limit=1&order=asc&sort=strike_price&apiKey={key}"
+        f"&limit=50&apiKey={key}"
     )
     try:
         with urllib.request.urlopen(url, timeout=10) as r:
@@ -152,17 +152,23 @@ def check_polygon_realtime_entitlement(settings: Settings) -> None:
         logger.warning("Polygon snapshot returned no results; cannot verify freshness.")
         return
 
-    lq = (results[0].get("last_quote") or {})
-    lt = (results[0].get("last_trade") or {})
-    last_updated_ns = lq.get("last_updated")
-    last_trade_ns = lt.get("sip_timestamp")
-    contract = (results[0].get("details") or {}).get("ticker", "?")
-    if not last_updated_ns and not last_trade_ns:
-        logger.warning("Polygon snapshot missing last_quote.last_updated and last_trade.sip_timestamp; cannot verify freshness.")
+    # Take the FRESHEST quote/trade across ALL contracts in the ATM band. A single ITM strike can be
+    # stale (illiquid, no recent NBBO/trade) while liquid ATM strikes quote in real time — betting on
+    # one contract (results[0]) crash-loops the LIVE bots on an unlucky stale strike even when the feed
+    # is fine. If ANY nearby contract is fresh, the real-time feed is live.
+    best_ts_ns = 0
+    contract = "?"
+    for res in results:
+        lq = (res.get("last_quote") or {}).get("last_updated")
+        lt = (res.get("last_trade") or {}).get("sip_timestamp")
+        for ts in (lq, lt):
+            if ts and ts > best_ts_ns:
+                best_ts_ns = ts
+                contract = (res.get("details") or {}).get("ticker", "?")
+    if not best_ts_ns:
+        logger.warning("Polygon snapshot missing all quote/trade timestamps; cannot verify freshness.")
         return
 
-    # Use the freshest timestamp between quote and trade
-    best_ts_ns = max(filter(None, [last_updated_ns, last_trade_ns]))
     age_sec = time.time() - (best_ts_ns / 1e9)
     # Pre-market (before 9:30 ET / 13:30 UTC) options quotes can be 15-30 min
     # stale since the regular session hasn't started.  Use a relaxed threshold
