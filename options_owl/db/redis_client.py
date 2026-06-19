@@ -13,6 +13,7 @@ warnings and return safe defaults so trading is never blocked by Redis.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
@@ -596,6 +597,48 @@ async def get_all_latest_flow() -> dict[str, dict]:
     except Exception as exc:
         logger.debug(f"Redis get_all_latest_flow failed: {exc}")
         return {}
+
+
+# ── UW flow SIGNALS (sole publisher = harvester; every bot consumes) ───────
+_FLOW_SIGNAL_CHANNEL = "owl:flow:signals"
+
+
+async def publish_flow_signal(signal_dict: dict) -> None:
+    """Publish a qualifying UW flow signal to all bots via Redis pub/sub. Fire-and-forget. The harvester
+    is the sole UW WS holder → bots never open their own UW connection (avoids the multi-client WS fight)."""
+    if _redis is None:
+        return
+    try:
+        await _redis.publish(_FLOW_SIGNAL_CHANNEL, json.dumps(signal_dict))
+    except Exception as exc:
+        logger.debug(f"Redis publish_flow_signal failed: {exc}")
+
+
+async def subscribe_flow_signals(on_signal) -> None:
+    """Consume UW flow signals from Redis, calling on_signal(dict) for each. Runs forever, reconnecting on
+    any error. Every bot runs this in place of its own UW WS (the harvester is the single publisher)."""
+    while True:
+        try:
+            if _redis is None:
+                await asyncio.sleep(2)
+                continue
+            pubsub = _redis.pubsub()
+            await pubsub.subscribe(_FLOW_SIGNAL_CHANNEL)
+            logger.info(f"FLOW_CONSUMER: subscribed to {_FLOW_SIGNAL_CHANNEL}")
+            async for msg in pubsub.listen():
+                if msg.get("type") != "message":
+                    continue
+                try:
+                    payload = json.loads(msg["data"])
+                except (ValueError, TypeError):
+                    continue
+                try:
+                    await on_signal(payload)
+                except Exception as exc:
+                    logger.warning(f"FLOW_CONSUMER: on_signal failed: {exc}")
+        except Exception as exc:
+            logger.warning(f"FLOW_CONSUMER: subscribe loop error ({exc}); retry in 5s")
+            await asyncio.sleep(5)
 
 
 # ── WS Health status (published by harvester watchdog) ────────────────────

@@ -1180,8 +1180,8 @@ async def run_bot(settings: Settings) -> None:
     if getattr(settings, "ENABLE_UW_FLOW_SIGNAL", False) and getattr(settings, "UNUSUAL_WHALES_API_KEY", ""):
         from options_owl.collectors.polygon_options import polygon_option_chain
         from options_owl.collectors.uw_flow_collector import (
+            FlowSignal,
             flow_signal_to_trade_signal,
-            run_uw_flow_collector,
         )
         from options_owl.models.signals import Direction as _FlowDir
         from options_owl.sourcing.ml_pipeline import fetch_live_underlying_price
@@ -1291,11 +1291,21 @@ async def run_bot(settings: Settings) -> None:
             )
             await paper_trader.evaluate_and_trade(ts, _flow_id["n"])
 
-        async def _flow_factory():
-            await run_uw_flow_collector(settings, _on_flow_signal)
+        async def _consume_flow(payload: dict) -> None:
+            try:
+                fs = FlowSignal.from_dict(payload)
+            except Exception as exc:
+                logger.warning(f"UW_FLOW: bad flow payload from Redis ({exc})")
+                return
+            await _on_flow_signal(fs)
 
-        supervised.append(asyncio.create_task(_supervised_task("uw_flow_collector", _flow_factory)))
-        logger.info("UW_FLOW: collector task started (ENABLE_UW_FLOW_SIGNAL=true)")
+        async def _flow_factory():
+            from options_owl.db import redis_client as _flow_rc
+            await _flow_rc.subscribe_flow_signals(_consume_flow)
+
+        supervised.append(asyncio.create_task(_supervised_task("uw_flow_consumer", _flow_factory)))
+        logger.info("UW_FLOW: consuming flow from Redis — harvester is the sole UW WS holder "
+                    "(ENABLE_UW_FLOW_SIGNAL=true)")
 
     logger.info(
         f"OptionsOwl bot {agent_id} fully initialized — "

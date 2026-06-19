@@ -757,6 +757,25 @@ async def run_harvester() -> None:
         _ws_health_watchdog(candle_collector, flow_collector)
     )
 
+    # UW flow PUBLISHER — the harvester is the SOLE holder of the UW flow-alerts WS. It runs the same
+    # collector the bots used, but instead of trading it publishes qualifying FlowSignals to Redis; every
+    # bot consumes from there (no per-bot WS → no UW multi-client connection fight). Retires flow-shadow.
+    flow_pub_task = None
+    try:
+        from options_owl.config.settings import Settings as _FlowSettings
+        _flow_settings = _FlowSettings()
+        if getattr(_flow_settings, "UNUSUAL_WHALES_API_KEY", ""):
+            from options_owl.collectors.uw_flow_collector import run_uw_flow_collector
+            from options_owl.db import redis_client as _flow_rc
+
+            async def _publish_flow(_sig) -> None:
+                await _flow_rc.publish_flow_signal(_sig.to_dict())
+
+            flow_pub_task = asyncio.create_task(run_uw_flow_collector(_flow_settings, _publish_flow))
+            logger.info("UW_FLOW_PUBLISHER: harvester holds the sole UW flow WS → publishing to Redis")
+    except Exception as exc:
+        logger.warning(f"UW_FLOW_PUBLISHER: failed to start ({exc})")
+
     async with httpx.AsyncClient() as client:
         while not stop_event.is_set():
             write_heartbeat()
@@ -907,6 +926,12 @@ async def run_harvester() -> None:
         await watchdog_task
     except asyncio.CancelledError:
         pass
+    if flow_pub_task is not None:
+        flow_pub_task.cancel()
+        try:
+            await flow_pub_task
+        except asyncio.CancelledError:
+            pass
     await candle_collector.stop_ws()
     if flow_collector:
         await flow_collector.stop_ws()

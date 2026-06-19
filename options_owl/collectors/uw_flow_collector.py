@@ -40,6 +40,29 @@ class FlowSignal:
     option_chain: str
     cluster_count: int = 1  # # qualifying same-ticker+dir sweeps in the rolling window (Stage D)
 
+    def to_dict(self) -> dict:
+        """Serialize for Redis pub/sub (harvester publishes → bots consume)."""
+        return {
+            "ticker": self.ticker,
+            "direction": getattr(self.direction, "value", str(self.direction)),
+            "strike": self.strike, "expiry": self.expiry,
+            "total_premium": self.total_premium, "ask_frac": self.ask_frac,
+            "volume_oi_ratio": self.volume_oi_ratio, "option_chain": self.option_chain,
+            "cluster_count": self.cluster_count,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> FlowSignal:
+        """Rebuild from a Redis payload (bot side)."""
+        dv = d["direction"]
+        direction = dv if isinstance(dv, Direction) else Direction(dv)
+        return cls(
+            ticker=d["ticker"], direction=direction, strike=float(d["strike"]),
+            expiry=d["expiry"], total_premium=float(d["total_premium"]),
+            ask_frac=float(d["ask_frac"]), volume_oi_ratio=float(d["volume_oi_ratio"]),
+            option_chain=d["option_chain"], cluster_count=int(d.get("cluster_count", 1)),
+        )
+
 
 def _f(v, default=0.0) -> float:
     try:

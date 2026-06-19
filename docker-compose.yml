@@ -654,17 +654,9 @@ services:
     volumes:
       - ./journal/owlet-harvester:/app/journal
 
-  # SHADOW MODE: logs whale ask-side put-sweep signals (META/AMZN/AAPL/TSLA), does NOT
-  # trade. Phase 6 of down-day-capture — validate live signals vs backtest before wiring
-  # into the entry pipeline. Needs UNUSUAL_WHALES_API_KEY in .env (env_file).
-  owlet-flow-shadow:
-    <<: *bot-common
-    container_name: owlet-flow-shadow
-    command: ["python", "scripts/uw_flow_shadow.py"]
-    healthcheck:
-      disable: true
-    volumes:
-      - ./journal:/app/journal   # shared journal so uw_flow/uw_flow_alerts.db is queryable alongside other data
+  # owlet-flow-shadow RETIRED 2026-06-19: the harvester is now the SOLE UW flow-alerts WS holder and
+  # publishes qualifying FlowSignals to Redis (owl:flow:signals); all bots consume via
+  # subscribe_flow_signals — no per-bot WS, no multi-client connection contention, no redundant shadow.
 
   # Forward-collects darkpool prints (UW has no history) → journal/darkpool/darkpool.db, for B3
   # (darkpool S/R) research. Observe-only, REST poll every 5min market hours; zero trade impact.
