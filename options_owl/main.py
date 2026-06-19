@@ -124,6 +124,20 @@ def check_polygon_realtime_entitlement(settings: Settings) -> None:
     import urllib.error
     import urllib.request
 
+    # Market closed (weekend OR NYSE holiday, e.g. Juneteenth) → options quotes are
+    # legitimately frozen at the prior close. Skip the freshness self-test entirely so
+    # the LIVE bots don't crash-loop on every closed day (which, on 2026-06-19, churned
+    # a bot's Webull token across 19 restarts). The runtime market-open gate keeps them
+    # from trading. Only enforce real-time freshness during the regular session.
+    from options_owl.sourcing.utils.market_hours import is_market_open
+
+    if not is_market_open():
+        logger.info(
+            "Market closed (weekend/holiday/off-hours) — skipping Polygon real-time "
+            "options self-test; bots will idle until the next session."
+        )
+        return
+
     key = getattr(settings, "POLYGON_API_KEY", "") or ""
     if not key:
         if not settings.PAPER_TRADE:

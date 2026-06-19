@@ -2099,8 +2099,10 @@ async def scan_all_tickers(
 
 def _is_market_open() -> bool:
     """Check if US equity market is currently open (weekday 9:30-4:00 ET)."""
+    from options_owl.sourcing.utils.market_hours import is_trading_day
+
     now = datetime.now(tz=ET)
-    if now.weekday() >= 5:
+    if not is_trading_day(now):  # weekend OR NYSE holiday (e.g. Juneteenth)
         return False
     market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
     market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)

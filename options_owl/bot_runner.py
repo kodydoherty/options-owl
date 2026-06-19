@@ -39,8 +39,10 @@ _SIGNAL_WEBHOOK_URL = os.getenv("SOURCING_DISCORD_WEBHOOK_URL", "")
 
 def _is_market_open() -> bool:
     """Check if US equity market is currently open (9:30 AM - 3:57 PM ET)."""
+    from options_owl.sourcing.utils.market_hours import is_trading_day
+
     now = datetime.now(tz=ET)
-    if now.weekday() >= 5:
+    if not is_trading_day(now):  # weekend OR NYSE holiday (e.g. Juneteenth)
         return False
     market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
     market_close = now.replace(hour=15, minute=57, second=0, microsecond=0)
