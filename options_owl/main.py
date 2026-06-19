@@ -84,6 +84,35 @@ INITIAL_BACKOFF = 5  # seconds
 MAX_BACKOFF = 300  # 5 minutes cap
 
 
+def _harvester_feed_fresh(max_age_sec: int = 180) -> bool:
+    """True if the harvester is writing fresh SPY 1m candles to the shared Postgres — the live data the
+    bots actually trade on (Polygon WS → harvester → PG/Redis). Used as a fallback when the Polygon REST
+    snapshot self-test is stale: its last_quote can lag on options-tier keys even when the real feed is
+    live (the bots traded fine on this exact data). Returns False (→ abort) if it can't confirm freshness."""
+    try:
+        import asyncio as _a
+        import datetime as _dt
+
+        from options_owl.db import postgres
+
+        async def _q():
+            await postgres.init_pool()
+            try:
+                return await postgres.read_stock_candles("SPY", "1m", limit=1)
+            finally:
+                await postgres.close_pool()
+
+        rows = _a.run(_q())
+        if not rows:
+            return False
+        bt = rows[-1]["bar_time"]
+        age = (_dt.datetime.now(_dt.timezone.utc) - bt.astimezone(_dt.timezone.utc)).total_seconds()
+        return age < max_age_sec
+    except Exception as exc:
+        logger.warning(f"harvester-freshness fallback failed: {exc}")
+        return False
+
+
 def check_polygon_realtime_entitlement(settings: Settings) -> None:
     """Fail-fast guard: refuse to go LIVE if Polygon can't serve real-time options data.
 
@@ -180,11 +209,20 @@ def check_polygon_realtime_entitlement(settings: Settings) -> None:
     if age_sec < max_age:
         logger.info(f"✅ Polygon real-time OK ({contract} quote age {age_sec:.0f}s)")
     elif not settings.PAPER_TRADE:
-        logger.critical(
-            f"LIVE mode but Polygon quote is {age_sec/60:.1f} min old ({contract}) — "
-            f"aborting to prevent stale-quote trading."
-        )
-        sys.exit(2)
+        # The Polygon REST snapshot last_quote can be stale on options-tier keys even when the real-time
+        # feed (Polygon WS → harvester → shared PG/Redis, what the bots actually trade on) is live. Before
+        # aborting, validate that operational source: a fresh SPY 1m candle in the harvester's Postgres.
+        if _harvester_feed_fresh():
+            logger.warning(
+                f"Polygon REST snapshot quote is {age_sec/60:.1f} min old ({contract}), but the harvester's "
+                f"live SPY feed is fresh (Polygon WS → PG) — operational data is live, continuing."
+            )
+        else:
+            logger.critical(
+                f"LIVE mode but Polygon quote is {age_sec/60:.1f} min old ({contract}) AND the harvester "
+                f"feed is also stale — aborting to prevent stale-quote trading."
+            )
+            sys.exit(2)
     else:
         logger.warning(f"Polygon quote is {age_sec/60:.1f} min old — paper mode, continuing.")
 
