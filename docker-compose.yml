@@ -157,6 +157,18 @@ services:
       - ENABLE_V7_TIDE_GATE=true
       # Stage D conviction sizing — kody LIVE 2026-06-14 (validated +72% / combined PF 1.78; vinny paper canary).
       - ENABLE_V7_CONVICTION_SIZING=true
+      # runner_v1 P(runner) call-sizing — CONSERVATIVE-LIVE 2026-06-22. Backtest-validated (~2x per-unit P&L,
+      # monotonic P(runner)->outcome); serve path verified on adam/vinny canary (sane 0.60-0.73 scores). Softened
+      # 0.7-1.3 mults (not the full 0.5-1.75 curve). Small paper bots couldn't test sizing (1 contract = no-op);
+      # the edge only bites on multi-contract accounts (kody/dennis). 100% harvester-sourced (no per-bot Polygon).
+      - ENABLE_RUNNER_V1_SIZING=true
+      - RUNNER_V1_Q1=0.39
+      - RUNNER_V1_Q2=0.69
+      - RUNNER_V1_Q3=0.85
+      - RUNNER_V1_MULT_Q1=0.7
+      - RUNNER_V1_MULT_Q2=0.9
+      - RUNNER_V1_MULT_Q3=1.1
+      - RUNNER_V1_MULT_Q4=1.3
       - ENABLE_V6_BREAKEVEN_RATCHET=true
       - ENABLE_V6_2PM_TIGHTEN=true
       - ENABLE_V6_PREMIUM_CAP=false
@@ -254,6 +266,15 @@ services:
       - ENABLE_DIP_CONFIRM=true
       - ENABLE_POLYGON_WS=false
       - ENABLE_V7_CONVICTION_SIZING=true
+      # runner_v1 P(runner) call-sizing — CONSERVATIVE-LIVE 2026-06-22 (see kody block for rationale).
+      - ENABLE_RUNNER_V1_SIZING=true
+      - RUNNER_V1_Q1=0.39
+      - RUNNER_V1_Q2=0.69
+      - RUNNER_V1_Q3=0.85
+      - RUNNER_V1_MULT_Q1=0.7
+      - RUNNER_V1_MULT_Q2=0.9
+      - RUNNER_V1_MULT_Q3=1.1
+      - RUNNER_V1_MULT_Q4=1.3
       - AGENT_ID=owlet_dennis
       - ENABLE_POSTGRES=true
       - DATABASE_URL=postgresql://owl:${POSTGRES_PASSWORD:-owl_dev_2026}@postgres:5432/options_owl
