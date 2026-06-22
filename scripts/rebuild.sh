@@ -84,16 +84,18 @@ if [ "$KODY_PAPER" = "true" ] || [ "$KODY_KILL" = "true" ]; then
 fi
 echo "owlet-kody: PAPER_TRADE=$KODY_PAPER WEBULL_KILL_SWITCH=$KODY_KILL — OK"
 
+# Fleet model 2026-06-22: kody is the ONLY live bot; dennis is now PAPER. Guard the
+# new direction — block if dennis is accidentally flipped back to LIVE.
 DENNIS_PAPER=$(grep -A15 'owlet-dennis:' "$LOCAL_DIR/docker-compose.yml" | grep 'PAPER_TRADE=' | head -1 | sed 's/.*PAPER_TRADE=//')
 DENNIS_KILL=$(grep -A15 'owlet-dennis:' "$LOCAL_DIR/docker-compose.yml" | grep 'WEBULL_KILL_SWITCH=' | head -1 | sed 's/.*WEBULL_KILL_SWITCH=//')
-if [ "$DENNIS_PAPER" = "true" ] || [ "$DENNIS_KILL" = "true" ]; then
+if [ "$DENNIS_PAPER" != "true" ] || [ "$DENNIS_KILL" != "true" ]; then
   echo ""
   echo "DEPLOY BLOCKED: owlet-dennis has PAPER_TRADE=$DENNIS_PAPER WEBULL_KILL_SWITCH=$DENNIS_KILL"
-  echo "This would switch LIVE trading to paper mode on deploy."
-  echo "If intentional, edit docker-compose.yml first, then re-run."
+  echo "Fleet model: only kody is LIVE; dennis must be PAPER (PAPER_TRADE=true, WEBULL_KILL_SWITCH=true)."
+  echo "If you intend dennis to go LIVE again, update this guard first, then re-run."
   exit 1
 fi
-echo "owlet-dennis: PAPER_TRADE=$DENNIS_PAPER WEBULL_KILL_SWITCH=$DENNIS_KILL — OK"
+echo "owlet-dennis: PAPER_TRADE=$DENNIS_PAPER WEBULL_KILL_SWITCH=$DENNIS_KILL — OK (paper)"
 
 # ---------------------------------------------------------------------------
 # Step 2: Sync code to droplet
