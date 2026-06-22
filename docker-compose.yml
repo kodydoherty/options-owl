@@ -205,8 +205,9 @@ services:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=10000
       - FLEET_RANK=2
-      - PAPER_TRADE=false
-      - WEBULL_KILL_SWITCH=false
+      # dennis → PAPER 2026-06-22 (fleet model: only kody live; also retires the expired-Webull-token issue).
+      - PAPER_TRADE=true
+      - WEBULL_KILL_SWITCH=true
       - EXIT_ENGINE=v5
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
@@ -296,9 +297,6 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=4685
-      # Regime call/put budget (paper canary 2026-06-17): cut calls when SPY drifts down, favor puts —
-      # the only 2.5yr-validated lever for the June call bleed. Paper-test here before kody/dennis.
-      - ENABLE_REGIME_CALL_PUT_BUDGET=true
       # runner_v1 P(runner) CALL sizing (paper canary): bet bigger on high-P(runner) rippers. Cuts = live
       # harvester-distribution percentiles (probe 2026-06-18, n=81: p25/50/75 = 0.39/0.69/0.85); softened
       # multipliers (0.7-1.3 vs validated 0.5-1.5) while the harvester-greek separation is validated forward
@@ -312,8 +310,6 @@ services:
       - RUNNER_V1_MULT_Q3=1.1
       - RUNNER_V1_MULT_Q4=1.3
       - FLEET_RANK=1
-      # Winner-concentration sizing PAPER CANARY (adam) — conf_linear, validate before kody/dennis. 2026-06-16
-      - ENABLE_CONF_LINEAR_SIZING=true
       - POLYGON_API_KEY=${ADAM_POLYGON_API_KEY}
       - ENABLE_POLYGON_WS=false
       - WEBULL_APP_KEY=${ADAM_WEBULL_APP_KEY}
@@ -396,9 +392,6 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=3123
-      # Regime call/put budget (paper canary 2026-06-17): cut calls when SPY drifts down, favor puts —
-      # the only 2.5yr-validated lever for the June call bleed. Paper-test here before kody/dennis.
-      - ENABLE_REGIME_CALL_PUT_BUDGET=true
       # runner_v1 P(runner) CALL sizing (paper canary): bet bigger on high-P(runner) rippers. Cuts = live
       # harvester-distribution percentiles (probe 2026-06-18, n=81: p25/50/75 = 0.39/0.69/0.85); softened
       # multipliers (0.7-1.3 vs validated 0.5-1.5) while the harvester-greek separation is validated forward
@@ -412,8 +405,6 @@ services:
       - RUNNER_V1_MULT_Q3=1.1
       - RUNNER_V1_MULT_Q4=1.3
       - FLEET_RANK=4
-      # Winner-concentration sizing PAPER CANARY (vinny) — conf_linear, validate before kody/dennis. 2026-06-16
-      - ENABLE_CONF_LINEAR_SIZING=true
       - POLYGON_API_KEY=${VINNY_POLYGON_API_KEY}
       - ENABLE_POLYGON_WS=false
       - WEBULL_APP_KEY=${VINNY_WEBULL_APP_KEY}
@@ -471,7 +462,6 @@ services:
       - ENABLE_V6_SPREAD_GATE=true
       - ENABLE_V6_SCALEOUT=true
       - ENABLE_V6_DCA=true
-      - ENABLE_V6_SIDEWAYS_SCALP=true
       # Stage D conviction sizing — vinny FIRST (paper canary), validated +72%/PF1.64; then kody.
       - ENABLE_V7_CONVICTION_SIZING=true
       - ENABLE_V6_EARLY_POP_GATE=true
@@ -560,6 +550,15 @@ services:
       - ENABLE_DIP_CONFIRM=true
 
       - ENABLE_V7_CONVICTION_SIZING=true
+      # runner_v1 P(runner) call-sizing — fleet-uniform 2026-06-22 (matches kody validated config).
+      - ENABLE_RUNNER_V1_SIZING=true
+      - RUNNER_V1_Q1=0.39
+      - RUNNER_V1_Q2=0.69
+      - RUNNER_V1_Q3=0.85
+      - RUNNER_V1_MULT_Q1=0.7
+      - RUNNER_V1_MULT_Q2=0.9
+      - RUNNER_V1_MULT_Q3=1.1
+      - RUNNER_V1_MULT_Q4=1.3
       - AGENT_ID=owlet_yank
       - ENABLE_POSTGRES=true
       - DATABASE_URL=postgresql://owl:${POSTGRES_PASSWORD:-owl_dev_2026}@postgres:5432/options_owl
