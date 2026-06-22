@@ -713,6 +713,10 @@ class WebullExecutor:
         close_contracts: list[dict] | None = None,
     ) -> list[dict]:
         """Build the single-leg option order payload Webull's API expects."""
+        # Defensive chokepoint: EVERY order's limit price must sit on a legal
+        # Webull increment (penny < $3, nickel >= $3) or the API rejects it with
+        # OPTION_PRICE_STEP_GTE. Round here so no caller path can submit e.g. $3.07.
+        limit_price = _round_option_price(limit_price, side)
         leg = {
             "side": side.upper(),
             "quantity": str(contracts),
@@ -911,12 +915,13 @@ class WebullExecutor:
             if limit > ceiling:
                 limit = ceiling
             limit = _round_option_price(limit, "BUY")
-            # Never exceed the ceiling after rounding-up.
+            # Never exceed the ceiling after rounding-up. The ceiling itself is a
+            # plain round(.,2) and may NOT be a nickel multiple, so rounding it UP
+            # can overshoot and `ceiling - 0.05` would land on an illegal step
+            # (e.g. 3.12 -> 3.07). Round DOWN to the largest legal increment at or
+            # below the ceiling instead (penny < $3, nickel >= $3).
             if limit > ceiling:
-                limit = _round_option_price(ceiling, "BUY")
-                if limit > ceiling:
-                    # Rounding pushed us past the cap; step back one increment.
-                    limit = round(ceiling - 0.01, 2) if ceiling < 3.0 else round(ceiling - 0.05, 2)
+                limit = _round_option_price(ceiling, "SELL")
 
             client_order_id = uuid.uuid4().hex[:32]
             last_client_id = client_order_id

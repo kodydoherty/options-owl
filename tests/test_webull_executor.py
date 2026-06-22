@@ -488,6 +488,29 @@ class TestOptionPriceRounding:
         assert _round_option_price(3.01, "SELL") == 3.00
         assert _round_option_price(3.01, "BUY") == 3.05
 
+    def test_build_order_payload_rounds_illegal_step(self):
+        """Regression: the chase fallback could hand $3.07 (ceiling 3.12 - 0.05)
+        to the payload builder, which Webull rejects (OPTION_PRICE_STEP_GTE).
+        The builder must defensively snap every limit price to a legal increment."""
+        executor = WebullExecutor(_make_settings(PAPER_TRADE=False))
+        for side, illegal, expected in [
+            ("BUY", 3.07, "3.10"),   # >= $3 buy rounds UP to nickel
+            ("SELL", 3.07, "3.05"),  # >= $3 sell rounds DOWN to nickel
+            ("BUY", 3.12, "3.15"),
+            ("SELL", 3.12, "3.10"),
+            ("BUY", 2.97, "2.97"),   # < $3 keeps penny increment
+        ]:
+            payload = executor._build_order_payload(
+                client_order_id="x", ticker="TSLA", strike=400.0,
+                expiry_date="2026-06-22", option_type="call", side=side,
+                contracts=1, limit_price=illegal,
+            )
+            got = payload[0]["limit_price"]
+            assert got == expected, f"{side} {illegal} -> {got}, want {expected}"
+            # And it is always a legal step: penny < $3, nickel >= $3.
+            cents = round(float(got) * 100)
+            assert cents % 5 == 0 or float(got) < 3.0
+
     def test_case_insensitive_side(self):
         assert _round_option_price(3.22, "buy") == 3.25
         assert _round_option_price(3.22, "sell") == 3.20
