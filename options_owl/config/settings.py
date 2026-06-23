@@ -321,6 +321,12 @@ class Settings(BaseSettings):
         "2026-01-28,2026-03-18,2026-04-29,2026-06-17,2026-07-29,2026-09-16,2026-10-28,2026-12-16"
     )
 
+    # ── Data-freshness guard ─────────────────────────────────────────────────
+    # Block NEW entries (never the sell path) + alert if the harvester feed goes stale during market
+    # hours. Catches frozen-but-fresh-timestamp data (the Juneteenth failure). Fails OPEN on error.
+    ENABLE_DATA_FRESHNESS_GUARD: bool = True
+    DATA_FRESHNESS_MAX_AGE_SEC: int = 180
+
     # ── UW flow signal source (Track 4) ──────────────────────────────────────
     # Follow whale ask-side option SWEEPS (real-money conviction) as a signal source.
     # Validated: PUT sweeps -> drops (META/AMZN/AAPL/TSLA), CALL sweeps -> rises

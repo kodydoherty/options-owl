@@ -902,6 +902,8 @@ class PaperTrader:
         if webull_executor is not None:
             settings._webull_executor = webull_executor  # type: ignore[attr-defined]
         self.market_stream = None  # set by discord_collector after market stream starts
+        self.discord_client = None  # set by discord_collector — used for stale-data alerts
+        self._stale_data_last_alert: float = 0.0  # throttle for the data-freshness alert
         self._signal_engine = None
         self._cached_live_balance: float | None = None
         self._balance_cache_ts: float = 0.0
@@ -2604,6 +2606,29 @@ class PaperTrader:
         )
         return signal
 
+    async def _alert_stale_data(self, reason: str) -> None:
+        """Throttled Discord alert when the data-freshness guard halts entries (once / 5 min).
+
+        The CRITICAL log line is always emitted at the call site; this is the best-effort DM on top.
+        """
+        import time
+        now = time.time()
+        if now - self._stale_data_last_alert < 300:
+            return
+        self._stale_data_last_alert = now
+        client = self.discord_client
+        if client is None:
+            return  # no client wired — the CRITICAL log is the signal (babysitter/log-monitoring)
+        try:
+            from options_owl.execution.alerts import alert_critical
+            agent = getattr(self.settings, "AGENT_ID", "bot")
+            await alert_critical(
+                client, self.settings,
+                f"STALE MARKET DATA — new entries HALTED on {agent}: {reason}",
+            )
+        except Exception as exc:
+            logger.warning(f"stale-data alert failed to send: {exc}")
+
     async def evaluate_and_trade(
         self, signal: TradeSignal, signal_id: int, ml_confidence: float | None = None,
     ) -> dict | None:
@@ -2618,6 +2643,26 @@ class PaperTrader:
             logger.info(f"[TradeLifecycle] {signal.ticker}: ENTRY BLOCKED — FOMC pause day "
                         f"(no new entries; existing positions still managed)")
             return None
+
+        # Data-freshness guard — block NEW entries (existing positions still exit normally) if the
+        # harvester feed is stale during market hours. Catches frozen-but-fresh-timestamp data (the
+        # Juneteenth failure a reconnect loop can't see). Fails OPEN: any check error/timeout → allow.
+        if getattr(self.settings, "ENABLE_DATA_FRESHNESS_GUARD", True):
+            from options_owl.risk.data_freshness import check_market_data_fresh
+            try:
+                fresh, fresh_reason = await asyncio.wait_for(
+                    check_market_data_fresh(getattr(self.settings, "DATA_FRESHNESS_MAX_AGE_SEC", 180)),
+                    timeout=10,
+                )
+            except Exception as exc:
+                fresh, fresh_reason = True, f"freshness check timeout/error ({exc}) — failing open"
+            if not fresh:
+                logger.critical(
+                    f"[TradeLifecycle] {signal.ticker}: ENTRY BLOCKED — STALE MARKET DATA: {fresh_reason} "
+                    f"(new entries halted; existing positions still managed)"
+                )
+                await self._alert_stale_data(fresh_reason)
+                return None
 
         # PUT kill switch — block all PUT entries when disabled
         if signal.direction == Direction.PUT and not getattr(self.settings, "ENABLE_PUT_TRADING", False):

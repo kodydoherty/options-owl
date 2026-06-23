@@ -553,6 +553,8 @@ class OptionsOwlBot(discord.Client):
 
         # Wire market stream to paper trader for dip-confirm entry
         self.paper_trader.market_stream = self._market_stream
+        # Wire the discord client for stale-data (data-freshness guard) alerts
+        self.paper_trader.discord_client = self
 
         # Initialize Redis for cross-agent coordination
         if getattr(self.settings, "ENABLE_REDIS", False):

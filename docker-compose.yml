@@ -17,6 +17,11 @@ x-bot-common: &bot-common
   env_file: .env
   environment:
     - PYTHONUNBUFFERED=1
+    # Default OFF for any service that INHERITS this anchor (e.g. darkpool-shadow): the HARVESTER is the
+    # sole Polygon-WS holder so the account never exceeds Polygon's per-cluster connection limit. The
+    # 5 trading bots set this explicitly in their own env; the harvester's own env block overrides this
+    # (its collectors open WS regardless). Belt-and-suspenders so "harvester only" holds by config.
+    - ENABLE_POLYGON_WS=false
   healthcheck:
     test: ["CMD", "python", "-c", "import time; from pathlib import Path; hb=Path('journal/heartbeat'); assert hb.exists(), 'no heartbeat'; age=time.time()-int(hb.read_text()); assert age<120, f'stale heartbeat: {age:.0f}s'"]
     interval: 30s
