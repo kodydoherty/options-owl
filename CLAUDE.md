@@ -49,16 +49,19 @@ python scripts/trade-pnl.py --droplet --detail       # verbose per-trade breakdo
 | Container | Purpose | Portfolio | PAPER_TRADE |
 |---|---|---|---|
 | `owlet-kody` | Kody's LIVE bot | $23,000 | false (LIVE) |
-| `owlet-dennis` | Dennis's LIVE bot | $10,000 | false (LIVE) |
+| `owlet-dennis` | Dennis's bot | $10,000 | true (paper, since 2026-06-22) |
 | `owlet-adam` | Adam's bot | $4,685 | true (paper) |
 | `owlet-vinny` | Vinny's bot | $3,123 | true (paper) |
 | `owlet-yank` | Yank's bot | $3,600 | true (paper) |
-| `owlet-harvester` | Options chain + candle capture → shared PG + Redis (32-ticker universe) | N/A | — |
-| `owlet-flow-shadow` | UW flow-alert logger (observe-only) | N/A | — |
+| `owlet-harvester` | Options chain + candle capture → shared PG + Redis (32-ticker universe); **sole UW flow WS publisher → Redis `owl:flow:signals`** | N/A | — |
 | `owlet-darkpool-shadow` | UW darkpool forward-collector → journal/darkpool/darkpool.db (B3 research) | N/A | — |
 
 **ALL 5 trading bots run identical code + strategy config — only `PAPER_TRADE`/`PORTFOLIO_SIZE`/creds differ.**
-Live money = kody + dennis only. `.env` holds shared config; `docker-compose.yml` overrides per-bot.
+**Live money = kody ONLY** (dennis moved to paper 2026-06-22 — fleet is now 1 live + 4 paper shadows; this
+also retired dennis's expired-Webull-token problem). `.env` holds shared config; `docker-compose.yml` overrides
+per-bot. The `rebuild.sh` Step 1c guard enforces this: kody must stay LIVE, dennis must stay PAPER.
+`owlet-flow-shadow` was **retired 2026-06-19** — the harvester is now the single UW flow WS holder (bots consume
+from Redis) which killed the multi-connection WS storm.
 
 > **The droplet has the full source at `/root/options-owl` and can edit + redeploy via `scripts/rebuild.sh`.**
 > See the **V7 + UW Flow System** section below for the current (2026-06) deployed strategy — it supersedes
@@ -131,7 +134,9 @@ sqlite3 journal/owlet-kody/raw_messages.db "SELECT * FROM trade_events WHERE dat
 ## V7 + UW Flow System (deployed 2026-06-14) — CURRENT STATE
 
 This is the live strategy. Where it conflicts with older V5/V6-only text, **this wins.** All flag-gated;
-identical across all 5 bots (only PAPER_TRADE differs — live: kody/dennis).
+identical across all 5 bots (only PAPER_TRADE differs — **live: kody ONLY** since 2026-06-22; the other 4 are
+paper shadows running the identical config). See the **Position-sizing stack (2026-06-22)** subsection below for
+the current runner_v1 + conf_linear sizing layers.
 
 ### What changed vs V6
 1. **V7 wide-trail exits** (`ENABLE_V7_WIDE_TRAIL=true`) — no profit ceiling, widened adaptive tiers
@@ -167,13 +172,71 @@ identical across all 5 bots (only PAPER_TRADE differs — live: kody/dennis).
 |---|---|---|
 | `ENABLE_V7_WIDE_TRAIL` | false | **true all bots** |
 | `ML_PATTERN_THRESHOLD` | 0.0 (=meta ~0.74) | **0.62 all bots** |
-| `ENABLE_UW_FLOW_SIGNAL` | false | **true all bots** (live kody/dennis, paper others) |
+| `ENABLE_UW_FLOW_SIGNAL` | false | **true all bots** (live kody, paper others) |
 | `ENABLE_V7_CONVICTION_SIZING` | false | **true all bots** |
 | `MAX_POSITION_DOLLARS` | 50000 | active (no-op small accounts) |
 | `ENABLE_V7_RUNNER_TILT` | false | **OFF** — validate before enabling |
 | `ENABLE_FLOW_OTM_STRIKE` | false | **true all bots** — OTM strike for AMD/INTC/META/SPY calls + TSLA puts |
 | `ENABLE_V7_PROFIT_LOCK` | false | **true all bots** — CALL-only profit-lock (keep 60% of peak gain once +30%); puts keep wide trail |
 | `ANTIMG_CALL_LEVELS` | `30` | **`30,80,150` all bots** — multi-level CALL adds (each a separate own-trail leg) |
+| `ENABLE_RUNNER_V1_SIZING` | false | **true all bots** (2026-06-22) — P(runner) CALL sizing; see sizing-stack subsection |
+| `ENABLE_CONF_LINEAR_SIZING` | false | **true all bots** (2026-06-22) — winner-concentration sizing; bounds 0.4–1.8 |
+| `ENABLE_DELTA_SIZED_BUDGET` | false | **true all bots** — cheap-OTM-call blowup brake (calls-only, `min(1,|delta|/0.45)` haircut) |
+| `ENABLE_FOMC_PAUSE` | false | **true all bots** — blocks ALL new entries on `FOMC_PAUSE_DATES` (2026-only; needs 2027 added) |
+| `MARGIN_ACCOUNT` | false | **false all bots** — toggle to trade an Individual MARGIN account (skips GFV → reinvest intraday); see Margin subsection |
+| `ENABLE_REGIME_CALL_PUT_BUDGET` | false | **OFF — REJECTED** (6mo backtest loser; put ×2.0 amplification backfired) |
+| `ENABLE_V6_SIDEWAYS_SCALP` | false | **OFF — REJECTED** (6mo backtest loser; clips runners, fights wide-trail) |
+
+#### Position-sizing stack (2026-06-22) — runner_v1 + conf_linear now live
+The full sizing chain (in `vinny_strategy.score_to_contracts` + helpers, applied in `paper_trader`):
+**flat base budget → flow conviction mult → runner_v1 mult → conf_linear mult → delta-sized haircut → position caps.**
+Two new multiplier layers went live fleet-wide (kody live, others paper) on 2026-06-22:
+
+1. **runner_v1 P(runner) CALL sizing** (`ENABLE_RUNNER_V1_SIZING=true`). Scores each CALL's probability of being
+   a "runner" via `runner_v1.lgb` (in `journal/models/ml_v3/`), served 100% from the harvester (greeks from Redis
+   snapshot, underlying from PG candles — NO per-bot Polygon). Tiers by percentile thresholds
+   `RUNNER_V1_Q1/Q2/Q3=0.39/0.69/0.85` → multipliers `RUNNER_V1_MULT_Q1..Q4=0.7/0.9/1.1/1.3` (softened, conservative).
+   Returns None on missing data → flat sizing (safe no-op). Code: `risk/flow_runner.py:compute_runner_v1_p`,
+   `vinny_strategy.runner_v1_size_mult`. Validated historically (monotonic P(runner)→outcome); live edge still
+   accumulating. (Distinct from `ENABLE_V7_RUNNER_TILT`, which stays OFF — that was the old weak serve path.)
+2. **conf_linear (winner-concentration) sizing** (`ENABLE_CONF_LINEAR_SIZING=true`, bounds
+   `CONF_LINEAR_BUDGET_MIN/MAX=0.4/1.8`). Scales contracts by ML confidence (~0.4× low-conf → ~1.8× high-conf)
+   instead of flat. **6-month backtest validated: +107% P&L vs flat AT LOWER drawdown** (PF 3.27→4.04), 254 trades
+   — the lower-DD is the tell it's a real edge, not variance. Use the validated 0.4–1.8 bounds, NOT the old default
+   0.3–3.0. Code: `vinny_strategy` conf_linear path. Harness: `scripts/backtest_gold_standard.py --sizing-mode
+   conf_linear --conf-budget-min/max`.
+
+⚠️ **The two layers STACK** (combined ×0.28–×2.34). `MAX_POSITION_PCT` (15%) / `MAX_POSITION_DOLLARS` ($50k) caps
+bound the upside; the 4 paper bots validate the stack live. Watch for over-concentration.
+
+**REJECTED experiments (do NOT enable):** `ENABLE_REGIME_CALL_PUT_BUDGET` and `ENABLE_V6_SIDEWAYS_SCALP` were both
+6-month backtest LOSERS (regime: put ×2.0 amplification backfired; sideways: clips would-be runners). Removed from
+all bots 2026-06-22. Don't re-add without a fresh winning backtest.
+
+#### Market-holiday awareness (2026-06-22) — the Juneteenth crash-loop fix
+`options_owl/sourcing/utils/market_hours.py` is the **single source of truth** for "is the market open". It was
+missing Juneteenth and three `_is_market_open()` helpers (bot_runner/scanner/ml_pipeline) were weekday-only (no
+holiday awareness) — so on Juneteenth the bots ran on a closed market and `main.check_polygon_realtime_entitlement`
+crash-looped on (correctly) frozen option quotes, churning a Webull token over 19 restarts. Fix: added Juneteenth +
+full 2027 calendar + `is_trading_day()` + a loud warning for any uncovered year; ALL gates + the LIVE startup
+self-test now route weekend/holiday through it (the self-test SKIPS cleanly when closed). **When options look
+"stale", FIRST check `is_market_open()` / SPY 1m volume=0 before suspecting Polygon.** Calendar needs annual
+maintenance (add 2028 before 2028) — the Dec-1 FOMC cloud routine also refreshes NYSE holidays.
+
+#### Webull $0.05 price-step fix (2026-06-22)
+Live entries were rejected `HTTP 417 OPTION_PRICE_STEP_GTE` — orders with premium ≥ $3 must be in $0.05 increments.
+The entry-chase fallback produced illegal prices (e.g. 3.12 − 0.05 = 3.07). Fix: `webull_executor._build_order_payload`
+now defensively snaps EVERY order's limit price to a legal increment (penny < $3, nickel ≥ $3) via
+`_round_option_price` — a single chokepoint so no caller path can ship an illegal step.
+
+#### Margin-account toggle (`MARGIN_ACCOUNT`, default false)
+Wired per-bot in docker-compose (default `false` = current Individual CASH). Set `true` to trade an Individual
+MARGIN account: `_detect_account_id` selects the margin account (UNLESS `WEBULL_ACCOUNT_ID` is pinned — **kody is
+pinned to its cash account, so update its ID too**; the others auto-detect), and it **skips the GFV/unsettled-funds
+protection** so sale proceeds reinvest intraday (the "compound/reinvest" use case). Sizing uses net-liquidation
+value (`_get_effective_balance`), NOT leveraged buying power — so no added leverage. PDT is no longer a constraint.
+On first switch, eyeball the `Live Webull balance: $X` log to confirm it reads the margin equity. To flip a bot:
+set `MARGIN_ACCOUNT=true` (+ kody's account ID), then `./scripts/rebuild.sh owlet-<name>`.
 
 #### Add handling + profit-lock (2026-06-16) — separate-leg adds, CALL profit-lock
 After the first live anti-martingale adds (TSLA/AMZN/SPY), two things were settled by
@@ -517,16 +580,19 @@ ENABLE_V6_SPREAD_GATE=true         # Block entries with wide bid-ask spread
 
 ### Per-Bot Overrides (in docker-compose.yml)
 
-Each bot overrides these from docker-compose.yml `environment:` section:
-- `PORTFOLIO_SIZE` — $23000 (kody), $4685 (adam), $3123 (vinny), $3600 (yank)
-- `PAPER_TRADE=false` — enables live Webull execution
-- `WEBULL_KILL_SWITCH=false` — allows orders
+Each bot overrides these from docker-compose.yml `environment:` section. **Only identity/account differs now —
+all 5 run identical STRATEGY config (runner_v1 + conf_linear + flow + V7 all on); only kody is live:**
+- `PORTFOLIO_SIZE` — $23000 (kody), $10000 (dennis), $4685 (adam), $3123 (vinny), $3600 (yank)
+- `PAPER_TRADE` — **false on kody ONLY**; true on dennis/adam/vinny/yank
+- `WEBULL_KILL_SWITCH` — false on kody only; true on the rest (paper)
+- `MARGIN_ACCOUNT` — false everywhere (toggle to margin per-bot; see Margin subsection)
+- `FLEET_RANK` — distinct per bot (kody 0, adam 1, dennis 2, yank 3, vinny 4) for the priority round-robin
 - `MAX_CONCURRENT=5` — max simultaneous trades
 - `MAX_POSITION_PCT=15` — max % of portfolio per trade
 - `MAX_PORTFOLIO_RISK_PCT=75` — total deployable capital as % of portfolio
 - `MAX_LOSS_PER_TRADE_PCT=25` — max loss per single trade
 - Webull credentials (`WEBULL_APP_KEY`, `WEBULL_APP_SECRET`, `WEBULL_ACCOUNT_ID`)
-- Polygon API key (per-user for rate limits)
+- Polygon API key (per-user for rate limits; kody/dennis inherit the shared `.env` key)
 
 ### Position Sizing (Flat Budget)
 
