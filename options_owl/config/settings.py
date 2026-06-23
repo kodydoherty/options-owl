@@ -324,7 +324,8 @@ class Settings(BaseSettings):
     # ── Data-freshness guard ─────────────────────────────────────────────────
     # Block NEW entries (never the sell path) + alert if the harvester feed goes stale during market
     # hours. Catches frozen-but-fresh-timestamp data (the Juneteenth failure). Fails OPEN on error.
-    ENABLE_DATA_FRESHNESS_GUARD: bool = True
+    # Default OFF (tests have no harvester feed); enabled per-bot in docker-compose for production.
+    ENABLE_DATA_FRESHNESS_GUARD: bool = False
     DATA_FRESHNESS_MAX_AGE_SEC: int = 180
 
     # ── UW flow signal source (Track 4) ──────────────────────────────────────

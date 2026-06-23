@@ -112,6 +112,9 @@ services:
       # kody is, so update its ID too) + skips GFV so sale proceeds reinvest intraday. Sizes off net-liq
       # (no extra leverage). PDT no longer a constraint. Flip per-bot when ready, then redeploy that bot.
       - MARGIN_ACCOUNT=false
+      # Data-freshness guard: halt NEW entries + alert if the harvester feed goes stale during market
+      # hours (catches frozen-but-fresh-timestamp data). Sell path unaffected; fails OPEN on error.
+      - ENABLE_DATA_FRESHNESS_GUARD=true
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
@@ -230,6 +233,9 @@ services:
       # kody is, so update its ID too) + skips GFV so sale proceeds reinvest intraday. Sizes off net-liq
       # (no extra leverage). PDT no longer a constraint. Flip per-bot when ready, then redeploy that bot.
       - MARGIN_ACCOUNT=false
+      # Data-freshness guard: halt NEW entries + alert if the harvester feed goes stale during market
+      # hours (catches frozen-but-fresh-timestamp data). Sell path unaffected; fails OPEN on error.
+      - ENABLE_DATA_FRESHNESS_GUARD=true
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
@@ -355,6 +361,9 @@ services:
       # kody is, so update its ID too) + skips GFV so sale proceeds reinvest intraday. Sizes off net-liq
       # (no extra leverage). PDT no longer a constraint. Flip per-bot when ready, then redeploy that bot.
       - MARGIN_ACCOUNT=false
+      # Data-freshness guard: halt NEW entries + alert if the harvester feed goes stale during market
+      # hours (catches frozen-but-fresh-timestamp data). Sell path unaffected; fails OPEN on error.
+      - ENABLE_DATA_FRESHNESS_GUARD=true
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
@@ -461,6 +470,9 @@ services:
       # kody is, so update its ID too) + skips GFV so sale proceeds reinvest intraday. Sizes off net-liq
       # (no extra leverage). PDT no longer a constraint. Flip per-bot when ready, then redeploy that bot.
       - MARGIN_ACCOUNT=false
+      # Data-freshness guard: halt NEW entries + alert if the harvester feed goes stale during market
+      # hours (catches frozen-but-fresh-timestamp data). Sell path unaffected; fails OPEN on error.
+      - ENABLE_DATA_FRESHNESS_GUARD=true
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
@@ -550,6 +562,9 @@ services:
       # kody is, so update its ID too) + skips GFV so sale proceeds reinvest intraday. Sizes off net-liq
       # (no extra leverage). PDT no longer a constraint. Flip per-bot when ready, then redeploy that bot.
       - MARGIN_ACCOUNT=false
+      # Data-freshness guard: halt NEW entries + alert if the harvester feed goes stale during market
+      # hours (catches frozen-but-fresh-timestamp data). Sell path unaffected; fails OPEN on error.
+      - ENABLE_DATA_FRESHNESS_GUARD=true
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
