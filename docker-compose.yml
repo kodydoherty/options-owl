@@ -163,7 +163,11 @@ services:
       - MAX_SIZING_BALANCE=50000
       # Fleet staggering K=2: each signal → 2 of 5 bots (priority round-robin) so they don't all crater
       # together (corr 0.95→0.22, fleet DD 5x smaller) — 2026-06-16. FLEET_RANK is per-bot (below).
-      - ENABLE_FLEET_STAGGER=true
+      # DISABLED 2026-06-23: stagger decorrelated MULTIPLE live bots, but kody is the only live bot now
+      # (dennis -> paper). Splitting the pool just handed kody a random sub-slice of the edge (it drew the
+      # -$537 corner of a +$1,863 green fleet day while adam took the winners). Off = every bot evaluates
+      # EVERY signal concurrently; kody (FLEET_RANK=0) captures the full edge instead of a fraction.
+      - ENABLE_FLEET_STAGGER=false
       - FLEET_SIZE=5
       - FLEET_OVERLAP=2
       # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
@@ -277,7 +281,11 @@ services:
       - MAX_SIZING_BALANCE=50000
       # Fleet staggering K=2: each signal → 2 of 5 bots (priority round-robin) so they don't all crater
       # together (corr 0.95→0.22, fleet DD 5x smaller) — 2026-06-16. FLEET_RANK is per-bot (below).
-      - ENABLE_FLEET_STAGGER=true
+      # DISABLED 2026-06-23: stagger decorrelated MULTIPLE live bots, but kody is the only live bot now
+      # (dennis -> paper). Splitting the pool just handed kody a random sub-slice of the edge (it drew the
+      # -$537 corner of a +$1,863 green fleet day while adam took the winners). Off = every bot evaluates
+      # EVERY signal concurrently; kody (FLEET_RANK=0) captures the full edge instead of a fraction.
+      - ENABLE_FLEET_STAGGER=false
       - FLEET_SIZE=5
       - FLEET_OVERLAP=2
       # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
@@ -401,7 +409,11 @@ services:
       - MAX_SIZING_BALANCE=50000
       # Fleet staggering K=2: each signal → 2 of 5 bots (priority round-robin) so they don't all crater
       # together (corr 0.95→0.22, fleet DD 5x smaller) — 2026-06-16. FLEET_RANK is per-bot (below).
-      - ENABLE_FLEET_STAGGER=true
+      # DISABLED 2026-06-23: stagger decorrelated MULTIPLE live bots, but kody is the only live bot now
+      # (dennis -> paper). Splitting the pool just handed kody a random sub-slice of the edge (it drew the
+      # -$537 corner of a +$1,863 green fleet day while adam took the winners). Off = every bot evaluates
+      # EVERY signal concurrently; kody (FLEET_RANK=0) captures the full edge instead of a fraction.
+      - ENABLE_FLEET_STAGGER=false
       - FLEET_SIZE=5
       - FLEET_OVERLAP=2
       # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
@@ -510,7 +522,11 @@ services:
       - MAX_SIZING_BALANCE=50000
       # Fleet staggering K=2: each signal → 2 of 5 bots (priority round-robin) so they don't all crater
       # together (corr 0.95→0.22, fleet DD 5x smaller) — 2026-06-16. FLEET_RANK is per-bot (below).
-      - ENABLE_FLEET_STAGGER=true
+      # DISABLED 2026-06-23: stagger decorrelated MULTIPLE live bots, but kody is the only live bot now
+      # (dennis -> paper). Splitting the pool just handed kody a random sub-slice of the edge (it drew the
+      # -$537 corner of a +$1,863 green fleet day while adam took the winners). Off = every bot evaluates
+      # EVERY signal concurrently; kody (FLEET_RANK=0) captures the full edge instead of a fraction.
+      - ENABLE_FLEET_STAGGER=false
       - FLEET_SIZE=5
       - FLEET_OVERLAP=2
       # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
@@ -602,7 +618,11 @@ services:
       - MAX_SIZING_BALANCE=50000
       # Fleet staggering K=2: each signal → 2 of 5 bots (priority round-robin) so they don't all crater
       # together (corr 0.95→0.22, fleet DD 5x smaller) — 2026-06-16. FLEET_RANK is per-bot (below).
-      - ENABLE_FLEET_STAGGER=true
+      # DISABLED 2026-06-23: stagger decorrelated MULTIPLE live bots, but kody is the only live bot now
+      # (dennis -> paper). Splitting the pool just handed kody a random sub-slice of the edge (it drew the
+      # -$537 corner of a +$1,863 green fleet day while adam took the winners). Off = every bot evaluates
+      # EVERY signal concurrently; kody (FLEET_RANK=0) captures the full edge instead of a fraction.
+      - ENABLE_FLEET_STAGGER=false
       - FLEET_SIZE=5
       - FLEET_OVERLAP=2
       # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
