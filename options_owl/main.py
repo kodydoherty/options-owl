@@ -176,16 +176,28 @@ def check_polygon_realtime_entitlement(settings: Settings) -> None:
         except Exception:
             msg = str(e)
         if not settings.PAPER_TRADE:
+            # Per-bot Polygon keys (e.g. adam's) may not be authorized for the options-snapshot endpoint,
+            # but the bots TRADE OFF THE HARVESTER's feed (Redis/PG), not their own key. If the harvester
+            # feed is live, this key's authorization is irrelevant — continue. Only abort if BOTH are dead.
+            if _harvester_feed_fresh():
+                logger.warning(
+                    f"Polygon snapshot unauthorized for THIS key (HTTP {e.code}: {msg}), but the harvester's "
+                    f"live feed is fresh — bots trade off harvester data, not this key. Continuing."
+                )
+                return
             logger.critical(
-                f"LIVE mode but Polygon snapshot unauthorized (HTTP {e.code}: {msg}) — "
-                f"aborting to prevent trading on stale/delayed quotes."
+                f"LIVE mode but Polygon snapshot unauthorized (HTTP {e.code}: {msg}) AND the harvester feed "
+                f"is also stale — aborting to prevent trading on stale/delayed quotes."
             )
             sys.exit(2)
         logger.warning(f"Polygon snapshot unauthorized (HTTP {e.code}: {msg}) — paper mode, continuing.")
         return
     except Exception as e:
         if not settings.PAPER_TRADE:
-            logger.critical(f"LIVE mode but Polygon self-test failed: {e} — aborting.")
+            if _harvester_feed_fresh():
+                logger.warning(f"Polygon self-test errored ({e}) but the harvester feed is fresh — continuing.")
+                return
+            logger.critical(f"LIVE mode but Polygon self-test failed: {e} AND harvester feed stale — aborting.")
             sys.exit(2)
         logger.warning(f"Polygon self-test error: {e} — paper mode, continuing.")
         return
