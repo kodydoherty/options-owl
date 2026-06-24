@@ -115,6 +115,9 @@ services:
       # Data-freshness guard: halt NEW entries + alert if the harvester feed goes stale during market
       # hours (catches frozen-but-fresh-timestamp data). Sell path unaffected; fails OPEN on error.
       - ENABLE_DATA_FRESHNESS_GUARD=true
+      # Flat premium cap on FLOW CALLS — skip flow calls with entry premium > $9 (expensive flow calls
+      # are net losers; validated +$3.3k/64d, PF 1.40->1.50; blocks the LRCX-type −$445 tail). 2026-06-24.
+      - FLOW_CALL_MAX_PREMIUM=9.0
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
@@ -240,6 +243,9 @@ services:
       # Data-freshness guard: halt NEW entries + alert if the harvester feed goes stale during market
       # hours (catches frozen-but-fresh-timestamp data). Sell path unaffected; fails OPEN on error.
       - ENABLE_DATA_FRESHNESS_GUARD=true
+      # Flat premium cap on FLOW CALLS — skip flow calls with entry premium > $9 (expensive flow calls
+      # are net losers; validated +$3.3k/64d, PF 1.40->1.50; blocks the LRCX-type −$445 tail). 2026-06-24.
+      - FLOW_CALL_MAX_PREMIUM=9.0
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
@@ -373,6 +379,9 @@ services:
       # Data-freshness guard: halt NEW entries + alert if the harvester feed goes stale during market
       # hours (catches frozen-but-fresh-timestamp data). Sell path unaffected; fails OPEN on error.
       - ENABLE_DATA_FRESHNESS_GUARD=true
+      # Flat premium cap on FLOW CALLS — skip flow calls with entry premium > $9 (expensive flow calls
+      # are net losers; validated +$3.3k/64d, PF 1.40->1.50; blocks the LRCX-type −$445 tail). 2026-06-24.
+      - FLOW_CALL_MAX_PREMIUM=9.0
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
@@ -486,6 +495,9 @@ services:
       # Data-freshness guard: halt NEW entries + alert if the harvester feed goes stale during market
       # hours (catches frozen-but-fresh-timestamp data). Sell path unaffected; fails OPEN on error.
       - ENABLE_DATA_FRESHNESS_GUARD=true
+      # Flat premium cap on FLOW CALLS — skip flow calls with entry premium > $9 (expensive flow calls
+      # are net losers; validated +$3.3k/64d, PF 1.40->1.50; blocks the LRCX-type −$445 tail). 2026-06-24.
+      - FLOW_CALL_MAX_PREMIUM=9.0
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
@@ -582,6 +594,9 @@ services:
       # Data-freshness guard: halt NEW entries + alert if the harvester feed goes stale during market
       # hours (catches frozen-but-fresh-timestamp data). Sell path unaffected; fails OPEN on error.
       - ENABLE_DATA_FRESHNESS_GUARD=true
+      # Flat premium cap on FLOW CALLS — skip flow calls with entry premium > $9 (expensive flow calls
+      # are net losers; validated +$3.3k/64d, PF 1.40->1.50; blocks the LRCX-type −$445 tail). 2026-06-24.
+      - FLOW_CALL_MAX_PREMIUM=9.0
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.

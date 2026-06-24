@@ -381,6 +381,9 @@ class Settings(BaseSettings):
     V6_PREMIUM_CAP: float = 6.0
     V6_PREMIUM_CAP_MID: float = 7.0    # score 120+
     V6_PREMIUM_CAP_HIGH: float = 9.0   # score 150+
+    # Flat premium cap on FLOW CALLS (0 = off). Expensive flow calls are net losers; $9 validated
+    # +$3.3k/64d (PF 1.40->1.50) and blocks the LRCX-type tail. Set per-bot in docker-compose.
+    FLOW_CALL_MAX_PREMIUM: float = 0.0
 
     # Spread-cost gate: reject entries where bid-ask spread > threshold % of premium
     ENABLE_V6_SPREAD_GATE: bool = False
