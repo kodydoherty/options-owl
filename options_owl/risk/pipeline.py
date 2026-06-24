@@ -630,12 +630,14 @@ class PremiumCapGate(EntryGate):
         # $9 cap added +$3.3k over 64d, PF 1.40->1.50, and blocks the LRCX-type −$445 single-trade tail).
         # Independent of the tiered V6 cap below (which stays disabled); calls only.
         flow_cap = getattr(settings, "FLOW_CALL_MAX_PREMIUM", 0.0)
-        is_call = getattr(signal.direction, "value", str(getattr(signal, "direction", ""))) == "call"
-        if flow_cap > 0 and is_call and _is_flow_sourced(signal) and premium > flow_cap:
-            return GateOutcome(
-                self.name, GateResult.FAIL,
-                f"Flow call premium ${premium:.2f} > ${flow_cap:.2f} flat cap",
-            )
+        if flow_cap > 0:
+            _dir = getattr(signal, "direction", None)
+            is_call = getattr(_dir, "value", _dir) == "call"
+            if is_call and _is_flow_sourced(signal) and premium > flow_cap:
+                return GateOutcome(
+                    self.name, GateResult.FAIL,
+                    f"Flow call premium ${premium:.2f} > ${flow_cap:.2f} flat cap",
+                )
 
         if not getattr(settings, "ENABLE_V6_PREMIUM_CAP", False):
             return GateOutcome(self.name, GateResult.SKIP, "V6 premium cap disabled")
