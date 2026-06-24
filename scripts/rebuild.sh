@@ -84,6 +84,17 @@ if [ "$KODY_PAPER" = "true" ] || [ "$KODY_KILL" = "true" ]; then
 fi
 echo "owlet-kody: PAPER_TRADE=$KODY_PAPER WEBULL_KILL_SWITCH=$KODY_KILL — OK"
 
+# adam is now a LIVE bot (margin) too — guard it the same way (wider -A: adam's PAPER_TRADE sits deeper).
+ADAM_PAPER=$(grep -A40 'owlet-adam:' "$LOCAL_DIR/docker-compose.yml" | grep 'PAPER_TRADE=' | head -1 | sed 's/.*PAPER_TRADE=//')
+ADAM_KILL=$(grep -A40 'owlet-adam:' "$LOCAL_DIR/docker-compose.yml" | grep 'WEBULL_KILL_SWITCH=' | head -1 | sed 's/.*WEBULL_KILL_SWITCH=//')
+if [ "$ADAM_PAPER" = "true" ] || [ "$ADAM_KILL" = "true" ]; then
+  echo ""
+  echo "DEPLOY BLOCKED: owlet-adam has PAPER_TRADE=$ADAM_PAPER WEBULL_KILL_SWITCH=$ADAM_KILL"
+  echo "adam is a LIVE bot (margin). This would switch it to paper. If intentional, edit then re-run."
+  exit 1
+fi
+echo "owlet-adam: PAPER_TRADE=$ADAM_PAPER WEBULL_KILL_SWITCH=$ADAM_KILL — OK (live, margin)"
+
 # Fleet model 2026-06-22: kody is the ONLY live bot; dennis is now PAPER. Guard the
 # new direction — block if dennis is accidentally flipped back to LIVE.
 DENNIS_PAPER=$(grep -A15 'owlet-dennis:' "$LOCAL_DIR/docker-compose.yml" | grep 'PAPER_TRADE=' | head -1 | sed 's/.*PAPER_TRADE=//')

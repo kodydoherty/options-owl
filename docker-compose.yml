@@ -361,14 +361,15 @@ services:
       - ENABLE_POLYGON_WS=false
       - WEBULL_APP_KEY=${ADAM_WEBULL_APP_KEY}
       - WEBULL_APP_SECRET=${ADAM_WEBULL_APP_SECRET}
-      - PAPER_TRADE=true
-      - WEBULL_KILL_SWITCH=true
+      # adam → LIVE on MARGIN 2026-06-23 (2nd live bot alongside kody). WEBULL_ACCOUNT_ID is unpinned, so
+      # MARGIN_ACCOUNT=true auto-detects adam's Individual MARGIN account; skips GFV → reinvest intraday.
+      - PAPER_TRADE=false
+      - WEBULL_KILL_SWITCH=false
       - EXIT_ENGINE=v5
-      # Account-type toggle. false = Individual CASH (current; GFV-limited intraday reinvest).
-      # true = Individual MARGIN: auto-detects the margin account (UNLESS WEBULL_ACCOUNT_ID is pinned —
-      # kody is, so update its ID too) + skips GFV so sale proceeds reinvest intraday. Sizes off net-liq
-      # (no extra leverage). PDT no longer a constraint. Flip per-bot when ready, then redeploy that bot.
-      - MARGIN_ACCOUNT=false
+      # Account-type toggle. false = Individual CASH; true = Individual MARGIN (auto-detect unless
+      # WEBULL_ACCOUNT_ID pinned) + skips GFV so sale proceeds reinvest intraday. Sizes off net-liq (no
+      # extra leverage). PDT no longer a constraint. Flip per-bot when ready, then redeploy that bot.
+      - MARGIN_ACCOUNT=true
       # Data-freshness guard: halt NEW entries + alert if the harvester feed goes stale during market
       # hours (catches frozen-but-fresh-timestamp data). Sell path unaffected; fails OPEN on error.
       - ENABLE_DATA_FRESHNESS_GUARD=true
