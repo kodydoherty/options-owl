@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     MAX_ENTRY_CHASE_PCT: float = 15.0  # max % above signal premium we'll chase on retries
     GFV_BUFFER_PCT: float = 15.0  # safety buffer on GFV limit (only allow 85% of start-of-day balance)
     MARGIN_ACCOUNT: bool = False  # margin accounts skip GFV protection (no unsettled fund concerns)
+    # PDT ($25k-minimum day-trade) guard for sub-$25k margin accounts. Default OFF — the PDT rule was
+    # lifted, so this obsolete guard was blocking ALL trades on adam's ~$5k margin account. Webull is the
+    # backstop if PDT ever returns (it would reject the orders and we'd re-enable this).
+    ENABLE_PDT_GUARD: bool = False
     PAPER_TRADE: bool = True
 
     # Emergency alerts — DM these Discord user IDs on critical events

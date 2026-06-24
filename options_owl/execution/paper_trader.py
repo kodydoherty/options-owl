@@ -1188,8 +1188,11 @@ class PaperTrader:
             # ── PDT compliance check (margin accounts only) ───────────────
             # Pattern Day Trader rule: need $25K equity at previous close.
             # If balance is below $25K, block ALL new trades to stay compliant.
+            # Gated behind ENABLE_PDT_GUARD (default OFF — PDT was lifted); when off, sub-$25k margin
+            # accounts (e.g. adam) day-trade freely. Webull is the backstop if PDT ever returns.
             PDT_MINIMUM = 25_000.0
-            if self.settings.MARGIN_ACCOUNT and not self.settings.PAPER_TRADE:
+            if (getattr(self.settings, "ENABLE_PDT_GUARD", False)
+                    and self.settings.MARGIN_ACCOUNT and not self.settings.PAPER_TRADE):
                 live_bal = await self._get_effective_balance()
                 if live_bal < PDT_MINIMUM:
                     logger.error(
