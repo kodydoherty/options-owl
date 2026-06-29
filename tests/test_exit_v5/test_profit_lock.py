@@ -68,12 +68,20 @@ class TestProfitLockFSM:
         assert a.should_exit and a.reason == ExitReason.PROFIT_LOCK
 
     def test_put_is_exempt(self):
-        """Same fade on a PUT must NOT trigger profit-lock (call-only)."""
+        """Same fade on a PUT must NOT trigger profit-lock by default (call-only)."""
         fsm = ExitFSM(_v7_cfg(is_put=True), settings=_settings())
         st = _state("put", entry=1.0)
         fsm.evaluate(st, 2.0, 1.95, 2.05, _now(10, 10), current_underlying=99.0, minutes_to_close=120)
         a = fsm.evaluate(st, 1.5, 1.45, 1.55, _now(10, 12), current_underlying=99.5, minutes_to_close=120)
         assert a.reason != ExitReason.PROFIT_LOCK
+
+    def test_put_locks_when_opted_in(self):
+        """V7_PROFIT_LOCK_PUTS=True opts PUTs into profit-lock (the 2026-06-29 canary)."""
+        fsm = ExitFSM(_v7_cfg(is_put=True), settings=_settings(V7_PROFIT_LOCK_PUTS=True))
+        st = _state("put", entry=1.0)
+        fsm.evaluate(st, 2.0, 1.95, 2.05, _now(10, 10), current_underlying=99.0, minutes_to_close=120)
+        a = fsm.evaluate(st, 1.5, 1.45, 1.55, _now(10, 12), current_underlying=99.5, minutes_to_close=120)
+        assert a.should_exit and a.reason == ExitReason.PROFIT_LOCK
 
     def test_disabled_flag_no_lock(self):
         fsm = ExitFSM(_v7_cfg(), settings=_settings(ENABLE_V7_PROFIT_LOCK=False))

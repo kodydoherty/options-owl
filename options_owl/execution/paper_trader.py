@@ -639,11 +639,21 @@ async def _verify_live_premium(
                     f"+{buffer_pct}% buffer → ${buffered:.2f} "
                     f"(bid=${bid:.2f}, mid=${mid:.2f}, exp={used_expiry})"
                 )
-            elif mid > 0:
+            elif mid > 0 and (bid > 0 or ask > 0):
                 live_premium = mid
                 logger.info(
                     f"[SmartEntry] {signal.ticker}: no ask available, "
                     f"using mid=${mid:.2f} (exp={used_expiry})"
+                )
+            elif mid > 0:
+                # SOURCE GUARD (2026-06-26): a mid with NO two-sided market (bid==0 AND
+                # ask==0) is a stale aggregate / prev-close (e.g. QQQ $8.61), not a real
+                # quote. Never anchor the entry basis to it — fall through to the next
+                # source / signal premium. (The FSM also re-anchors to the actual fill,
+                # but keep the recorded entry clean from the start.)
+                logger.warning(
+                    f"[SmartEntry] {signal.ticker}: mid=${mid:.2f} has EMPTY NBBO "
+                    f"(bid=0 ask=0) — not a real quote, skipping this source"
                 )
 
     # Slow fallback: yfinance option chain (sync, can take 30s+)

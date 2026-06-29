@@ -118,6 +118,7 @@ services:
       # Flat premium cap on FLOW CALLS — skip flow calls with entry premium > $9 (expensive flow calls
       # are net losers; validated +$3.3k/64d, PF 1.40->1.50; blocks the LRCX-type −$445 tail). 2026-06-24.
       - FLOW_CALL_MAX_PREMIUM=9.0
+      - FLOW_PUT_MAX_PREMIUM=9.0
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
@@ -246,6 +247,7 @@ services:
       # Flat premium cap on FLOW CALLS — skip flow calls with entry premium > $9 (expensive flow calls
       # are net losers; validated +$3.3k/64d, PF 1.40->1.50; blocks the LRCX-type −$445 tail). 2026-06-24.
       - FLOW_CALL_MAX_PREMIUM=9.0
+      - FLOW_PUT_MAX_PREMIUM=9.0
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
@@ -382,6 +384,7 @@ services:
       # Flat premium cap on FLOW CALLS — skip flow calls with entry premium > $9 (expensive flow calls
       # are net losers; validated +$3.3k/64d, PF 1.40->1.50; blocks the LRCX-type −$445 tail). 2026-06-24.
       - FLOW_CALL_MAX_PREMIUM=9.0
+      - FLOW_PUT_MAX_PREMIUM=9.0
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
@@ -450,6 +453,9 @@ services:
       - ./journal/owlet-adam:/app/journal
       - ./journal/models:/app/journal/models:ro
 
+  # TIGHT-LOCK PAPER CANARY (vinny, 2026-06-29) — "lock the win, don't bleed it back".
+  # Keep 80% of peak (not 60%), arm at +25% (not +30%), and apply profit-lock to PUTs too.
+  # Paper only — observe vs the other bots before any live change.
   owlet-vinny:
     <<: *bot-common
     container_name: owlet-vinny
@@ -498,6 +504,7 @@ services:
       # Flat premium cap on FLOW CALLS — skip flow calls with entry premium > $9 (expensive flow calls
       # are net losers; validated +$3.3k/64d, PF 1.40->1.50; blocks the LRCX-type −$445 tail). 2026-06-24.
       - FLOW_CALL_MAX_PREMIUM=9.0
+      - FLOW_PUT_MAX_PREMIUM=9.0
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
@@ -526,6 +533,9 @@ services:
       - ENABLE_ANTIMARTINGALE_ADD=false
       - ANTIMG_CALL_LEVELS=30,80,150
       # CALL-only profit-lock (keep 60% of peak gain once +30%) — the runner-capture win, stays ON.
+      - V7_PROFIT_LOCK_KEEP_FRAC=0.8
+      - V7_PROFIT_LOCK_ACTIVATE_PCT=25
+      - V7_PROFIT_LOCK_PUTS=true
       - ENABLE_V7_PROFIT_LOCK=true
       # 0DTE premium hard-stop -25%: cut a 0DTE contract down 25% from entry regardless of underlying
       # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
@@ -597,6 +607,7 @@ services:
       # Flat premium cap on FLOW CALLS — skip flow calls with entry premium > $9 (expensive flow calls
       # are net losers; validated +$3.3k/64d, PF 1.40->1.50; blocks the LRCX-type −$445 tail). 2026-06-24.
       - FLOW_CALL_MAX_PREMIUM=9.0
+      - FLOW_PUT_MAX_PREMIUM=9.0
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.

@@ -43,6 +43,7 @@ _REASON_MAP = {
     ExitReason.PROFIT_TARGET: "profit_target",
     ExitReason.BREAKEVEN_RATCHET: "breakeven_ratchet",
     ExitReason.PROFIT_LOCK: "profit_lock",
+    ExitReason.PROFIT_STEP_LOCK: "profit_step_lock",
     ExitReason.PREMIUM_HARDSTOP: "premium_hardstop",
     ExitReason.SCALEOUT: "scaleout_20",
     ExitReason.SIDEWAYS_SCALP: "sideways_scalp",
@@ -89,6 +90,13 @@ class V5MonitorBridge:
         """Get existing TradeState or create one from a DB trade dict."""
         trade_id = trade["id"]
         if trade_id in self._states:
+            # PRIMARY FIX (2026-06-26): the FSM state is frequently created in the
+            # monitor cycle BEFORE the Webull fill reconciles back to the DB (~3s
+            # later), so it caches the pre-fill quote — which can be ~2x off the real
+            # fill (e.g. adam QQQ #334: cached $1.25 vs fill $2.68 → real +49% peak
+            # dumped at +3.7%). Once the true fill is known, re-anchor the cached entry
+            # to it so gain%/trail/profit-lock are computed on the real basis.
+            self._reconcile_entry_to_fill(self._states[trade_id], trade, now_et)
             return self._states[trade_id]
 
         # Parse entry time — DB stores UTC, monitor passes ET
@@ -195,6 +203,48 @@ class V5MonitorBridge:
         )
         return state
 
+    def _reconcile_entry_to_fill(
+        self, state: TradeState, trade: dict, now_et: datetime,
+    ) -> None:
+        """Re-anchor a cached entry basis to the ACTUAL Webull fill once it's known.
+
+        The state is often created before the fill reconciles to the DB, caching the
+        pre-fill quote. This corrects it to ground truth (the fill) on a later cycle.
+        Guards: only within the first EARLY_RECONCILE_SEC of entry (the fill lands within
+        seconds — re-anchoring a trade that has been running risks disrupting an armed
+        ratchet/peak), never on a DCA'd trade (the blended average is correct), and only
+        on a material mismatch.
+        """
+        EARLY_RECONCILE_SEC = 180.0
+        try:
+            fill = trade.get("webull_entry_fill_price") or 0.0
+            if fill <= 0:
+                return  # no fill price yet (or paper) — the evaluate() fallback covers extremes
+            if bool(trade.get("dca_last_add_at")) or (trade.get("dca_total_contracts") or 0):
+                return  # blended average is correct for DCA — don't clobber
+            if abs(state.entry_premium - fill) <= max(0.02, 0.02 * fill):
+                return  # already aligned
+            # Only re-anchor early — the fill reconciles within seconds of open.
+            if state.entry_time is not None:
+                ref = now_et.replace(tzinfo=None) if getattr(now_et, "tzinfo", None) else now_et
+                try:
+                    elapsed = (ref - state.entry_time).total_seconds()
+                    if elapsed > EARLY_RECONCILE_SEC:
+                        return
+                except (TypeError, ValueError):
+                    pass
+            old = state.entry_premium
+            state.entry_premium = fill
+            if state.peak_premium < fill:
+                state.peak_premium = fill
+            logger.warning(
+                f"EXIT_FSM: #{state.trade_id} {state.ticker} entry RE-ANCHORED "
+                f"${old:.2f} → ${fill:.2f} (actual Webull fill) — was tracking a phantom "
+                f"basis (pre-fill quote); gain%/trail/profit-lock now on the real cost basis"
+            )
+        except Exception as exc:
+            logger.debug(f"_reconcile_entry_to_fill #{trade.get('id')}: {exc}")
+
     def _get_fsm(self, ticker: str, option_type: str = "call") -> ExitFSM:
         """Get the FSM for a ticker+direction, using per-ticker config if V6 enabled.
 
@@ -238,6 +288,33 @@ class V5MonitorBridge:
         reason=None means HOLD.
         """
         state = self.get_or_create_state(trade, now_et)
+
+        # FALLBACK ENTRY-BASIS BACKSTOP (2026-06-26) — "never again" net. A freshly
+        # opened option cannot be INSTANTLY up ~70%+ vs its true fill; if it appears to
+        # be, the cached entry is a phantom (pre-fill/garbage quote) the primary fill
+        # reconcile didn't catch (paper bot, missing fill price, or a future cause).
+        # Re-anchor entry to the live premium (≈ what we actually paid). One-shot, early
+        # only, conservative threshold so it never clobbers a real gamma move.
+        if not state.entry_anchor_checked and state.entry_premium > 0 and exit_premium > 0:
+            state.entry_anchor_checked = True
+            instant_dev = (exit_premium - state.entry_premium) / state.entry_premium
+            elapsed_ok = True
+            if state.entry_time is not None:
+                ref = now_et.replace(tzinfo=None) if getattr(now_et, "tzinfo", None) else now_et
+                try:
+                    elapsed_ok = (ref - state.entry_time).total_seconds() <= 60.0
+                except (TypeError, ValueError):
+                    elapsed_ok = True
+            if elapsed_ok and abs(instant_dev) >= 0.70:
+                old = state.entry_premium
+                state.entry_premium = exit_premium
+                if state.peak_premium < exit_premium:
+                    state.peak_premium = exit_premium
+                logger.warning(
+                    f"EXIT_FSM: #{state.trade_id} {state.ticker} entry BACKSTOP RE-ANCHORED "
+                    f"${old:.2f} → ${exit_premium:.2f} (live premium) — a just-opened trade "
+                    f"can't be instantly {instant_dev * 100:+.0f}%; cached entry was a phantom"
+                )
 
         # Sync contracts from DB (may have changed via partial close)
         db_contracts = trade.get("contracts", 1)

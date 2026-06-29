@@ -882,34 +882,48 @@ class WebullExecutor:
             WEBULL_ENTRY_FILL_ATTEMPTS  (default 3)
             WEBULL_ENTRY_MAX_CHASE_PCT  (default 15.0)
         """
-        max_attempts = int(getattr(self.settings, "WEBULL_ENTRY_FILL_ATTEMPTS", 3) or 3)
+        max_attempts = int(getattr(self.settings, "WEBULL_ENTRY_FILL_ATTEMPTS", 4) or 4)
         max_attempts = max(1, max_attempts)
         max_chase_pct = float(getattr(self.settings, "WEBULL_ENTRY_MAX_CHASE_PCT", 15.0) or 15.0)
-        aggress_pct = float(getattr(self.settings, "WEBULL_ENTRY_AGGRESS_PCT", 5.0) or 5.0)
+        # Index 0DTE (SPY/QQQ/...) crosses harder on rung 1 — penny-wide spreads make the bigger
+        # cross cheap, and the fast index tape punishes a passive limit (the 2026-06-25 misses).
+        try:
+            from options_owl.risk.exit_v5.config import INDEX_TICKERS
+            is_index = ticker.upper() in INDEX_TICKERS
+        except Exception:
+            is_index = False
+        if is_index:
+            aggress_pct = float(getattr(self.settings, "WEBULL_ENTRY_INDEX_AGGRESS_PCT", 10.0) or 10.0)
+        else:
+            aggress_pct = float(getattr(self.settings, "WEBULL_ENTRY_AGGRESS_PCT", 5.0) or 5.0)
 
-        # Per-attempt wait — short, mirroring the sell ladder's cadence.
-        per_attempt_timeout = 12.0
-        poll_interval = 3.0
+        # Faster cadence than the old hardcoded 12s/3s: a fast 0DTE premium runs away before a
+        # 12s rung times out, so we re-price every few seconds instead.
+        per_attempt_timeout = float(getattr(self.settings, "WEBULL_ENTRY_PER_ATTEMPT_SEC", 4.0) or 4.0)
+        poll_interval = float(getattr(self.settings, "WEBULL_ENTRY_POLL_SEC", 1.0) or 1.0)
+        use_live_quote = bool(getattr(self.settings, "WEBULL_ENTRY_USE_LIVE_QUOTE", True))
 
-        # Derive the reference ask from the caller's aggressive limit so the
-        # ceiling is anchored to the real ask even when we can't fetch a quote.
+        # Fallback reference ask derived from the caller's aggressive limit so the ceiling is
+        # anchored even when no live quote is available.
         base_ask = initial_limit / (1 + aggress_pct / 100) if aggress_pct else initial_limit
         last_result: OrderResult | None = None
         last_client_id: str | None = None
 
         for attempt in range(max_attempts):
-            # Determine the ask for this attempt: re-fetch a fresh quote so we
-            # chase the CURRENT ask, not a stale one. Fall back to base_ask.
+            # Price EVERY rung (including rung 0) off the freshest available ask — harvester live
+            # Redis quote first, HTTP fallback — so the limit isn't stale by the time the order
+            # rests (the root cause of the choppy-tape misses). Only when no live quote is
+            # available do we fall back to the back-derived base_ask.
             ask = base_ask
-            if attempt > 0:
+            if use_live_quote or attempt > 0:
                 fresh = await self._fetch_ask(ticker, strike, expiry_date, option_type)
                 if fresh and fresh > 0:
                     ask = fresh
                     base_ask = fresh  # keep ceiling tied to the latest ask
 
-            # Step ladder: 5% over ask on attempt 1, +5%/attempt thereafter,
-            # capped at the configured max chase percentage.
-            step_pct = min((attempt + 1) * 5.0, max_chase_pct)
+            # Step ladder: aggress_pct over the ask on rung 1 (index starts higher), +5%/rung
+            # thereafter, capped at the configured max chase percentage.
+            step_pct = min(aggress_pct + attempt * 5.0, max_chase_pct)
             ceiling = round(base_ask * (1 + max_chase_pct / 100), 2)
             limit = round(ask * (1 + step_pct / 100), 2)
             if limit > ceiling:
@@ -1086,7 +1100,33 @@ class WebullExecutor:
     async def _fetch_ask(
         self, ticker: str, strike: float, expiry_date: str, option_type: str,
     ) -> float | None:
-        """Best-effort fresh ask for an option (used to chase the current ask)."""
+        """Freshest available ask for an option, used to chase the current ask.
+
+        Prefers the harvester's live Redis snapshot (sub-second, off the API path) and
+        falls back to the HTTP quote. Pricing the chase off a FRESH quote — rather than one
+        that's stale by the time the order rests — is what keeps the limit marketable in a
+        fast 0DTE tape (the 2026-06-25 not-filled fix). The Redis read is freshness-guarded
+        so a stale snapshot can never make the limit worse than the HTTP path.
+        """
+        # 1) Harvester live Redis snapshot (preferred — fresh, no API round-trip)
+        if getattr(self.settings, "WEBULL_ENTRY_USE_LIVE_QUOTE", True):
+            try:
+                import time
+
+                from options_owl.db import redis_client
+
+                max_age = float(getattr(self.settings, "WEBULL_ENTRY_QUOTE_MAX_AGE_SEC", 20.0) or 20.0)
+                contract_key = f"{ticker.upper()}:{option_type.lower()}:{float(strike)}:{expiry_date}"
+                snap = await redis_client.get_option_snapshot(contract_key)
+                if snap:
+                    ask = float(snap.get("ask") or 0)
+                    ts = float(snap.get("t") or 0)
+                    if ask > 0 and (ts <= 0 or time.time() - ts <= max_age):
+                        return ask
+            except Exception as exc:
+                logger.debug(f"_fetch_ask redis miss for {ticker} ${strike} {option_type}: {exc}")
+
+        # 2) HTTP quote fallback
         try:
             quote = await self.get_option_quote(ticker, strike, expiry_date, option_type)
         except Exception as exc:

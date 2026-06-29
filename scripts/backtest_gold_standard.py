@@ -3268,7 +3268,11 @@ def main():
     parser.add_argument("--entry-threshold", type=float, default=0.80, help="Entry timing threshold")
     parser.add_argument("--no-entry-filter", action="store_true", help="Disable entry timing filter")
     parser.add_argument("--no-regime", action="store_true", help="Disable regime daily filter")
-    parser.add_argument("--regime-threshold", type=float, default=0.19, help="Regime filter threshold (default: 0.19, prod DEFAULT_REGIME_THRESHOLD)")
+    parser.add_argument("--regime-threshold", type=float, default=0.02,
+                        help="Regime filter threshold. Default 0.02 = the PROD LIVE value "
+                             "(ML_REGIME_THRESHOLD set in the droplet .env). The code constant "
+                             "DEFAULT_REGIME_THRESHOLD=0.19 is NOT what prod runs — using it "
+                             "filtered ~87%% of trading days and silently starved every backtest.")
     parser.add_argument("--include-losers", action="store_true", help="Include excluded tickers")
     parser.add_argument("--sweep", action="store_true", help="Sweep entry thresholds")
     parser.add_argument("--start", type=str, help="Override start date")

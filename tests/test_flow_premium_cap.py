@@ -37,8 +37,9 @@ def _sig(direction, premium, source, ticker="LRCX"):
     )
 
 
-async def _run(sig, cap=9.0):
-    st = SimpleNamespace(FLOW_CALL_MAX_PREMIUM=cap, ENABLE_V6_PREMIUM_CAP=False)
+async def _run(sig, cap=9.0, put_cap=0.0):
+    st = SimpleNamespace(FLOW_CALL_MAX_PREMIUM=cap, FLOW_PUT_MAX_PREMIUM=put_cap,
+                         ENABLE_V6_PREMIUM_CAP=False)
     return (await _gate().evaluate({"settings": st, "signal": sig})).result.name
 
 
@@ -61,8 +62,8 @@ async def test_ml_call_exempt():
 
 
 @pytest.mark.asyncio
-async def test_flow_put_exempt():
-    # Cap is calls-only — a flow PUT at $12.55 is NOT blocked.
+async def test_flow_put_not_blocked_by_call_cap():
+    # The CALL cap doesn't touch puts — a flow PUT at $12.55 passes when only the call cap is set.
     assert await _run(_sig(Direction.PUT, 12.55, BotSource.UW_FLOW)) == "SKIP"
 
 
@@ -70,3 +71,29 @@ async def test_flow_put_exempt():
 async def test_cap_off_allows_expensive_flow_call():
     # FLOW_CALL_MAX_PREMIUM=0 (default/off) → no flat cap, expensive flow call passes.
     assert await _run(_sig(Direction.CALL, 12.55, BotSource.UW_FLOW), cap=0.0) == "SKIP"
+
+
+# --- Symmetric flow PUT cap (FLOW_PUT_MAX_PREMIUM), 2026-06-26 — the MU $9.83 case ---
+
+@pytest.mark.asyncio
+async def test_flow_put_over_cap_blocked():
+    # MU-type case: flow put at $12.55 > $9 put cap → FAIL (blocked).
+    assert await _run(_sig(Direction.PUT, 12.55, BotSource.UW_FLOW), put_cap=9.0) == "FAIL"
+
+
+@pytest.mark.asyncio
+async def test_flow_put_under_cap_allowed():
+    # $8 flow put <= $9 → not failed by the put cap (SKIP, tiered cap disabled).
+    assert await _run(_sig(Direction.PUT, 8.00, BotSource.UW_FLOW), put_cap=9.0) == "SKIP"
+
+
+@pytest.mark.asyncio
+async def test_ml_put_exempt():
+    # Put cap is flow-only — an ML put at $12.55 is NOT blocked.
+    assert await _run(_sig(Direction.PUT, 12.55, BotSource.ML_SOURCING), put_cap=9.0) == "SKIP"
+
+
+@pytest.mark.asyncio
+async def test_flow_call_not_blocked_by_put_cap():
+    # The PUT cap doesn't touch calls — a flow CALL at $12.55 passes when only the put cap is set.
+    assert await _run(_sig(Direction.CALL, 12.55, BotSource.UW_FLOW), cap=0.0, put_cap=9.0) == "SKIP"

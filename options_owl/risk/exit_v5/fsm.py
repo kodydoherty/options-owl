@@ -43,6 +43,7 @@ from options_owl.risk.exit_v5.gates import (
     check_eod_cutoff,
     check_graduated_stop,
     check_profit_lock,
+    check_profit_step_lock,
     check_profit_target,
     check_scalp_target,
     check_scalp_trail,
@@ -104,6 +105,11 @@ class TradeState:
     breakeven_ratchet_armed: bool = False
     # V6: scale-out at +20% (one-shot, does not re-fire)
     scaled_out: bool = False
+    # Entry-basis sanity backstop (2026-06-26): one-shot check that the cached entry
+    # premium isn't a phantom (pre-fill quote). Set True once validated/re-anchored.
+    entry_anchor_checked: bool = False
+    # Stepping-tier profit lock: highest HARD floor gain% armed (monotonic). 0 = unarmed.
+    step_lock_floor_gain: float = 0.0
 
     # V6: early-pop tracking — records when peak premium was reached (minutes from entry)
     peak_elapsed_min: float = 0.0
@@ -339,15 +345,31 @@ class ExitFSM:
             if action:
                 return action
 
-        # V7 Gate 3.6: Profit-lock (CALL-only) — once peaked +N%, keep K% of the peak
-        # gain instead of riding the wide trail back to break-even. PUTs keep the V7
-        # wide trail (a tight give-back clips their slow-building crashes).
+        # V7 Gate 3.6: Profit-lock — once peaked +N%, keep K% of the peak gain instead of
+        # riding the wide trail back to break-even. CALL by default; PUTs opt in via
+        # V7_PROFIT_LOCK_PUTS (historically puts kept the wide trail to ride slow crashes,
+        # but the "lock the win, re-enter on a re-fire" thesis wants puts locked too —
+        # being paper-canaried 2026-06-29).
         if (self._settings and getattr(self._settings, "ENABLE_V7_PROFIT_LOCK", False)
-                and state.option_type == "call"):
+                and (state.option_type == "call"
+                     or getattr(self._settings, "V7_PROFIT_LOCK_PUTS", False))):
             action = check_profit_lock(
                 gain, peak_gain,
                 keep_frac=getattr(self._settings, "V7_PROFIT_LOCK_KEEP_FRAC", 0.6),
                 activate_pct=getattr(self._settings, "V7_PROFIT_LOCK_ACTIVATE_PCT", 30.0),
+                debug=debug,
+            )
+            if action:
+                return action
+
+        # Gate 3.65: Stepping-tier profit lock — ratchet a HARD floor up every N% of peak
+        # gain so a big winner can't round-trip to zero. Applies to CALLs AND PUTs (a
+        # coarse step floor banks profit on a reversal without clipping a climbing move).
+        if self._settings and getattr(self._settings, "ENABLE_PROFIT_STEP_LOCK", False):
+            action, state.step_lock_floor_gain = check_profit_step_lock(
+                gain, peak_gain,
+                step_pct=getattr(self._settings, "PROFIT_STEP_LOCK_PCT", 50.0),
+                current_floor=state.step_lock_floor_gain,
                 debug=debug,
             )
             if action:

@@ -1,6 +1,6 @@
 """Tests for Webull executor — safety rails, order validation, kill switch, quotes."""
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -514,3 +514,146 @@ class TestOptionPriceRounding:
     def test_case_insensitive_side(self):
         assert _round_option_price(3.22, "buy") == 3.25
         assert _round_option_price(3.22, "sell") == 3.20
+
+
+def _chase_settings(**overrides):
+    """Settings with the entry-chase knobs set to real numbers (MagicMock would
+    return mocks that break float())."""
+    defaults = {
+        "PAPER_TRADE": False,
+        "WEBULL_KILL_SWITCH": False,
+        "WEBULL_ENTRY_AGGRESS_PCT": 5.0,
+        "WEBULL_ENTRY_INDEX_AGGRESS_PCT": 10.0,
+        "WEBULL_ENTRY_FILL_ATTEMPTS": 4,
+        "WEBULL_ENTRY_MAX_CHASE_PCT": 15.0,
+        "WEBULL_ENTRY_PER_ATTEMPT_SEC": 4.0,
+        "WEBULL_ENTRY_POLL_SEC": 1.0,
+        "WEBULL_ENTRY_USE_LIVE_QUOTE": True,
+        "WEBULL_ENTRY_QUOTE_MAX_AGE_SEC": 20.0,
+    }
+    defaults.update(overrides)
+    return _make_settings(**defaults)
+
+
+class TestFetchAskLiveQuote:
+    """#3 — chase prices off the harvester's live Redis ask, freshness-guarded, HTTP fallback."""
+
+    @pytest.mark.asyncio
+    async def test_prefers_fresh_redis_over_http(self, monkeypatch):
+        import time
+
+        from options_owl.db import redis_client
+
+        executor = WebullExecutor(_chase_settings())
+
+        async def fresh(ck):
+            assert ck == "SPY:put:733.0:2026-06-25"  # key format the harvester uses
+            return {"ask": 2.50, "t": time.time()}
+
+        monkeypatch.setattr(redis_client, "get_option_snapshot", fresh)
+        executor.get_option_quote = AsyncMock(return_value={"ask": 9.99})  # must NOT be used
+        ask = await executor._fetch_ask("SPY", 733.0, "2026-06-25", "put")
+        assert ask == 2.50
+        executor.get_option_quote.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stale_redis_falls_back_to_http(self, monkeypatch):
+        import time
+
+        from options_owl.db import redis_client
+
+        executor = WebullExecutor(_chase_settings(WEBULL_ENTRY_QUOTE_MAX_AGE_SEC=20.0))
+
+        async def stale(ck):
+            return {"ask": 2.50, "t": time.time() - 100}  # 100s old > 20s guard
+
+        monkeypatch.setattr(redis_client, "get_option_snapshot", stale)
+        executor.get_option_quote = AsyncMock(return_value={"ask": 3.00})
+        ask = await executor._fetch_ask("SPY", 733.0, "2026-06-25", "put")
+        assert ask == 3.00  # stale snapshot rejected, HTTP used
+
+    @pytest.mark.asyncio
+    async def test_redis_miss_falls_back_to_http(self, monkeypatch):
+        from options_owl.db import redis_client
+
+        executor = WebullExecutor(_chase_settings())
+
+        async def miss(ck):
+            return None
+
+        monkeypatch.setattr(redis_client, "get_option_snapshot", miss)
+        executor.get_option_quote = AsyncMock(return_value={"ask": 3.00})
+        ask = await executor._fetch_ask("NVDA", 195.0, "2026-06-26", "put")
+        assert ask == 3.00
+
+    @pytest.mark.asyncio
+    async def test_live_quote_disabled_skips_redis(self, monkeypatch):
+        from options_owl.db import redis_client
+
+        executor = WebullExecutor(_chase_settings(WEBULL_ENTRY_USE_LIVE_QUOTE=False))
+        called = {"redis": False}
+
+        async def snap(ck):
+            called["redis"] = True
+            return {"ask": 2.50}
+
+        monkeypatch.setattr(redis_client, "get_option_snapshot", snap)
+        executor.get_option_quote = AsyncMock(return_value={"ask": 3.00})
+        ask = await executor._fetch_ask("SPY", 733.0, "2026-06-25", "put")
+        assert ask == 3.00
+        assert called["redis"] is False  # Redis path skipped when flag off
+
+
+class TestEntryChaseAggression:
+    """#1 + #2 — faster cadence + index 0DTE crosses harder on rung 1."""
+
+    async def _capture_first_rung_limit(self, executor, ticker):
+        captured = {}
+
+        async def fake_submit(payload):
+            captured["limit"] = float(payload[0]["limit_price"])
+            return ("ORDER1", {}, None)
+
+        executor._fetch_ask = AsyncMock(return_value=1.00)  # clean ask
+        executor._submit_order_payload = fake_submit
+        executor._wait_for_fill = AsyncMock(return_value="FILLED")  # fill on rung 1
+        res = await executor._place_buy_with_escalation(
+            ticker=ticker, strike=733.0, expiry_date="2026-06-25",
+            option_type="put", contracts=1, initial_limit=1.05,
+        )
+        assert res.fill_status == "FILLED"
+        return captured["limit"]
+
+    @pytest.mark.asyncio
+    async def test_index_crosses_harder_on_rung_1(self):
+        executor = WebullExecutor(_chase_settings())
+        limit = await self._capture_first_rung_limit(executor, "SPY")
+        assert limit == 1.10  # ask 1.00 × (1 + 10% index aggress)
+
+    @pytest.mark.asyncio
+    async def test_standard_ticker_uses_base_aggress(self):
+        executor = WebullExecutor(_chase_settings())
+        limit = await self._capture_first_rung_limit(executor, "NVDA")
+        assert limit == 1.05  # ask 1.00 × (1 + 5% base aggress)
+
+    @pytest.mark.asyncio
+    async def test_cadence_read_from_settings(self):
+        """Per-rung timeout + poll come from settings (faster than the old 12s/3s)."""
+        executor = WebullExecutor(_chase_settings(WEBULL_ENTRY_PER_ATTEMPT_SEC=4.0,
+                                                  WEBULL_ENTRY_POLL_SEC=1.0))
+        seen = {}
+
+        async def fake_wait(coid, timeout_seconds, poll_interval):
+            seen["timeout"] = timeout_seconds
+            seen["poll"] = poll_interval
+            return "FILLED"
+
+        executor._fetch_ask = AsyncMock(return_value=1.00)
+        executor._submit_order_payload = AsyncMock(return_value=("ORDER1", {}, None))
+        executor._wait_for_fill = fake_wait
+        await executor._place_buy_with_escalation(
+            ticker="SPY", strike=733.0, expiry_date="2026-06-25",
+            option_type="put", contracts=1, initial_limit=1.05,
+        )
+        assert seen["timeout"] == 4.0
+        assert seen["poll"] == 1.0

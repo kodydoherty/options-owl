@@ -18,6 +18,14 @@ class Settings(BaseSettings):
     WEBULL_ACCOUNT_ID: str = ""  # optional — auto-detects from API based on MARGIN_ACCOUNT setting
     WEBULL_KILL_SWITCH: bool = False  # emergency halt all orders
     WEBULL_ENTRY_AGGRESS_PCT: float = 5.0  # bump BUY limit price above ask to cross spread (0DTE spreads are wide)
+    # Entry-chase fill tuning (fix for the choppy-0DTE not-filled-after-12s misses, 2026-06-25).
+    WEBULL_ENTRY_INDEX_AGGRESS_PCT: float = 10.0  # index 0DTE (SPY/QQQ/etc): cross harder on rung 1 — penny-wide spreads, cheap to actually fill
+    WEBULL_ENTRY_FILL_ATTEMPTS: int = 4  # chase rungs per entry order (was getattr-default 3)
+    WEBULL_ENTRY_MAX_CHASE_PCT: float = 15.0  # ceiling: never pay more than this % over the ask
+    WEBULL_ENTRY_PER_ATTEMPT_SEC: float = 4.0  # per-rung fill wait — was hardcoded 12s, too slow for fast 0DTE chop
+    WEBULL_ENTRY_POLL_SEC: float = 1.0  # fill-status poll cadence within a rung (was 3s)
+    WEBULL_ENTRY_USE_LIVE_QUOTE: bool = True  # price the chase off the harvester's live Redis ask (HTTP fallback) so the limit isn't stale by rest-time
+    WEBULL_ENTRY_QUOTE_MAX_AGE_SEC: float = 20.0  # reject a Redis snapshot older than this (falls back to HTTP) — a stale quote can never make the limit worse
     MAX_ENTRY_RETRIES: int = 3  # retry entry up to N times with fresh pricing (10s per attempt)
     MAX_ENTRY_CHASE_PCT: float = 15.0  # max % above signal premium we'll chase on retries
     GFV_BUFFER_PCT: float = 15.0  # safety buffer on GFV limit (only allow 85% of start-of-day balance)
@@ -251,6 +259,12 @@ class Settings(BaseSettings):
     CONF_LINEAR_REF_MAX: float = 0.95        # confidence mapped to BUDGET_MAX
     V7_PROFIT_LOCK_KEEP_FRAC: float = 0.6        # keep 60% of the peak gain
     V7_PROFIT_LOCK_ACTIVATE_PCT: float = 30.0    # only arms once peak gain >= +30%
+    V7_PROFIT_LOCK_PUTS: bool = False            # apply profit-lock to PUTs too (paper canary 2026-06-29)
+    # Stepping-tier profit lock (2026-06-26): ratchet a HARD floor up every N% of peak
+    # gain so a big winner can't round-trip to zero. Floor = (one step below the highest
+    # step reached), monotonic. Calls AND puts. Layered on the V7 trail / profit-lock.
+    ENABLE_PROFIT_STEP_LOCK: bool = False
+    PROFIT_STEP_LOCK_PCT: float = 50.0           # step size: lock a new floor every +50% of peak gain
     # Stage D: conviction-based bet sizing for UW flow trades (validated 2026-06-13 — same capital
     # reallocated by conviction beat flat +72% P&L, PF 1.36→1.64, lower DD). Sizes up clustered /
     # high-ask / (single-stock) big-premium sweeps; sizes down singles + index $1M+ hedges.
@@ -384,6 +398,7 @@ class Settings(BaseSettings):
     # Flat premium cap on FLOW CALLS (0 = off). Expensive flow calls are net losers; $9 validated
     # +$3.3k/64d (PF 1.40->1.50) and blocks the LRCX-type tail. Set per-bot in docker-compose.
     FLOW_CALL_MAX_PREMIUM: float = 0.0
+    FLOW_PUT_MAX_PREMIUM: float = 0.0   # symmetric put cap (2026-06-26); set 9.0 per-bot
 
     # Spread-cost gate: reject entries where bid-ask spread > threshold % of premium
     ENABLE_V6_SPREAD_GATE: bool = False

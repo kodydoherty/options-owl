@@ -26,6 +26,7 @@ class ExitReason(Enum):
     PROFIT_TARGET = "profit_target"
     BREAKEVEN_RATCHET = "breakeven_ratchet"
     PROFIT_LOCK = "profit_lock"
+    PROFIT_STEP_LOCK = "profit_step_lock"
     PREMIUM_HARDSTOP = "premium_hardstop"
     SCALEOUT = "scaleout"
     SIDEWAYS_SCALP = "sideways_scalp"

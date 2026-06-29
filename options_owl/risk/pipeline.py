@@ -639,6 +639,19 @@ class PremiumCapGate(EntryGate):
                     f"Flow call premium ${premium:.2f} > ${flow_cap:.2f} flat cap",
                 )
 
+        # Symmetric PUT cap (2026-06-26): expensive flow PUTs (high premium = ITM/high-delta,
+        # less convex) are net losers — validated −$2,378 @ >$9 over the flow window; the live
+        # case is the MU $9.83 put (−$303). Independent of the tiered V6 cap below.
+        flow_put_cap = getattr(settings, "FLOW_PUT_MAX_PREMIUM", 0.0)
+        if flow_put_cap > 0:
+            _dir = getattr(signal, "direction", None)
+            is_put = getattr(_dir, "value", _dir) == "put"
+            if is_put and _is_flow_sourced(signal) and premium > flow_put_cap:
+                return GateOutcome(
+                    self.name, GateResult.FAIL,
+                    f"Flow put premium ${premium:.2f} > ${flow_put_cap:.2f} flat cap",
+                )
+
         if not getattr(settings, "ENABLE_V6_PREMIUM_CAP", False):
             return GateOutcome(self.name, GateResult.SKIP, "V6 premium cap disabled")
 

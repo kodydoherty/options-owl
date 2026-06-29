@@ -321,6 +321,44 @@ def check_profit_lock(
     return None
 
 
+def check_profit_step_lock(
+    gain: float,
+    peak_gain: float,
+    step_pct: float,
+    current_floor: float,
+    debug: dict,
+) -> tuple[ExitAction | None, float]:
+    """Stepping-tier profit ratchet: every ``step_pct`` % of peak gain, lock in a HARD
+    minimum floor one full step below the highest step the peak has reached. The floor
+    is MONOTONIC — it only ratchets up, never down — so a big winner can't round-trip.
+
+    e.g. step_pct=50: peak +120% → highest step +100% → floor +50%; peak +300% → floor
+    +250%. A +300% peak can no longer give all the way back to zero. The first active
+    floor arms at peak ≥ 2×step (peak +50–99% → floor 0 = inert; the break-even ratchet
+    covers that band).
+
+    Applies to CALLs AND PUTs: a coarse step floor only triggers on a real reversal back
+    below a banked milestone, so it locks profit without clipping a still-climbing move
+    (the premium stays above the floor while the move continues; the floor just ratchets
+    up under it). Layered on top of the V7 trail / profit-lock — first gate to fire wins.
+
+    Returns (action_or_None, new_floor). Caller persists new_floor on TradeState.
+    """
+    if step_pct <= 0 or peak_gain < step_pct:
+        return None, current_floor
+    steps_reached = int(peak_gain // step_pct)
+    locked_floor = max(0.0, (steps_reached - 1) * step_pct)
+    new_floor = max(current_floor, locked_floor)
+    if new_floor > 0 and gain < new_floor:
+        return _exit(
+            ExitReason.PROFIT_STEP_LOCK,
+            f"Step-lock: peak +{peak_gain:.0f}% → locked +{new_floor:.0f}% floor "
+            f"(every {step_pct:.0f}%), now +{gain:.0f}% < floor",
+            debug=debug,
+        ), new_floor
+    return None, new_floor
+
+
 def check_scaleout(
     gain: float,
     contracts: int,

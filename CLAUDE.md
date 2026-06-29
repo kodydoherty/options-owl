@@ -2,6 +2,29 @@
 
 0DTE options trading system: Discord signal collector → signal parser/scorer → risk pipeline → Webull executor.
 
+> **Fleet state (2026-06-25):** 5 trading bots run **identical** code + strategy; only `PAPER_TRADE`/account/size
+> differ. **LIVE money = kody (cash) + adam (margin).** dennis/vinny/yank = paper shadows. Harvester is the sole
+> Polygon-WS + UW-flow-WS holder; bots read from Redis/PG.
+
+## Table of Contents
+
+1. [Quick Reference](#quick-reference) — command cheatsheet (deploy, logs, P&L, trade investigation)
+2. [Production Architecture](#production-architecture) — agents, data flow, databases, logging, audit table
+3. [Current Strategy: V7 + UW Flow](#v7--uw-flow-system-deployed-2026-06-14--current-state) — what's deployed + why
+4. [Flag & Settings Reference](#flag-reference-all-in-settingspy--docker-compose-env) — every env flag, default, live state
+5. [Position-Sizing Stack](#position-sizing-stack-2026-06-22--runner_v1--conf_linear-now-live) — the multiplier chain
+6. [Code Structure](#code-structure) — module map
+7. [Trade Lifecycle (Entry Path)](#trade-lifecycle-entry-path) — signal → fill, 10 steps
+8. [V5/V6/V7 Exit Engine](#v5-exit-engine-exit_enginev5--category-aware-fsm) — FSM gates, tiers, DTE awareness
+9. [PUT Trading](#put-trading--dedicated-ml-model--call-style-trailing) — separate model + no-ceiling trail
+10. [Key Settings (.env)](#key-settings-env) — critical settings + per-bot overrides
+11. [⚑ Operational Runbooks](#operational-runbooks) — symptom → diagnosis → fix (START HERE for incidents)
+12. [Deploying Changes](#deploying-changes) — the rebuild.sh pipeline + /deploy skill
+13. [Key Decisions](#key-decisions-why-things-are-the-way-they-are) — why things are the way they are
+14. [Known Issues & Historical Bugs](#known-issues--historical-bugs) — dated changelog of fixes
+15. [Code Change Safety Rules](#code-change-safety-rules) — MANDATORY before editing the order/monitor path
+16. [Automated Monitoring (Babysitter)](#automated-monitoring-babysitter) — the droplet watchdog
+
 ## Quick Reference
 
 ```bash
@@ -57,9 +80,11 @@ python scripts/trade-pnl.py --droplet --detail       # verbose per-trade breakdo
 | `owlet-darkpool-shadow` | UW darkpool forward-collector → journal/darkpool/darkpool.db (B3 research) | N/A | — |
 
 **ALL 5 trading bots run identical code + strategy config — only `PAPER_TRADE`/`PORTFOLIO_SIZE`/creds differ.**
-**Live money = kody ONLY** (dennis moved to paper 2026-06-22 — fleet is now 1 live + 4 paper shadows; this
-also retired dennis's expired-Webull-token problem). `.env` holds shared config; `docker-compose.yml` overrides
-per-bot. The `rebuild.sh` Step 1c guard enforces this: kody must stay LIVE, dennis must stay PAPER.
+**Live money = kody (cash) + adam (margin, since 2026-06-25)** — fleet is **2 live + 3 paper shadows**
+(dennis/vinny/yank paper). dennis moved to paper 2026-06-22 (also retired its expired-Webull-token problem);
+adam went live + margin 2026-06-25 to compound/reinvest intraday. `.env` holds shared config;
+`docker-compose.yml` overrides per-bot. The `rebuild.sh` Step 1c guard enforces this: kody + adam must stay
+LIVE, dennis must stay PAPER.
 `owlet-flow-shadow` was **retired 2026-06-19** — the harvester is now the single UW flow WS holder (bots consume
 from Redis) which killed the multi-connection WS storm.
 
@@ -134,8 +159,8 @@ sqlite3 journal/owlet-kody/raw_messages.db "SELECT * FROM trade_events WHERE dat
 ## V7 + UW Flow System (deployed 2026-06-14) — CURRENT STATE
 
 This is the live strategy. Where it conflicts with older V5/V6-only text, **this wins.** All flag-gated;
-identical across all 5 bots (only PAPER_TRADE differs — **live: kody ONLY** since 2026-06-22; the other 4 are
-paper shadows running the identical config). See the **Position-sizing stack (2026-06-22)** subsection below for
+identical across all 5 bots (only PAPER_TRADE differs — **live: kody (cash) + adam (margin)** since 2026-06-25;
+dennis/vinny/yank are paper shadows running the identical config). See the **Position-sizing stack (2026-06-22)** subsection below for
 the current runner_v1 + conf_linear sizing layers.
 
 ### What changed vs V6
@@ -172,7 +197,7 @@ the current runner_v1 + conf_linear sizing layers.
 |---|---|---|
 | `ENABLE_V7_WIDE_TRAIL` | false | **true all bots** |
 | `ML_PATTERN_THRESHOLD` | 0.0 (=meta ~0.74) | **0.62 all bots** |
-| `ENABLE_UW_FLOW_SIGNAL` | false | **true all bots** (live kody, paper others) |
+| `ENABLE_UW_FLOW_SIGNAL` | false | **true all bots** (live kody+adam, paper others) |
 | `ENABLE_V7_CONVICTION_SIZING` | false | **true all bots** |
 | `MAX_POSITION_DOLLARS` | 50000 | active (no-op small accounts) |
 | `ENABLE_V7_RUNNER_TILT` | false | **OFF** — validate before enabling |
@@ -186,6 +211,14 @@ the current runner_v1 + conf_linear sizing layers.
 | `MARGIN_ACCOUNT` | false | **false all bots** — toggle to trade an Individual MARGIN account (skips GFV → reinvest intraday); see Margin subsection |
 | `ENABLE_REGIME_CALL_PUT_BUDGET` | false | **OFF — REJECTED** (6mo backtest loser; put ×2.0 amplification backfired) |
 | `ENABLE_V6_SIDEWAYS_SCALP` | false | **OFF — REJECTED** (6mo backtest loser; clips runners, fights wide-trail) |
+| `WEBULL_ENTRY_AGGRESS_PCT` | 5.0 | rung-1 cross over ask for standard tickers (see Entry-chase subsection) |
+| `WEBULL_ENTRY_INDEX_AGGRESS_PCT` | 10.0 | **rung-1 cross for INDEX 0DTE (SPY/QQQ/…)** — penny-wide spreads, cheap to fill |
+| `WEBULL_ENTRY_PER_ATTEMPT_SEC` | 4.0 | per-rung fill wait (was hardcoded 12s — too slow for fast 0DTE chop) |
+| `WEBULL_ENTRY_POLL_SEC` | 1.0 | fill-status poll cadence within a rung (was 3s) |
+| `WEBULL_ENTRY_FILL_ATTEMPTS` | 4 | chase rungs per entry order |
+| `WEBULL_ENTRY_MAX_CHASE_PCT` | 15.0 | ceiling: never pay more than this % over the ask |
+| `WEBULL_ENTRY_USE_LIVE_QUOTE` | true | **price the chase off the harvester's live Redis ask** (HTTP fallback) |
+| `WEBULL_ENTRY_QUOTE_MAX_AGE_SEC` | 20.0 | reject a Redis snapshot older than this → HTTP fallback (stale quote never hurts) |
 
 #### Position-sizing stack (2026-06-22) — runner_v1 + conf_linear now live
 The full sizing chain (in `vinny_strategy.score_to_contracts` + helpers, applied in `paper_trader`):
@@ -229,6 +262,26 @@ The entry-chase fallback produced illegal prices (e.g. 3.12 − 0.05 = 3.07). Fi
 now defensively snaps EVERY order's limit price to a legal increment (penny < $3, nickel ≥ $3) via
 `_round_option_price` — a single chokepoint so no caller path can ship an illegal step.
 
+#### Webull entry-chase fill fix (2026-06-25) — the choppy-SPY "not filled after 12s" misses
+On a whipsaw SPY day (9-pt range) ~18 entries logged `Order not filled after 12s (status=SUBMITTED)`,
+concentrated in SPY/SMCI. **Not** a freeze/429/auth issue. Root cause: `_place_buy_with_escalation` chased with a
+**hardcoded 12s-per-rung** wait and priced each rung off a quote **stale by the time the order rested** — a fast
+0DTE premium runs away in 12s, so the limit sat un-marketable and orphaned. (Orphans = MISSED entries = $0, not
+losses; they bite on TREND days where a missed SPY = a missed winner.) Three fixes, all env-configurable
+(`WEBULL_ENTRY_*`), defaults = prod values:
+1. **Faster cadence:** per-rung 12s→4s, poll 3s→1s, 4 rungs (16s coverage vs 36s of dead waiting).
+2. **Index decisive cross:** `WEBULL_ENTRY_INDEX_AGGRESS_PCT=10%` for `INDEX_TICKERS` (step ladder
+   `aggress_pct + attempt*5%`, capped at 15%) — penny-wide index spreads make the bigger cross cheap.
+3. **Fresh-quote chase:** `_fetch_ask` reads the harvester's **live Redis snapshot first** (HTTP fallback),
+   freshness-guarded (`WEBULL_ENTRY_QUOTE_MAX_AGE_SEC=20` — a stale snapshot can never make the limit worse).
+   No new WS connection (harvester stays the sole WS holder).
+
+⚠️ **Do NOT retry the "push fill events" SDK.** `webull-python-sdk-trade-events-core` pins `grpcio==1.51.1` →
+fails to build AND would downgrade our working `grpcio 1.69.0` / break the trade SDK on the LIVE money path. Order
+SUBMISSION is HTTP-only (no broker has WS order entry); fill DETECTION stays on the throttled HTTP poll, now at 1s.
+Tests: `tests/test_webull_executor.py` (TestFetchAskLiveQuote + TestEntryChaseAggression). Memory:
+`webull-entry-fill-fix-2026-06-25`.
+
 #### Margin-account toggle (`MARGIN_ACCOUNT`, default false)
 Wired per-bot in docker-compose (default `false` = current Individual CASH). Set `true` to trade an Individual
 MARGIN account: `_detect_account_id` selects the margin account (UNLESS `WEBULL_ACCOUNT_ID` is pinned — **kody is
@@ -259,7 +312,7 @@ After the first live anti-martingale adds (TSLA/AMZN/SPY), two things were settl
 
 ### Flow execution — first live session fixes (2026-06-15) — CURRENT
 The flow book was deployed 2026-06-14 but **never placed a single live trade** until 2026-06-15: a chain of
-gates silently rejected every flow signal. All fixed + live (kody/dennis live, others paper). The flow entry path
+gates silently rejected every flow signal. All fixed + live (kody+adam live, others paper). The flow entry path
 now lives in `bot_runner._on_flow_signal` → `_resolve_flow_strike` → `select_flow_strike` (pure, tested).
 
 1. **stop_price gate blocked 100% of flow** — flow signals carried `stop_price=None`; `StopPriceGate` + a
@@ -581,11 +634,11 @@ ENABLE_V6_SPREAD_GATE=true         # Block entries with wide bid-ask spread
 ### Per-Bot Overrides (in docker-compose.yml)
 
 Each bot overrides these from docker-compose.yml `environment:` section. **Only identity/account differs now —
-all 5 run identical STRATEGY config (runner_v1 + conf_linear + flow + V7 all on); only kody is live:**
+all 5 run identical STRATEGY config (runner_v1 + conf_linear + flow + V7 all on); kody + adam are live:**
 - `PORTFOLIO_SIZE` — $23000 (kody), $10000 (dennis), $4685 (adam), $3123 (vinny), $3600 (yank)
-- `PAPER_TRADE` — **false on kody ONLY**; true on dennis/adam/vinny/yank
-- `WEBULL_KILL_SWITCH` — false on kody only; true on the rest (paper)
-- `MARGIN_ACCOUNT` — false everywhere (toggle to margin per-bot; see Margin subsection)
+- `PAPER_TRADE` — **false on kody + adam**; true on dennis/vinny/yank
+- `WEBULL_KILL_SWITCH` — false on kody + adam; true on the rest (paper)
+- `MARGIN_ACCOUNT` — **true on adam** (compound/reinvest intraday), false elsewhere (see Margin subsection)
 - `FLEET_RANK` — distinct per bot (kody 0, adam 1, dennis 2, yank 3, vinny 4) for the priority round-robin
 - `MAX_CONCURRENT=5` — max simultaneous trades
 - `MAX_POSITION_PCT=15` — max % of portfolio per trade
@@ -612,6 +665,27 @@ final = max(1, min(contracts, position_cap))   # capped by MAX_POSITION_PCT
 
 For Kody's $23K portfolio: deployable = $17,250 (75%), per-slot = $4,312, 85% = $3,665, position cap = $3,450 (15%).
 No fixed contract cap or liquidity cap — sizing scales with portfolio.
+
+## Operational Runbooks
+
+**START HERE for any incident.** Symptom → first command → where to look. Detailed sections follow below.
+
+| Symptom | First check | Likely cause / fix | Detail |
+|---|---|---|---|
+| **Down day / "lots of losses"** | `python scripts/trade-pnl.py --droplet` | Often ONE bad trade + a chop tape, not broad bleeding. Check SPY range (chop) + per-trade attribution. Don't trust `SUM(pnl_dollars)`. | [P&L numbers look wrong](#pl-numbers-look-wrong) |
+| **Trades PAPER not WEBULL** | `webull_order_id` col in `paper_trades` | Contract doesn't exist for expiry / kill-switch on / Webull auth | [Trades not reaching Webull](#trades-not-reaching-webull-paper-only) |
+| **Orders "not filled after 12s"** | `grep "not filled after" today's log` | Choppy tape + stale chase price. Fixed 2026-06-25 (faster cadence + live-quote chase). Count should be low. | [Entry-chase fix](#webull-entry-chase-fill-fix-2026-06-25--the-choppy-spy-not-filled-after-12s-misses) |
+| **Bot won't sell / monitor frozen** (CRITICAL) | `tail -20` today's log (gap = freeze) | Event-loop block — must have `asyncio.wait_for` on all monitor-loop I/O | [Monitor frozen](#bot-frozen--position-monitor-not-selling-critical) |
+| **Options look "stale" / frozen quotes** | `is_market_open()` + SPY 1m volume | **FIRST suspect a market holiday** (Juneteenth lesson), not Polygon | [Market-holiday awareness](#market-holiday-awareness-2026-06-22--the-juneteenth-crash-loop-fix) |
+| **Bot crash-looping** | logs + is it market hours? | Off-hours = expected (stale-quote abort, auto-recovers). Market hours = investigate | [Crash-looping](#bot-crash-looping-on-weekendsoff-hours) |
+| **Wrong position size** | `grep SIZING today's log` | Check the multiplier stack (flow×runner_v1×conf_linear×delta) + caps | [Position sizing seems wrong](#position-sizing-seems-wrong) |
+| **No PUT trades** | `grep "PUT_MODEL\|PUT.*BLOCKED"` | PUT model not loaded, or bearish-confirm/market-direction gate | [PUT debugging](#put-trading--dedicated-ml-model--call-style-trailing) |
+| **"no active connection"** | grep logs | Webull SDK stale — auto-reconnects; if persistent, restart bot | [Webull stale connection](#webull-stale-connection--all-bots-lost-trades-fixed-2026-05-07) |
+| **EMERGENCY: stop all trading** | set `WEBULL_KILL_SWITCH=true` + `up -d` | — | [Emergency stop](#emergency-stop-all-trading-immediately) |
+
+**Golden rules:** (1) Always use **persisted logs** (`journal/owlet-*/logs/`), not `docker compose logs` (wiped on
+rebuild). (2) Always deploy via **`scripts/rebuild.sh`** — never manual docker/rsync. (3) Use `up -d`, never
+`restart`, for config changes. (4) Never run docker locally.
 
 ## Troubleshooting
 
@@ -885,6 +959,29 @@ Step 5:  docker compose ps           ← verify all containers healthy
 - **V6 DCA (Dollar Cost Average)**: When premium dips 15-35% from entry, auto-doubles position at lower price. Blends entry price down. One-shot per trade.
 
 ## Known Issues & Historical Bugs
+
+> Most recent first. Each entry: what broke, impact, the fix.
+
+### Webull entry-chase not filling on choppy 0DTE (fixed 2026-06-25)
+**Bug:** 12s-per-rung chase priced off a stale quote → on a whipsaw SPY tape the limit sat un-marketable, ~18
+orders orphaned (`not filled after 12s, SUBMITTED`). **Impact:** missed entries (not losses), mostly SPY/SMCI.
+**Fix:** faster cadence (4s/1s, 4 rungs) + index decisive cross (SPY/QQQ ask×1.10 rung 1) + chase off the
+harvester's live Redis ask (HTTP fallback, 20s freshness guard). The dedicated push-fill SDK is BLOCKED (grpcio
+pin) — don't retry it. See [Entry-chase fix subsection](#webull-entry-chase-fill-fix-2026-06-25--the-choppy-spy-not-filled-after-12s-misses).
+
+### Entry-timing / dip-buy rules REFUTED (settled 2026-06-23/24)
+**Not a bug — a settled investigation.** "Wait for the underlying to turn / ride the premium dip for a cheaper
+entry then buy" was tested exhaustively on real ML signals (1-min, 1,736 trades) AND ~6s `option_ticks` (sweep of
+ride-window × up-ticks, 136 trades). **Both decisively lose / add nothing** — the discount is adversely selected
+(winners don't dip → waiting chases them; dippers keep falling). Entry timing is not exploitable; **buy on the
+signal.** Don't relitigate. Memories: `turn-entry-rule-refuted-realsignals-2026-06-23`, `dip-buy-ride-sweep-refuted-2026-06-24`.
+
+### Juneteenth crash-loop / market-holiday gap (fixed 2026-06-22)
+**Bug:** Juneteenth missing from the holiday calendar + 3 weekday-only market-open helpers → bots ran on a closed
+market and crash-looped on (correctly) frozen quotes, churning a Webull token. **Fix:** `market_hours.py` is the
+single source of truth (`is_market_open`/`is_trading_day`, full 2027 calendar). A `ENABLE_DATA_FRESHNESS_GUARD`
+also blocks entries + Discord-alerts on a stale feed. **When quotes look stale, FIRST check if the market is open.**
+Calendar needs annual maintenance (add 2028 before 2028).
 
 ### docker compose restart vs up -d (discovered 2026-05-26)
 **Bug:** `docker compose restart` does NOT apply environment changes from docker-compose.yml. Bots were running with `PAPER_TRADE=false` despite docker-compose.yml saying `true`.
