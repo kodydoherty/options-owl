@@ -178,6 +178,11 @@ V7_EXITS_OVERRIDE = False          # apply the EXACT V7 convex EXIT config (exit
 #   make_v7_v6_settings: no profit ceiling, tiered trail widen, faster stall, scaleout/2pm OFF,
 #   breakeven ratchet KEPT. Default False = byte-for-byte baseline parity.
 
+# Lock-and-re-enter experiment (2026-06-29): collect every closed trade with its path so a
+# post-run pass can compare HOLD vs LOCK (keep 80%) vs LOCK+re-enter-on-signal-refire (#1).
+LOCK_REENTER = False
+_LR_TRADES: list = []
+
 
 # ---------------------------------------------------------------------------
 # Sizing-scheme dispatcher (position-sizing experiment)
@@ -2246,6 +2251,19 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                     "is_bear_mode": pos.get("is_bear_mode", False),
                 })
 
+                if LOCK_REENTER:
+                    tdp = pos["ticker_data"]
+                    _LR_TRADES.append({
+                        "date": date_str, "ticker": tk,
+                        "is_put": pos["direction"] == "put",
+                        "entry_idx": pos["entry_minute"],
+                        "entry_premium": pos["effective_entry"],
+                        "contracts": pos["effective_contracts"],
+                        "dte": int(tdp.get("dte", 0)), "expiry": tdp.get("expiry_date", ""),
+                        "closes": tdp["closes"], "bids": tdp["bids"],
+                        "asks": tdp["asks"], "underlyings": tdp["underlyings"],
+                    })
+
                 if date_str not in daily_pnls:
                     daily_pnls[date_str] = 0
                 daily_pnls[date_str] += trade_pnl
@@ -3316,6 +3334,66 @@ def generate_report(r: dict, output_path: Path):
     return report
 
 
+def _lock_reenter_report():
+    """Compare HOLD vs LOCK (keep 80%) vs LOCK + re-enter on signal re-fire (#1).
+
+    Re-fire proxy = the next QUALIFIED entry for the same (date, ticker) after the lock exit
+    (a lower bound — slot-suppressed signals aren't captured, so the real re-enter edge is
+    >= what this shows). All three variants use the prod-faithful _sim_leg.
+    """
+    from collections import defaultdict
+    if not _LR_TRADES:
+        print("\n[lock-reenter] no trades collected")
+        return
+    refires = defaultdict(list)
+    for t in _LR_TRADES:
+        refires[(t["date"], t["ticker"])].append(t["entry_idx"])
+    for k in refires:
+        refires[k].sort()
+
+    def leg(t, start_idx, entry_prem, keep, arm, puts):
+        return _sim_leg(t["closes"], t["bids"], t["asks"], t["underlyings"], start_idx,
+                        entry_prem, t["contracts"], t["ticker"], t["dte"], t["expiry"],
+                        keep_frac=keep, activate_pct=arm, puts_lock=puts, is_put=t["is_put"])
+
+    tot = {"hold": 0.0, "lock": 0.0, "reenter": 0.0}
+    side = {"call": {"hold": 0.0, "lock": 0.0, "reenter": 0.0},
+            "put": {"hold": 0.0, "lock": 0.0, "reenter": 0.0}}
+    n_reentered = 0
+    for t in _LR_TRADES:
+        s = "put" if t["is_put"] else "call"
+        ep = t["entry_premium"]
+        hold = leg(t, t["entry_idx"], ep, 0.6, 30.0, False)   # prod baseline (calls-only lock)
+        lock = leg(t, t["entry_idx"], ep, 0.8, 25.0, True)    # tight lock, puts included
+        reenter_pnl = lock["pnl"]
+        nexts = [m for m in refires[(t["date"], t["ticker"])] if m > lock["exit_idx"]]
+        if nexts:
+            m2 = nexts[0]
+            ep2 = t["closes"][m2] if m2 < len(t["closes"]) else 0
+            if ep2 and not np.isnan(ep2) and ep2 > 0:
+                reenter_pnl += leg(t, m2, float(ep2), 0.8, 25.0, True)["pnl"]
+                n_reentered += 1
+        for d, v in (("hold", hold["pnl"]), ("lock", lock["pnl"]), ("reenter", reenter_pnl)):
+            tot[d] += v
+            side[s][d] += v
+
+    n = len(_LR_TRADES)
+    print("\n" + "=" * 70)
+    print(f"LOCK-AND-RE-ENTER (#1 signal re-fire) — {n} trades, {n_reentered} re-entered")
+    print("Re-fire = next qualified entry same ticker/day after lock (LOWER BOUND).")
+    print("=" * 70)
+    print(f"  {'variant':<26}{'TOTAL':>11}{'CALLS':>11}{'PUTS':>11}")
+    print("  " + "-" * 58)
+    def _m(x):
+        return "$" + format(x, "+,.0f")
+    for d, label in (("hold", "HOLD (keep 60%, prod)"), ("lock", "LOCK only (keep 80%)"),
+                     ("reenter", "LOCK + re-enter #1")):
+        print(f"  {label:<26}{_m(tot[d]):>11}{_m(side['call'][d]):>11}{_m(side['put'][d]):>11}")
+    print(f"\n  LOCK vs HOLD:      ${tot['lock'] - tot['hold']:+,.0f}")
+    print(f"  RE-ENTER vs HOLD:  ${tot['reenter'] - tot['hold']:+,.0f}")
+    print(f"  RE-ENTER vs LOCK:  ${tot['reenter'] - tot['lock']:+,.0f}")
+
+
 # ── Main ───────────────────────────────────────────────────────────────────
 
 
@@ -3329,6 +3407,7 @@ def main():
     global MIN_PREMIUM_FLOOR, MIN_SCORE, OPENING_BUFFER_MIN, TOD_EARLY_MIN_SCORE
     global SCALP_THRESH_OVERRIDE, SOFT_KEEP_OVERRIDE, ADAPTIVE_MULT_OVERRIDE
     global THETA_MIN_OVERRIDE, BREAKEVEN_TRIGGER_OVERRIDE, SCALEOUT_TRIGGER_OVERRIDE, V7_EXITS_OVERRIDE
+    global LOCK_REENTER
     global SIZING_MODE, CONF_BUDGET_MIN, CONF_BUDGET_MAX, CONF_REF_MIN, CONF_REF_MAX
     global MULTI_DAY_CAP, LATE_0DTE_CAP
 
@@ -3350,6 +3429,8 @@ def main():
     parser.add_argument("--no-dip-confirm", action="store_true", help="Disable DipConfirm simulation")
     parser.add_argument("--grace", type=float, default=None, help="Override grace period (minutes) for all tickers")
     parser.add_argument("--grace-sweep", action="store_true", help="Sweep grace periods: 0, 1, 2, 3, 5 min")
+    parser.add_argument("--lock-reenter", action="store_true",
+                        help="Lock-and-re-enter experiment: HOLD vs LOCK(80%%) vs LOCK+re-enter on signal re-fire (#1)")
     parser.add_argument("--puts", action="store_true", help="Enable PUT trading alongside CALLs (SPY direction gate)")
     parser.add_argument("--puts-only", action="store_true", help="Only trade PUTs (no CALLs) for comparison")
     parser.add_argument("--put-sweep", action="store_true", help="Sweep PUT exit parameters to find profitable config")
@@ -3540,6 +3621,7 @@ def main():
     ADAPTIVE_MULT_OVERRIDE = args.adaptive_mult
     THETA_MIN_OVERRIDE = args.theta_min
     V7_EXITS_OVERRIDE = args.v7_exits
+    LOCK_REENTER = args.lock_reenter
     BREAKEVEN_TRIGGER_OVERRIDE = args.breakeven_trigger
     SCALEOUT_TRIGGER_OVERRIDE = args.scaleout_trigger
 
@@ -3810,6 +3892,17 @@ def main():
                   f"{r['avg_loss']:>+9,.0f} {r['avg_entry_minute']:>7.1f}m{current}")
 
         GRACE_OVERRIDE = None  # reset
+        sys.exit(0)
+
+    if args.lock_reenter:
+        _LR_TRADES.clear()
+        run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
+                     args.pattern_threshold, args.entry_threshold,
+                     tickers, start_date, end_date, stop_model,
+                     regime_model, args.regime_threshold, signal_model,
+                     put_pattern_model, put_pattern_meta,
+                     put_entry_model, put_entry_features, put_entry_threshold)
+        _lock_reenter_report()
         sys.exit(0)
 
     if args.sweep:
