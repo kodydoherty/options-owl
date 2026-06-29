@@ -1089,6 +1089,76 @@ def simulate_exit(closes, bids, asks, underlyings, entry_idx,
     }
 
 
+def _sim_leg(closes, bids, asks, underlyings, start_idx, entry_premium, contracts,
+             ticker, dte, expiry_date, *, keep_frac, activate_pct, puts_lock, is_put):
+    """Prod-faithful single-leg FSM sim (lock-and-re-enter experiment, 2026-06-29).
+
+    Self-contained exit config (does NOT use the drifted harness baseline, which lacks
+    the V7 profit-lock): V7 wide-trail + profit-lock parameterized by keep_frac/activate_pct
+    /puts_lock. Call as HOLD (keep_frac=0.6, puts_lock=False = prod) or LOCK (0.8 / True).
+
+    Returns {pnl, exit_idx, peak_gain, reason} so a leg-2 re-entry can chain off exit_idx.
+    """
+    from copy import copy as _copy
+
+    from options_owl.risk.exit_v5.config import apply_v7_wide_trail_exits
+    if entry_premium <= 0 or start_idx >= len(closes) - 1:
+        return {"pnl": 0.0, "exit_idx": start_idx, "peak_gain": 0.0, "reason": "no_data"}
+
+    otype = "put" if is_put else "call"
+    cfg = apply_v7_wide_trail_exits(
+        get_ticker_config(ticker, use_per_ticker=True, option_type=otype), is_put=is_put)
+    s = _copy(_V6_SETTINGS)
+    s.ENABLE_V7_PROFIT_LOCK = True
+    s.V7_PROFIT_LOCK_KEEP_FRAC = keep_frac
+    s.V7_PROFIT_LOCK_ACTIVATE_PCT = activate_pct
+    s.V7_PROFIT_LOCK_PUTS = puts_lock
+    fsm = ExitFSM(cfg, settings=s)
+
+    entry_ts = datetime(2026, 1, 1, 9, 30) + timedelta(minutes=start_idx)
+    u0 = 0.0
+    for i in range(start_idx, min(start_idx + 5, len(underlyings))):
+        if not np.isnan(underlyings[i]) and underlyings[i] > 0:
+            u0 = float(underlyings[i]); break
+    state = TradeState(trade_id=1, ticker=ticker, option_type=otype,
+                       entry_premium=entry_premium, entry_time=entry_ts, contracts=contracts,
+                       peak_premium=entry_premium, entry_underlying_price=u0, dte=dte,
+                       expiry_date=expiry_date or "")
+    locked, remaining = 0.0, contracts
+    for idx in range(start_idx + 1, len(closes)):
+        prem = closes[idx]
+        if np.isnan(prem) or prem <= 0:
+            continue
+        bid = float(bids[idx]) if idx < len(bids) and not np.isnan(bids[idx]) else prem
+        ask = float(asks[idx]) if idx < len(asks) and not np.isnan(asks[idx]) else prem
+        und = float(underlyings[idx]) if idx < len(underlyings) and not np.isnan(underlyings[idx]) else 0.0
+        now = entry_ts + timedelta(minutes=(idx - start_idx))
+        mtc = max(0, (16 * 60) - (now.hour * 60 + now.minute))
+        act = fsm.evaluate(state, prem, bid, ask, now, current_underlying=und,
+                           minutes_to_close=mtc, candle_data={})
+        if act.should_exit:
+            xp = bid if bid > 0 else prem
+            if 0 < act.contracts_to_close < remaining:
+                locked += (xp - entry_premium) * act.contracts_to_close * 100
+                remaining -= act.contracts_to_close
+                state.contracts = remaining
+                continue
+            peak_gain = (state.peak_premium - entry_premium) / entry_premium * 100
+            pnl = locked + (xp - entry_premium) * remaining * 100
+            return {"pnl": pnl, "exit_idx": idx, "peak_gain": peak_gain, "reason": act.reason.value}
+    # EOD fill at last valid bid
+    last = entry_premium
+    for i in range(len(closes) - 1, start_idx, -1):
+        b = bids[i] if i < len(bids) else np.nan
+        if not np.isnan(b) and b > 0:
+            last = float(b); break
+        if not np.isnan(closes[i]) and closes[i] > 0:
+            last = float(closes[i]); break
+    peak_gain = (state.peak_premium - entry_premium) / entry_premium * 100
+    return {"pnl": locked + (last - entry_premium) * remaining * 100,
+            "exit_idx": len(closes) - 1, "peak_gain": peak_gain, "reason": "eod"}
+
+
 # ── Backtest Runner ────────────────────────────────────────────────────────
 
 
