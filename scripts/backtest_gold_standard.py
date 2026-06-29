@@ -1095,7 +1095,8 @@ def simulate_exit(closes, bids, asks, underlyings, entry_idx,
 
 
 def _sim_leg(closes, bids, asks, underlyings, start_idx, entry_premium, contracts,
-             ticker, dte, expiry_date, *, keep_frac, activate_pct, puts_lock, is_put):
+             ticker, dte, expiry_date, *, keep_frac, activate_pct, puts_lock, is_put,
+             step_pct=0.0):
     """Prod-faithful single-leg FSM sim (lock-and-re-enter experiment, 2026-06-29).
 
     Self-contained exit config (does NOT use the drifted harness baseline, which lacks
@@ -1114,10 +1115,18 @@ def _sim_leg(closes, bids, asks, underlyings, start_idx, entry_premium, contract
     cfg = apply_v7_wide_trail_exits(
         get_ticker_config(ticker, use_per_ticker=True, option_type=otype), is_put=is_put)
     s = _copy(_V6_SETTINGS)
-    s.ENABLE_V7_PROFIT_LOCK = True
-    s.V7_PROFIT_LOCK_KEEP_FRAC = keep_frac
-    s.V7_PROFIT_LOCK_ACTIVATE_PCT = activate_pct
-    s.V7_PROFIT_LOCK_PUTS = puts_lock
+    if step_pct > 0:
+        # Stepped lock: hard floor every step_pct% of peak (wider room at low gains,
+        # tighter as it climbs — the "step up as we lock in" logic). Pure step (flat off).
+        s.ENABLE_V7_PROFIT_LOCK = False
+        s.ENABLE_PROFIT_STEP_LOCK = True
+        s.PROFIT_STEP_LOCK_PCT = step_pct
+    else:
+        s.ENABLE_V7_PROFIT_LOCK = True
+        s.ENABLE_PROFIT_STEP_LOCK = False
+        s.V7_PROFIT_LOCK_KEEP_FRAC = keep_frac
+        s.V7_PROFIT_LOCK_ACTIVATE_PCT = activate_pct
+        s.V7_PROFIT_LOCK_PUTS = puts_lock
     fsm = ExitFSM(cfg, settings=s)
 
     entry_ts = datetime(2026, 1, 1, 9, 30) + timedelta(minutes=start_idx)
@@ -3341,57 +3350,48 @@ def _lock_reenter_report():
     (a lower bound — slot-suppressed signals aren't captured, so the real re-enter edge is
     >= what this shows). All three variants use the prod-faithful _sim_leg.
     """
-    from collections import defaultdict
     if not _LR_TRADES:
         print("\n[lock-reenter] no trades collected")
         return
-    refires = defaultdict(list)
-    for t in _LR_TRADES:
-        refires[(t["date"], t["ticker"])].append(t["entry_idx"])
-    for k in refires:
-        refires[k].sort()
 
-    def leg(t, start_idx, entry_prem, keep, arm, puts):
-        return _sim_leg(t["closes"], t["bids"], t["asks"], t["underlyings"], start_idx,
-                        entry_prem, t["contracts"], t["ticker"], t["dte"], t["expiry"],
-                        keep_frac=keep, activate_pct=arm, puts_lock=puts, is_put=t["is_put"])
+    def leg(t, keep, arm, puts, step=0.0):
+        return _sim_leg(t["closes"], t["bids"], t["asks"], t["underlyings"], t["entry_idx"],
+                        t["entry_premium"], t["contracts"], t["ticker"], t["dte"], t["expiry"],
+                        keep_frac=keep, activate_pct=arm, puts_lock=puts, is_put=t["is_put"],
+                        step_pct=step)["pnl"]
 
-    tot = {"hold": 0.0, "lock": 0.0, "reenter": 0.0}
-    side = {"call": {"hold": 0.0, "lock": 0.0, "reenter": 0.0},
-            "put": {"hold": 0.0, "lock": 0.0, "reenter": 0.0}}
-    n_reentered = 0
+    VARS = ["hold", "lock", "step50", "step100"]
+    tot = {v: 0.0 for v in VARS}
+    side = {"call": {v: 0.0 for v in VARS}, "put": {v: 0.0 for v in VARS}}
     for t in _LR_TRADES:
         s = "put" if t["is_put"] else "call"
-        ep = t["entry_premium"]
-        hold = leg(t, t["entry_idx"], ep, 0.6, 30.0, False)   # prod baseline (calls-only lock)
-        lock = leg(t, t["entry_idx"], ep, 0.8, 25.0, True)    # tight lock, puts included
-        reenter_pnl = lock["pnl"]
-        nexts = [m for m in refires[(t["date"], t["ticker"])] if m > lock["exit_idx"]]
-        if nexts:
-            m2 = nexts[0]
-            ep2 = t["closes"][m2] if m2 < len(t["closes"]) else 0
-            if ep2 and not np.isnan(ep2) and ep2 > 0:
-                reenter_pnl += leg(t, m2, float(ep2), 0.8, 25.0, True)["pnl"]
-                n_reentered += 1
-        for d, v in (("hold", hold["pnl"]), ("lock", lock["pnl"]), ("reenter", reenter_pnl)):
-            tot[d] += v
-            side[s][d] += v
+        vals = {
+            "hold":    leg(t, 0.6, 30.0, False),            # prod baseline (flat keep 60%, calls-only)
+            "lock":    leg(t, 0.8, 25.0, True),             # flat keep 80% (the volatile-at-low-gains one)
+            "step50":  leg(t, 0.0, 0.0, False, step=50.0),  # hard floor every +50% of peak
+            "step100": leg(t, 0.0, 0.0, False, step=100.0), # hard floor every +100% of peak
+        }
+        for v in VARS:
+            tot[v] += vals[v]
+            side[s][v] += vals[v]
 
     n = len(_LR_TRADES)
     print("\n" + "=" * 70)
-    print(f"LOCK-AND-RE-ENTER (#1 signal re-fire) — {n} trades, {n_reentered} re-entered")
-    print("Re-fire = next qualified entry same ticker/day after lock (LOWER BOUND).")
+    print(f"PROFIT-LOCK SHAPE — HOLD vs flat-80% vs STEPPED — {n} trades (calls+puts)")
+    print("Step = hard floor every N% of peak (wider room at low gains, tightens as it climbs).")
     print("=" * 70)
-    print(f"  {'variant':<26}{'TOTAL':>11}{'CALLS':>11}{'PUTS':>11}")
-    print("  " + "-" * 58)
-    def _m(x):
-        return "$" + format(x, "+,.0f")
-    for d, label in (("hold", "HOLD (keep 60%, prod)"), ("lock", "LOCK only (keep 80%)"),
-                     ("reenter", "LOCK + re-enter #1")):
-        print(f"  {label:<26}{_m(tot[d]):>11}{_m(side['call'][d]):>11}{_m(side['put'][d]):>11}")
-    print(f"\n  LOCK vs HOLD:      ${tot['lock'] - tot['hold']:+,.0f}")
-    print(f"  RE-ENTER vs HOLD:  ${tot['reenter'] - tot['hold']:+,.0f}")
-    print(f"  RE-ENTER vs LOCK:  ${tot['reenter'] - tot['lock']:+,.0f}")
+    print(f"  {'variant':<24}{'TOTAL':>11}{'CALLS':>11}{'PUTS':>11}{'vs HOLD':>11}")
+    print("  " + "-" * 68)
+    labels = {"hold": "HOLD (flat 60%)", "lock": "FLAT LOCK (80%)",
+              "step50": "STEP every +50%", "step100": "STEP every +100%"}
+    for v in VARS:
+        m = lambda x: "$" + format(x, "+,.0f")  # noqa: E731
+        d = "" if v == "hold" else m(tot[v] - tot["hold"])
+        print(f"  {labels[v]:<24}{m(tot[v]):>11}{m(side['call'][v]):>11}{m(side['put'][v]):>11}{d:>11}")
+    best = max((v for v in VARS), key=lambda v: tot[v])
+    print(f"\n  → BEST: {labels[best]} (${tot[best]:+,.0f}, {tot[best]-tot['hold']:+,.0f} vs HOLD)")
+    print(f"  Best CALLS: {max(VARS, key=lambda v: side['call'][v])} | "
+          f"Best PUTS: {max(VARS, key=lambda v: side['put'][v])}")
 
 
 # ── Main ───────────────────────────────────────────────────────────────────
