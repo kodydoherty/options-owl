@@ -3437,6 +3437,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="Gold Standard E2E Backtest")
     parser.add_argument("--days", type=int, default=60, help="Last N trading days (default: 60)")
+    parser.add_argument("--tickers", type=str, default=None, help="Comma-separated ticker override (e.g. semi test): bypasses TICKERS/EXCLUDED")
     parser.add_argument("--pattern-threshold", type=float, default=0.74, help="Pattern model threshold")
     parser.add_argument("--entry-threshold", type=float, default=0.80, help="Entry timing threshold")
     parser.add_argument("--no-entry-filter", action="store_true", help="Disable entry timing filter")
@@ -3561,7 +3562,10 @@ def main():
     if args.include_losers:
         tickers = TICKERS
     else:
-        tickers = [t for t in TICKERS if t not in EXCLUDED_TICKERS]
+        if args.tickers:
+            tickers = [t.strip().upper() for t in args.tickers.split(",")]
+        else:
+            tickers = [t for t in TICKERS if t not in EXCLUDED_TICKERS]
 
     # Apply PUT flags
     if args.puts:
