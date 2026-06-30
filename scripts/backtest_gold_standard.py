@@ -182,9 +182,11 @@ V7_EXITS_OVERRIDE = False          # apply the EXACT V7 convex EXIT config (exit
 # post-run pass can compare HOLD vs LOCK (keep 80%) vs LOCK+re-enter-on-signal-refire (#1).
 LOCK_REENTER = False
 _LR_TRADES: list = []
-# --allow-reentries: lift the one-entry-per-ticker-per-day rule (re-enter after a ticker's
-# position closes) — the real #1 "lock the win, re-enter on a re-fire" test.
-ALLOW_REENTRIES = False
+# Re-entries: PROD allows same-ticker re-entries after a position closes (the live
+# duplicate_ticker gate only blocks CONCURRENT positions — TSLA traded 4x in one day on kody
+# 2026-06-30). The old one-entry-per-ticker-per-day harness rule was a 3rd fidelity bug that
+# understated prod ~155% (flat-sized). Default ON to match prod; --no-reentries = old restricted.
+ALLOW_REENTRIES = True
 
 
 # ---------------------------------------------------------------------------
@@ -3454,8 +3456,8 @@ def main():
     parser.add_argument("--no-dip-confirm", action="store_true", help="Disable DipConfirm simulation")
     parser.add_argument("--grace", type=float, default=None, help="Override grace period (minutes) for all tickers")
     parser.add_argument("--grace-sweep", action="store_true", help="Sweep grace periods: 0, 1, 2, 3, 5 min")
-    parser.add_argument("--allow-reentries", action="store_true",
-                        help="Lift the one-entry-per-ticker-per-day rule (re-enter after a position closes) — the #1 re-entry test")
+    parser.add_argument("--no-reentries", action="store_true",
+                        help="Restore the restricted one-entry-per-ticker-per-day rule (re-entries are ON by default to match prod)")
     parser.add_argument("--lock-reenter", action="store_true",
                         help="Lock-and-re-enter experiment: HOLD vs LOCK(80%%) vs LOCK+re-enter on signal re-fire (#1)")
     parser.add_argument("--puts", action="store_true", help="Enable PUT trading alongside CALLs (SPY direction gate)")
@@ -3652,7 +3654,7 @@ def main():
     THETA_MIN_OVERRIDE = args.theta_min
     V7_EXITS_OVERRIDE = args.v7_exits
     LOCK_REENTER = args.lock_reenter
-    ALLOW_REENTRIES = args.allow_reentries
+    ALLOW_REENTRIES = not args.no_reentries
     BREAKEVEN_TRIGGER_OVERRIDE = args.breakeven_trigger
     SCALEOUT_TRIGGER_OVERRIDE = args.scaleout_trigger
 
