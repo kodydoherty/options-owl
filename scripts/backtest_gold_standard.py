@@ -173,7 +173,7 @@ ADAPTIVE_MULT_OVERRIDE = None     # multiplier on adaptive trail widths (1.0 = u
 THETA_MIN_OVERRIDE = None         # theta_bleed_min minutes (0DTE, default 120)
 BREAKEVEN_TRIGGER_OVERRIDE = None  # V6_BREAKEVEN_TRIGGER_PCT (default 20)
 SCALEOUT_TRIGGER_OVERRIDE = None  # V6_SCALEOUT_GAIN_PCT (default 20)
-V7_EXITS_OVERRIDE = False          # apply the EXACT V7 convex EXIT config (exits-only ablation;
+V7_EXITS_OVERRIDE = True           # apply the EXACT V7 convex EXIT config (exits-only ablation;
 #   entry+sizing stay at baseline). Mirrors backtest_gold_standard_v7.build_v7_call_config +
 #   make_v7_v6_settings: no profit ceiling, tiered trail widen, faster stall, scaleout/2pm OFF,
 #   breakeven ratchet KEPT. Default False = byte-for-byte baseline parity.
@@ -420,6 +420,12 @@ _V6_SETTINGS = SimpleNamespace(
     ENABLE_SCALP_TARGET=True,
     SCALP_TARGET_PCT=35.0,           # Match production default (was 25.0)
     SCALP_RUNNER_CONFIRM_PCT=40.0,
+    # Prod-faithful profit-lock (deployed live 2026-06-30): keep 80% of peak, arm +25%, puts too.
+    # Without this the harness baseline HOLD differed from prod (the 2nd fidelity gap).
+    ENABLE_V7_PROFIT_LOCK=True,
+    V7_PROFIT_LOCK_KEEP_FRAC=0.8,
+    V7_PROFIT_LOCK_ACTIVATE_PCT=25.0,
+    V7_PROFIT_LOCK_PUTS=True,
 )
 
 
@@ -3531,8 +3537,8 @@ def main():
                         help="theta_bleed_min minutes (0DTE hold limit, default 120)")
     parser.add_argument("--breakeven-trigger", type=float, default=None,
                         help="V6 breakeven ratchet arm %% (default 20)")
-    parser.add_argument("--v7-exits", action="store_true",
-                        help="Apply the EXACT V7 convex exit config (exits-only ablation; entry+sizing stay baseline)")
+    parser.add_argument("--no-v7-exits", action="store_true",
+                        help="Disable the V7 convex exits (ON by default to match prod ENABLE_V7_WIDE_TRAIL)")
     parser.add_argument("--scaleout-trigger", type=float, default=None,
                         help="V6 scaleout trigger %% (default 20)")
     args = parser.parse_args()
@@ -3652,7 +3658,7 @@ def main():
     SOFT_KEEP_OVERRIDE = args.soft_keep
     ADAPTIVE_MULT_OVERRIDE = args.adaptive_mult
     THETA_MIN_OVERRIDE = args.theta_min
-    V7_EXITS_OVERRIDE = args.v7_exits
+    V7_EXITS_OVERRIDE = not args.no_v7_exits
     LOCK_REENTER = args.lock_reenter
     ALLOW_REENTRIES = not args.no_reentries
     BREAKEVEN_TRIGGER_OVERRIDE = args.breakeven_trigger
