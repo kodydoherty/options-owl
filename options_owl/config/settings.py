@@ -259,7 +259,7 @@ class Settings(BaseSettings):
     CONF_LINEAR_REF_MAX: float = 0.95        # confidence mapped to BUDGET_MAX
     V7_PROFIT_LOCK_KEEP_FRAC: float = 0.8        # keep 80% of peak gain (2026-06-29: backtest +$852/+105% vs 60% on calls, 15d; the faders fade, tight lock banks it)
     V7_PROFIT_LOCK_ACTIVATE_PCT: float = 25.0    # arms once peak gain >= +25%
-    V7_PROFIT_LOCK_PUTS: bool = False            # calls-only live; PUTs profit-lock only on the vinny canary (backtest inconclusive on puts)
+    V7_PROFIT_LOCK_PUTS: bool = True             # PUTs profit-lock at keep 80% too (2026-06-30: 7mo test +$544 on puts, "Best PUTS: lock" — validated, fleet-wide)
     # Stepping-tier profit lock (2026-06-26): ratchet a HARD floor up every N% of peak
     # gain so a big winner can't round-trip to zero. Floor = (one step below the highest
     # step reached), monotonic. Calls AND puts. Layered on the V7 trail / profit-lock.

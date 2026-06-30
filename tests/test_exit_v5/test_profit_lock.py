@@ -89,3 +89,30 @@ class TestProfitLockFSM:
         fsm.evaluate(st, 2.0, 1.95, 2.05, _now(10, 10), current_underlying=101.0, minutes_to_close=120)
         a = fsm.evaluate(st, 1.5, 1.45, 1.55, _now(10, 12), current_underlying=100.5, minutes_to_close=120)
         assert a.reason != ExitReason.PROFIT_LOCK
+
+    def test_put_captures_80pct_of_peak(self):
+        """E2E (deployed 2026-06-30 config): a PUT with keep-80% + puts-on must lock ~80% of its
+        peak — peaks +100%, HOLDS at +85% (above the +80% floor), LOCKS at +75% (below it)."""
+        s = _settings(V7_PROFIT_LOCK_KEEP_FRAC=0.8, V7_PROFIT_LOCK_ACTIVATE_PCT=25.0,
+                      V7_PROFIT_LOCK_PUTS=True)
+        fsm = ExitFSM(_v7_cfg(is_put=True), settings=s)
+        st = _state("put", entry=1.0)
+        # peak to +100% (prem 2.0); underlying down = favorable for the put
+        fsm.evaluate(st, 2.0, 1.95, 2.05, _now(10, 10), current_underlying=98.0, minutes_to_close=120)
+        # fade to +85% — still above the +80% floor (0.8 x 100% peak) -> HOLD
+        a = fsm.evaluate(st, 1.85, 1.80, 1.90, _now(10, 11), current_underlying=98.0, minutes_to_close=120)
+        assert a.reason != ExitReason.PROFIT_LOCK, "should hold above the 80% floor"
+        # fade to +75% — below the +80% floor -> LOCK (captures ~80% of peak)
+        a = fsm.evaluate(st, 1.75, 1.70, 1.80, _now(10, 12), current_underlying=98.0, minutes_to_close=120)
+        assert a.should_exit and a.reason == ExitReason.PROFIT_LOCK, "must lock at ~80% of peak"
+
+
+class TestDeployedPutLockConfig:
+    """Guard the deployed 2026-06-30 config: puts profit-lock ON at keep 80%, fleet-wide."""
+
+    def test_puts_lock_live_at_80pct(self):
+        from options_owl.config.settings import Settings
+        s = Settings()
+        assert s.V7_PROFIT_LOCK_PUTS is True, "puts profit-lock must be enabled"
+        assert s.V7_PROFIT_LOCK_KEEP_FRAC == 0.8, "lock must keep 80% of peak"
+        assert s.V7_PROFIT_LOCK_ACTIVATE_PCT == 25.0, "lock arms at +25%"
