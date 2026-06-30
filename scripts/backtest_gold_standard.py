@@ -182,6 +182,9 @@ V7_EXITS_OVERRIDE = False          # apply the EXACT V7 convex EXIT config (exit
 # post-run pass can compare HOLD vs LOCK (keep 80%) vs LOCK+re-enter-on-signal-refire (#1).
 LOCK_REENTER = False
 _LR_TRADES: list = []
+# --allow-reentries: lift the one-entry-per-ticker-per-day rule (re-enter after a ticker's
+# position closes) — the real #1 "lock the win, re-enter on a re-fire" test.
+ALLOW_REENTRIES = False
 
 
 # ---------------------------------------------------------------------------
@@ -2330,7 +2333,7 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                 if ticker in current_open_tickers:
                     continue
                 # Skip if already entered this ticker today (one entry per ticker per day)
-                if ticker in day_entered_tickers:
+                if ticker in day_entered_tickers and not ALLOW_REENTRIES:
                     continue
                 if ticker not in ticker_data:
                     continue
@@ -2671,7 +2674,7 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                             continue
                         # Allow re-entry as PUT if entered as CALL today, but not if entered as PUT
                         put_day_key = f"{ticker}_put"
-                        if put_day_key in day_entered_tickers:
+                        if put_day_key in day_entered_tickers and not ALLOW_REENTRIES:
                             continue
 
                         ptd = put_ticker_data[ticker]
@@ -3393,6 +3396,27 @@ def _lock_reenter_report():
     print(f"  Best CALLS: {max(VARS, key=lambda v: side['call'][v])} | "
           f"Best PUTS: {max(VARS, key=lambda v: side['put'][v])}")
 
+    # PUT keep% sweep (puts only) — is a LOOSER keep better for puts' slow crashes?
+    put_trades = [t for t in _LR_TRADES if t["is_put"]]
+    if put_trades:
+        print(f"\n  PUT keep%% sweep ({len(put_trades)} put trades, arm +25%):")
+        print(f"  {'keep':<8}{'PUTS P&L':>12}{'vs 80%':>11}")
+        base80 = None
+        results = {}
+        for keep in (0.6, 0.7, 0.75, 0.8, 0.85, 0.9):
+            pnl = sum(_sim_leg(t["closes"], t["bids"], t["asks"], t["underlyings"], t["entry_idx"],
+                               t["entry_premium"], t["contracts"], t["ticker"], t["dte"], t["expiry"],
+                               keep_frac=keep, activate_pct=25.0, puts_lock=True, is_put=True)["pnl"]
+                      for t in put_trades)
+            results[keep] = pnl
+            if keep == 0.8:
+                base80 = pnl
+        for keep in (0.6, 0.7, 0.75, 0.8, 0.85, 0.9):
+            dv = "" if base80 is None else ("$" + format(results[keep] - base80, "+,.0f"))
+            print(f"  {format(keep, '.0%'):<8}{('$' + format(results[keep], '+,.0f')):>12}{dv:>11}")
+        bk = max(results, key=lambda k: results[k])
+        print(f"  → best PUT keep: {bk:.0%} (${results[bk]:+,.0f})")
+
 
 # ── Main ───────────────────────────────────────────────────────────────────
 
@@ -3407,7 +3431,7 @@ def main():
     global MIN_PREMIUM_FLOOR, MIN_SCORE, OPENING_BUFFER_MIN, TOD_EARLY_MIN_SCORE
     global SCALP_THRESH_OVERRIDE, SOFT_KEEP_OVERRIDE, ADAPTIVE_MULT_OVERRIDE
     global THETA_MIN_OVERRIDE, BREAKEVEN_TRIGGER_OVERRIDE, SCALEOUT_TRIGGER_OVERRIDE, V7_EXITS_OVERRIDE
-    global LOCK_REENTER
+    global LOCK_REENTER, ALLOW_REENTRIES
     global SIZING_MODE, CONF_BUDGET_MIN, CONF_BUDGET_MAX, CONF_REF_MIN, CONF_REF_MAX
     global MULTI_DAY_CAP, LATE_0DTE_CAP
 
@@ -3429,6 +3453,8 @@ def main():
     parser.add_argument("--no-dip-confirm", action="store_true", help="Disable DipConfirm simulation")
     parser.add_argument("--grace", type=float, default=None, help="Override grace period (minutes) for all tickers")
     parser.add_argument("--grace-sweep", action="store_true", help="Sweep grace periods: 0, 1, 2, 3, 5 min")
+    parser.add_argument("--allow-reentries", action="store_true",
+                        help="Lift the one-entry-per-ticker-per-day rule (re-enter after a position closes) — the #1 re-entry test")
     parser.add_argument("--lock-reenter", action="store_true",
                         help="Lock-and-re-enter experiment: HOLD vs LOCK(80%%) vs LOCK+re-enter on signal re-fire (#1)")
     parser.add_argument("--puts", action="store_true", help="Enable PUT trading alongside CALLs (SPY direction gate)")
@@ -3622,6 +3648,7 @@ def main():
     THETA_MIN_OVERRIDE = args.theta_min
     V7_EXITS_OVERRIDE = args.v7_exits
     LOCK_REENTER = args.lock_reenter
+    ALLOW_REENTRIES = args.allow_reentries
     BREAKEVEN_TRIGGER_OVERRIDE = args.breakeven_trigger
     SCALEOUT_TRIGGER_OVERRIDE = args.scaleout_trigger
 
