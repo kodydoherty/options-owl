@@ -342,7 +342,7 @@ async def dashboard(
 
 
 @app.get("/analytics", response_class=HTMLResponse)
-async def analytics_page(request: Request, days: int = Query(default=30, ge=1, le=90)):
+async def analytics_page(request: Request, days: int = Query(default=14, ge=1, le=14)):
     user = request.state.user
     agent_id = user["agent_id"]
 
