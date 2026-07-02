@@ -267,10 +267,11 @@ class Settings(BaseSettings):
     # 3-month prod-match sweep +$3,730 (+8%) at -25% (best; -20% clips winners, -30% still +).
     ENABLE_MULTIDAY_CALL_HARDSTOP: bool = False
     MULTIDAY_CALL_HARDSTOP_PCT: float = 25.0
-    # Multi-day PUT hard-stop (opt-in risk control, NOT a P&L win). Halves max multi-day-put loss
+    # Multi-day PUT hard-stop (risk control, NOT a P&L win). Halves max multi-day-put loss
     # (-25% floor vs the -50% flat stop) but is EV-NEGATIVE by backtest (-$690/3mo, ~35% of put
     # P&L) — multi-day puts ride slow crashes, so the cut clips recoveries. 0DTE puts already cut
-    # at -25% by the 0DTE gate. OFF by default; canary on paper (yank) before any live bot.
+    # at -25% by the 0DTE gate. Default OFF; enabled FLEET-WIDE in docker-compose 2026-07-02
+    # (Kody's call: accept the small cost for the tighter floor).
     ENABLE_MULTIDAY_PUT_HARDSTOP: bool = False
     MULTIDAY_PUT_HARDSTOP_PCT: float = 25.0
     # Dead-on-arrival STALL CUT (multi-day) — cut a leg that NEVER WORKED: held >= N min, down >= X%,

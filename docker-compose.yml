@@ -167,6 +167,9 @@ services:
       # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
       - ENABLE_0DTE_PREMIUM_HARDSTOP=true
       - ENABLE_MULTIDAY_CALL_HARDSTOP=true
+      # Multi-day PUT -25% hardstop — fleet-wide 2026-07-02 (Kody's call: small EV cost for a tighter
+      # floor). Risk-control, EV-negative by backtest (-$690/3mo); 0DTE puts already cut by the gate above.
+      - ENABLE_MULTIDAY_PUT_HARDSTOP=true
       # 2026-07-01 late-day/overnight risk controls (all fleet-wide, env-gated):
       #  • STALL_CUT: cut dead-on-arrival multi-day legs (>30m held, -30%, peaked <10%) — kills the
       #    1-DTE bleeder that rode the wide 50% backstop for an hour (adam META). Validated ~neutral.
@@ -303,6 +306,9 @@ services:
       # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
       - ENABLE_0DTE_PREMIUM_HARDSTOP=true
       - ENABLE_MULTIDAY_CALL_HARDSTOP=true
+      # Multi-day PUT -25% hardstop — fleet-wide 2026-07-02 (Kody's call: small EV cost for a tighter
+      # floor). Risk-control, EV-negative by backtest (-$690/3mo); 0DTE puts already cut by the gate above.
+      - ENABLE_MULTIDAY_PUT_HARDSTOP=true
       # 2026-07-01 late-day/overnight risk controls (all fleet-wide, env-gated):
       #  • STALL_CUT: cut dead-on-arrival multi-day legs (>30m held, -30%, peaked <10%) — kills the
       #    1-DTE bleeder that rode the wide 50% backstop for an hour (adam META). Validated ~neutral.
@@ -450,6 +456,9 @@ services:
       # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
       - ENABLE_0DTE_PREMIUM_HARDSTOP=true
       - ENABLE_MULTIDAY_CALL_HARDSTOP=true
+      # Multi-day PUT -25% hardstop — fleet-wide 2026-07-02 (Kody's call: small EV cost for a tighter
+      # floor). Risk-control, EV-negative by backtest (-$690/3mo); 0DTE puts already cut by the gate above.
+      - ENABLE_MULTIDAY_PUT_HARDSTOP=true
       # 2026-07-01 late-day/overnight risk controls (all fleet-wide, env-gated):
       #  • STALL_CUT: cut dead-on-arrival multi-day legs (>30m held, -30%, peaked <10%) — kills the
       #    1-DTE bleeder that rode the wide 50% backstop for an hour (adam META). Validated ~neutral.
@@ -592,6 +601,9 @@ services:
       # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
       - ENABLE_0DTE_PREMIUM_HARDSTOP=true
       - ENABLE_MULTIDAY_CALL_HARDSTOP=true
+      # Multi-day PUT -25% hardstop — fleet-wide 2026-07-02 (Kody's call: small EV cost for a tighter
+      # floor). Risk-control, EV-negative by backtest (-$690/3mo); 0DTE puts already cut by the gate above.
+      - ENABLE_MULTIDAY_PUT_HARDSTOP=true
       # 2026-07-01 late-day/overnight risk controls (all fleet-wide, env-gated):
       #  • STALL_CUT: cut dead-on-arrival multi-day legs (>30m held, -30%, peaked <10%) — kills the
       #    1-DTE bleeder that rode the wide 50% backstop for an hour (adam META). Validated ~neutral.
@@ -706,8 +718,8 @@ services:
       # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
       - ENABLE_0DTE_PREMIUM_HARDSTOP=true
       - ENABLE_MULTIDAY_CALL_HARDSTOP=true
-      # CANARY (yank/paper only, 2026-07-02): multi-day PUT -25% hardstop. Risk-control, EV-negative
-      # by backtest (-$690/3mo). Watch put P&L vs the live bots before rolling fleet-wide.
+      # Multi-day PUT -25% hardstop — fleet-wide 2026-07-02 (Kody's call: small EV cost for a tighter
+      # floor). Risk-control, EV-negative by backtest (-$690/3mo); 0DTE puts already cut by the gate above.
       - ENABLE_MULTIDAY_PUT_HARDSTOP=true
       # 2026-07-01 late-day/overnight risk controls (all fleet-wide, env-gated):
       #  • STALL_CUT: cut dead-on-arrival multi-day legs (>30m held, -30%, peaked <10%) — kills the
