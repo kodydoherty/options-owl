@@ -443,3 +443,34 @@ class TestTickerView:
         )
         assert "No candle data" in html
         assert "No trades on MU" in html
+
+
+class TestClosedFilter:
+    """The shared filter that makes the range/ticker/live-only scope every stat + chart."""
+
+    def test_live_only_default_and_off(self):
+        from options_owl.dashboard.db import _closed_filter
+        where, params = _closed_filter("owlet_kody")
+        assert "webull_order_id IS NOT NULL" in where   # live-only by default
+        assert params == ["owlet_kody"]
+        where_all, _ = _closed_filter("owlet_kody", live_only=False)
+        assert "webull_order_id IS NOT NULL" not in where_all
+
+    def test_ticker_and_days_params_numbered(self):
+        from options_owl.dashboard.db import _closed_filter
+        where, params = _closed_filter("owlet_kody", days=7, ticker="spy")
+        assert "closed_at >= $2" in where
+        assert "ticker = $3" in where
+        assert params[2] == "SPY"                        # upper-cased
+        assert len(params) == 3
+
+    def test_today_is_et_calendar_day(self):
+        from datetime import timezone
+
+        from options_owl.dashboard.db import _closed_filter
+        _, params = _closed_filter("owlet_kody", days=1)
+        since = params[1]
+        # ET midnight in UTC lands at 04:00 or 05:00 depending on DST — never a rolling now-24h
+        assert since.tzinfo == timezone.utc
+        assert since.hour in (4, 5)
+        assert (since.minute, since.second) == (0, 0)

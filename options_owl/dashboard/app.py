@@ -294,9 +294,9 @@ async def dashboard(
     open_trades, closed_trades, stats, agent_state, daily_pnl, tickers = await asyncio.gather(
         get_open_trades(_pool, agent_id),
         get_closed_trades(_pool, agent_id, days=days, ticker=ticker),
-        get_portfolio_stats(_pool, agent_id),
+        get_portfolio_stats(_pool, agent_id, days=days, ticker=ticker),
         get_agent_state(_pool, agent_id),
-        get_daily_pnl(_pool, agent_id, days=min(days, 14)),
+        get_daily_pnl(_pool, agent_id, days=min(days, 14), ticker=ticker),
         get_distinct_tickers(_pool, agent_id),
     )
     if ticker:  # scope the open-trades panel too when filtering
@@ -353,7 +353,7 @@ async def analytics_page(request: Request, days: int = Query(default=30, ge=1, l
         get_ticker_performance(_pool, agent_id, days=days),
         get_hourly_performance(_pool, agent_id, days=days),
         get_trade_duration_stats(_pool, agent_id, days=days),
-        get_portfolio_stats(_pool, agent_id),
+        get_portfolio_stats(_pool, agent_id, days=days),
     )
 
     # Convert Decimal/date types for JSON serialization
