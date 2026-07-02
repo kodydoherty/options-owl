@@ -821,7 +821,11 @@ services:
     container_name: owlet-dashboard
     command: ["python", "-m", "options_owl.dashboard.app"]
     ports:
-      - "0.0.0.0:8443:8443"
+      # Bind to localhost ONLY — the dashboard is reached exclusively through the
+      # Cloudflare tunnel (https://options-owl.com → cloudflared → localhost:8443).
+      # NOT exposed on the public IP (Docker publishes bypass UFW, so this bind is the
+      # real access control). To expose publicly again, revert to "0.0.0.0:8443:8443".
+      - "127.0.0.1:8443:8443"
     depends_on:
       postgres:
         condition: service_healthy
