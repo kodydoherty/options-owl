@@ -386,3 +386,60 @@ class TestFleetAdmin:
         plain_html = _render_template("events.html", events=[], limit=150, event_type="",
                                       user={"sub": "vinny", "agent_id": "owlet_vinny", "is_admin": False})
         assert '/fleet' not in plain_html
+
+
+# ---------------------------------------------------------------------------
+# Ticker filter + live candle view
+# ---------------------------------------------------------------------------
+
+
+class TestTickerView:
+    def test_routes_and_queries_exist(self):
+        import inspect as _i
+
+        from options_owl.dashboard import db
+        from options_owl.dashboard.app import app
+        routes = {r.path for r in app.routes if hasattr(r, "path")}
+        assert "/ticker/{sym}" in routes
+        assert callable(db.get_candles)
+        assert callable(db.get_ticker_trades)
+        assert callable(db.get_distinct_tickers)
+        # ticker filter is agent-scoped + optional
+        assert "ticker" in _i.signature(db.get_closed_trades).parameters
+        assert "agent_id = $1" in _i.getsource(db.get_ticker_trades)  # per-user isolation
+
+    def test_candle_view_renders(self):
+        candles = [
+            {"time": 1751461200, "open": 500.0, "high": 501.0, "low": 499.5, "close": 500.8},
+            {"time": 1751461500, "open": 500.8, "high": 502.0, "low": 500.5, "close": 501.9},
+        ]
+        vwap = [{"time": 1751461200, "value": 500.4}, {"time": 1751461500, "value": 500.9}]
+        markers = [
+            {"time": 1751461200, "position": "belowBar", "color": "#22c55e",
+             "shape": "arrowUp", "text": "CALL #12"},
+            {"time": 1751461500, "position": "aboveBar", "color": "#22c55e",
+             "shape": "square", "text": "exit +$340"},
+        ]
+        trades = [{
+            "sqlite_id": 12, "direction": "call", "status": "closed",
+            "opened_at": datetime(2026, 7, 2, 10, 0), "closed_at": datetime(2026, 7, 2, 10, 5),
+            "premium_per_contract": 2.0, "exit_premium": 3.4, "pnl_dollars": 340.0,
+            "exit_reason": "profit_lock", "contracts": 2,
+        }]
+        html = _render_template(
+            "ticker_detail.html", sym="SPY", tf="5m", days=2, candles=candles, vwap=vwap,
+            markers=markers, trades=trades, timeframes=["1m", "5m", "15m", "1h"],
+        )
+        assert "SPY" in html
+        assert "lightweight-charts" in html          # candle lib loaded
+        assert "addCandlestickSeries" in html
+        assert "profit_lock" in html                  # trade table rendered
+        assert "/trade/12" in html                    # deep link
+
+    def test_candle_view_no_data(self):
+        html = _render_template(
+            "ticker_detail.html", sym="MU", tf="1m", days=2, candles=[], vwap=[],
+            markers=[], trades=[], timeframes=["1m", "5m", "15m", "1h"],
+        )
+        assert "No candle data" in html
+        assert "No trades on MU" in html

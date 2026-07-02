@@ -28,15 +28,62 @@ async def get_closed_trades(
     agent_id: str,
     days: int = 7,
     limit: int = 100,
+    ticker: str | None = None,
 ) -> list[dict]:
     since = datetime.now(tz=timezone.utc) - timedelta(days=days)
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT * FROM trades
                WHERE agent_id = $1 AND status = 'closed' AND closed_at >= $2
+                 AND ($4::text IS NULL OR ticker = $4)
                ORDER BY closed_at DESC
                LIMIT $3""",
-            agent_id, since, limit,
+            agent_id, since, limit, ticker,
+        )
+        return [dict(r) for r in rows]
+
+
+async def get_distinct_tickers(pool: asyncpg.Pool, agent_id: str) -> list[str]:
+    """Tickers this agent has ever traded — populates the dashboard ticker filter."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT DISTINCT ticker FROM trades WHERE agent_id = $1 ORDER BY ticker",
+            agent_id,
+        )
+        return [r["ticker"] for r in rows]
+
+
+async def get_candles(
+    pool: asyncpg.Pool, ticker: str, timeframe: str = "5m", limit: int = 200
+) -> list[dict]:
+    """Underlying OHLC candles from the harvester's shared feed (market data — NOT agent
+    scoped). Oldest-first for charting."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT bar_time, open, high, low, close, volume, vwap
+               FROM stock_candles
+               WHERE ticker = $1 AND timeframe = $2
+               ORDER BY bar_time DESC
+               LIMIT $3""",
+            ticker.upper(), timeframe, limit,
+        )
+        return [dict(r) for r in reversed(rows)]
+
+
+async def get_ticker_trades(
+    pool: asyncpg.Pool, agent_id: str, ticker: str, days: int = 5
+) -> list[dict]:
+    """This agent's entries/exits on one ticker, for overlaying markers on the candle chart.
+    Agent-scoped — you only ever see your own owlet's trades."""
+    since = datetime.now(tz=timezone.utc) - timedelta(days=days)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT sqlite_id, direction, status, opened_at, closed_at,
+                      premium_per_contract, exit_premium, pnl_dollars, exit_reason, contracts
+               FROM trades
+               WHERE agent_id = $1 AND ticker = $2 AND opened_at >= $3
+               ORDER BY opened_at ASC""",
+            agent_id, ticker.upper(), since,
         )
         return [dict(r) for r in rows]
 

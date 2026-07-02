@@ -38,12 +38,15 @@ from options_owl.dashboard.controls import (
 )
 from options_owl.dashboard.db import (
     get_agent_state,
+    get_candles,
     get_closed_trades,
     get_daily_pnl,
+    get_distinct_tickers,
     get_exit_distribution,
     get_fleet_overview,
     get_hourly_performance,
     get_open_trades,
+    get_ticker_trades,
     get_pnl_curve,
     get_portfolio_stats,
     get_premium_ticks,
@@ -279,17 +282,25 @@ async def logout():
 
 
 @app.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request, days: int = Query(default=7, ge=1, le=90)):
+async def dashboard(
+    request: Request,
+    days: int = Query(default=7, ge=1, le=90),
+    ticker: str = Query(default=""),
+):
     user = request.state.user
     agent_id = user["agent_id"]
+    ticker = ticker.strip().upper() or None
 
-    open_trades, closed_trades, stats, agent_state, daily_pnl = await asyncio.gather(
+    open_trades, closed_trades, stats, agent_state, daily_pnl, tickers = await asyncio.gather(
         get_open_trades(_pool, agent_id),
-        get_closed_trades(_pool, agent_id, days=days),
+        get_closed_trades(_pool, agent_id, days=days, ticker=ticker),
         get_portfolio_stats(_pool, agent_id),
         get_agent_state(_pool, agent_id),
         get_daily_pnl(_pool, agent_id, days=min(days, 14)),
+        get_distinct_tickers(_pool, agent_id),
     )
+    if ticker:  # scope the open-trades panel too when filtering
+        open_trades = [t for t in open_trades if t.get("ticker") == ticker]
 
     paper_mode, kill_switch, heartbeat = await asyncio.gather(
         get_paper_mode(agent_id),
@@ -320,6 +331,8 @@ async def dashboard(request: Request, days: int = Query(default=7, ge=1, le=90))
         "days": days,
         "sparkline": sparkline,
         "heartbeat": heartbeat,
+        "ticker": ticker or "",
+        "tickers": tickers,
     })
 
 
@@ -478,6 +491,80 @@ async def fleet_page(request: Request):
     return _render("fleet.html", {
         "request": request, "user": user, "agents": agents,
         "fleet_pnl": fleet_pnl, "fleet_total": fleet_total,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Live ticker view — underlying candles + this agent's trade markers
+# ---------------------------------------------------------------------------
+
+_TIMEFRAMES = {"1m", "5m", "15m", "1h"}
+
+
+@app.get("/ticker/{sym}", response_class=HTMLResponse)
+async def ticker_view(
+    request: Request,
+    sym: str,
+    tf: str = Query(default="5m"),
+    days: int = Query(default=2, ge=1, le=30),
+):
+    user = request.state.user
+    agent_id = user["agent_id"]
+    sym = sym.strip().upper()
+    tf = tf if tf in _TIMEFRAMES else "5m"
+    # more bars for finer timeframes so the window still spans the day(s)
+    limit = {"1m": 780, "5m": 320, "15m": 200, "1h": 120}.get(tf, 320)
+
+    candles, trades = await asyncio.gather(
+        get_candles(_pool, sym, timeframe=tf, limit=limit),
+        get_ticker_trades(_pool, agent_id, sym, days=days),
+    )
+
+    # lightweight-charts renders numeric time as UTC; shift each bar to ET wall-clock so the
+    # axis reads in market time (DST-correct via ZoneInfo).
+    from datetime import timezone as _tz
+    from zoneinfo import ZoneInfo
+    _ET = ZoneInfo("America/New_York")
+
+    def _epoch(v):
+        if not hasattr(v, "timestamp"):
+            return None
+        if v.tzinfo is None:
+            v = v.replace(tzinfo=_tz.utc)
+        et = v.astimezone(_ET)
+        return int(et.replace(tzinfo=_tz.utc).timestamp())
+
+    candle_data = [
+        {"time": _epoch(c["bar_time"]), "open": float(c["open"]), "high": float(c["high"]),
+         "low": float(c["low"]), "close": float(c["close"])}
+        for c in candles if _epoch(c["bar_time"])
+    ]
+    vwap_data = [
+        {"time": _epoch(c["bar_time"]), "value": float(c["vwap"])}
+        for c in candles if _epoch(c["bar_time"]) and c.get("vwap")
+    ]
+    markers = []
+    for t in trades:
+        is_call = (t.get("direction") or "").lower() in ("call", "bullish", "long")
+        e = _epoch(t.get("opened_at"))
+        if e:
+            markers.append({"time": e, "position": "belowBar",
+                            "color": "#22c55e" if is_call else "#ef4444",
+                            "shape": "arrowUp" if is_call else "arrowDown",
+                            "text": f"{t.get('direction', '').upper()} #{t.get('sqlite_id')}"})
+        x = _epoch(t.get("closed_at"))
+        if x and t.get("status") == "closed":
+            pnl = t.get("pnl_dollars") or 0
+            markers.append({"time": x, "position": "aboveBar",
+                            "color": "#22c55e" if pnl >= 0 else "#ef4444", "shape": "square",
+                            "text": f"exit {'+' if pnl >= 0 else ''}${pnl:,.0f}"})
+    # markers must be sorted by time for lightweight-charts
+    markers.sort(key=lambda m: m["time"])
+
+    return _render("ticker_detail.html", {
+        "request": request, "user": user, "sym": sym, "tf": tf, "days": days,
+        "candles": candle_data, "vwap": vwap_data, "markers": markers,
+        "trades": trades, "timeframes": ["1m", "5m", "15m", "1h"],
     })
 
 
