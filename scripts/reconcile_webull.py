@@ -102,10 +102,12 @@ async def reconcile(bot_name: str | None = None, dry_run: bool = False,
         print(f"DB not found: {db_path}")
         return
 
-    # Init Webull client
+    # Init Webull client. MUST call init() (not just _ensure_clients) so the account ID is
+    # detected/selected — order history 401s with a None account_id (the 2026-07-02 bug on
+    # unpinned accounts like adam). init() picks MARGIN vs CASH per settings.MARGIN_ACCOUNT.
     w = WebullExecutor(settings)
-    w._ensure_clients()
-    print("Webull client initialized")
+    account_id = await w.init()
+    print(f"Webull client initialized (account {account_id})")
 
     # Pull fills from Webull
     fills = await fetch_all_webull_fills(w, target_date)
