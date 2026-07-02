@@ -291,6 +291,21 @@ class ExitFSM:
                     f"0DTE premium hard-stop: {gain:.0f}% <= -{hs:.0f}% from entry (underlying-independent)",
                     debug=debug)
 
+        # Gate 2.55: MULTI-DAY CALL premium HARD-STOP — extend the -25% hard cut to multi-day CALL
+        # legs, which otherwise ride the wide 30/50% graduated backstop (confirmed_stop losers averaged
+        # -43% live). CALLS ONLY: puts ride slow-building crashes and a tight cut clips those winners
+        # (sweep 'Best PUTS: none'). Underlying-independent, fires even during grace. Validated
+        # 2026-07-02: 3mo prod-match sweep +$3,730 (+8%) at -25% (best; -20% clips, -30% ok).
+        if (not is_0dte and self._settings
+                and state.option_type.lower() in ("call", "bullish", "long")
+                and getattr(self._settings, "ENABLE_MULTIDAY_CALL_HARDSTOP", False)):
+            mhs = getattr(self._settings, "MULTIDAY_CALL_HARDSTOP_PCT", 25.0)
+            if mhs > 0 and gain <= -mhs:
+                return _exit(
+                    ExitReason.MULTIDAY_CALL_HARDSTOP,
+                    f"multi-day CALL hard-stop: {gain:.0f}% <= -{mhs:.0f}% from entry (underlying-independent)",
+                    debug=debug)
+
         # Gate 2.6: DEAD-ON-ARRIVAL stall cut (MULTI-DAY) — cut a leg that NEVER WORKED: held long
         # enough, down big, and its peak gain never cleared the threshold. Fixes the 1-DTE put/call
         # that bleeds an hour to the wide 50% graduated backstop (adam META 2026-07-01: peaked +1%,

@@ -261,6 +261,12 @@ class Settings(BaseSettings):
     # PUT PF 1.39→1.49 + caps the call disaster tail (the NVDA -42% case). 0DTE only.
     ENABLE_0DTE_PREMIUM_HARDSTOP: bool = False
     PREMIUM_HARDSTOP_0DTE_PCT: float = 25.0
+    # Multi-day CALL hard-stop — extend the -25% cut to multi-day CALL legs (0DTE already covered above).
+    # Multi-day calls otherwise ride the wide 30/50% graduated backstop; live confirmed_stop losers avg
+    # -43%. CALLS ONLY (puts ride slow crashes; a tight cut clips those winners). Validated 2026-07-02:
+    # 3-month prod-match sweep +$3,730 (+8%) at -25% (best; -20% clips winners, -30% still +).
+    ENABLE_MULTIDAY_CALL_HARDSTOP: bool = False
+    MULTIDAY_CALL_HARDSTOP_PCT: float = 25.0
     # Dead-on-arrival STALL CUT (multi-day) — cut a leg that NEVER WORKED: held >= N min, down >= X%,
     # and its peak gain never cleared Y%. Fixes the 1-DTE put/call that bleeds an hour to the wide 50%
     # graduated backstop (adam META 2026-07-01: peaked +1%, -47%, held ~1hr). Validated 2026-07-01 on

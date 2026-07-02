@@ -45,6 +45,7 @@ _REASON_MAP = {
     ExitReason.PROFIT_LOCK: "profit_lock",
     ExitReason.PROFIT_STEP_LOCK: "profit_step_lock",
     ExitReason.PREMIUM_HARDSTOP: "premium_hardstop",
+    ExitReason.MULTIDAY_CALL_HARDSTOP: "multiday_call_hardstop",
     ExitReason.STALL_CUT: "stall_cut",
     ExitReason.SCALEOUT: "scaleout_20",
     ExitReason.SIDEWAYS_SCALP: "sideways_scalp",

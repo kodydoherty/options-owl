@@ -28,6 +28,7 @@ class ExitReason(Enum):
     PROFIT_LOCK = "profit_lock"
     PROFIT_STEP_LOCK = "profit_step_lock"
     PREMIUM_HARDSTOP = "premium_hardstop"
+    MULTIDAY_CALL_HARDSTOP = "multiday_call_hardstop"
     STALL_CUT = "stall_cut"
     SCALEOUT = "scaleout"
     SIDEWAYS_SCALP = "sideways_scalp"

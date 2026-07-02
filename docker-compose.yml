@@ -166,6 +166,7 @@ services:
       # 0DTE premium hard-stop -25%: cut a 0DTE contract down 25% from entry regardless of underlying
       # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
       - ENABLE_0DTE_PREMIUM_HARDSTOP=true
+      - ENABLE_MULTIDAY_CALL_HARDSTOP=true
       # 2026-07-01 late-day/overnight risk controls (all fleet-wide, env-gated):
       #  • STALL_CUT: cut dead-on-arrival multi-day legs (>30m held, -30%, peaked <10%) — kills the
       #    1-DTE bleeder that rode the wide 50% backstop for an hour (adam META). Validated ~neutral.
@@ -301,6 +302,7 @@ services:
       # 0DTE premium hard-stop -25%: cut a 0DTE contract down 25% from entry regardless of underlying
       # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
       - ENABLE_0DTE_PREMIUM_HARDSTOP=true
+      - ENABLE_MULTIDAY_CALL_HARDSTOP=true
       # 2026-07-01 late-day/overnight risk controls (all fleet-wide, env-gated):
       #  • STALL_CUT: cut dead-on-arrival multi-day legs (>30m held, -30%, peaked <10%) — kills the
       #    1-DTE bleeder that rode the wide 50% backstop for an hour (adam META). Validated ~neutral.
@@ -447,6 +449,7 @@ services:
       # 0DTE premium hard-stop -25%: cut a 0DTE contract down 25% from entry regardless of underlying
       # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
       - ENABLE_0DTE_PREMIUM_HARDSTOP=true
+      - ENABLE_MULTIDAY_CALL_HARDSTOP=true
       # 2026-07-01 late-day/overnight risk controls (all fleet-wide, env-gated):
       #  • STALL_CUT: cut dead-on-arrival multi-day legs (>30m held, -30%, peaked <10%) — kills the
       #    1-DTE bleeder that rode the wide 50% backstop for an hour (adam META). Validated ~neutral.
@@ -588,6 +591,7 @@ services:
       # 0DTE premium hard-stop -25%: cut a 0DTE contract down 25% from entry regardless of underlying
       # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
       - ENABLE_0DTE_PREMIUM_HARDSTOP=true
+      - ENABLE_MULTIDAY_CALL_HARDSTOP=true
       # 2026-07-01 late-day/overnight risk controls (all fleet-wide, env-gated):
       #  • STALL_CUT: cut dead-on-arrival multi-day legs (>30m held, -30%, peaked <10%) — kills the
       #    1-DTE bleeder that rode the wide 50% backstop for an hour (adam META). Validated ~neutral.
@@ -701,6 +705,7 @@ services:
       # 0DTE premium hard-stop -25%: cut a 0DTE contract down 25% from entry regardless of underlying
       # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
       - ENABLE_0DTE_PREMIUM_HARDSTOP=true
+      - ENABLE_MULTIDAY_CALL_HARDSTOP=true
       # 2026-07-01 late-day/overnight risk controls (all fleet-wide, env-gated):
       #  • STALL_CUT: cut dead-on-arrival multi-day legs (>30m held, -30%, peaked <10%) — kills the
       #    1-DTE bleeder that rode the wide 50% backstop for an hour (adam META). Validated ~neutral.
