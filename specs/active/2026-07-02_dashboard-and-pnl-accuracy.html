@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OptionsOwl — Per-Owlet Dashboard + 100% Webull-Accurate P&amp;L (Spec)</title>
+<style>
+  :root{
+    --bg:#0f1216; --panel:#171b21; --panel2:#1d222a; --ink:#e7ecf2; --mut:#9aa6b2;
+    --line:#2a313b; --accent:#6ea8fe;
+    --crit:#ff5c5c; --high:#ff9f43; --med:#ffd93d; --low:#7bd88f; --info:#6ea8fe;
+    --bug:#ff6b6b; --profit:#39d98a; --risk:#c792ea; --doc:#8fa0b3; --new:#6ea8fe; --safe:#39d98a;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 22px 80px}
+  h1{font-size:26px;margin:0 0 4px}
+  h2{font-size:20px;margin:40px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:20px 0 6px}
+  .sub{color:var(--mut);font-size:13px;margin:0 0 22px}
+  .meta{display:flex;flex-wrap:wrap;gap:10px 26px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 18px;margin:0 0 26px;font-size:13px}
+  .meta b{color:var(--mut);font-weight:600;margin-right:6px}
+  code{background:#0c0f13;border:1px solid var(--line);border-radius:5px;padding:1px 6px;font:12.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:#d7e3f4}
+  .pill{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.02em;padding:2px 8px;border-radius:20px;text-transform:uppercase;vertical-align:middle}
+  .b-crit{background:rgba(255,92,92,.15);color:var(--crit);border:1px solid rgba(255,92,92,.4)}
+  .b-high{background:rgba(255,159,67,.15);color:var(--high);border:1px solid rgba(255,159,67,.4)}
+  .b-med{background:rgba(255,217,61,.13);color:var(--med);border:1px solid rgba(255,217,61,.4)}
+  .b-low{background:rgba(123,216,143,.13);color:var(--low);border:1px solid rgba(123,216,143,.4)}
+  .b-info{background:rgba(110,168,254,.13);color:var(--info);border:1px solid rgba(110,168,254,.4)}
+  .t-bug{background:rgba(255,107,107,.12);color:var(--bug);border:1px solid rgba(255,107,107,.35)}
+  .t-new{background:rgba(110,168,254,.12);color:var(--new);border:1px solid rgba(110,168,254,.35)}
+  .t-safe{background:rgba(57,217,138,.12);color:var(--safe);border:1px solid rgba(57,217,138,.35)}
+  .t-risk{background:rgba(199,146,234,.12);color:var(--risk);border:1px solid rgba(199,146,234,.35)}
+  table{width:100%;border-collapse:collapse;margin:8px 0 4px;font-size:13px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--mut);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+  tr:hover td{background:rgba(255,255,255,.02)}
+  td a{color:var(--accent);text-decoration:none}
+  .card{background:var(--panel);border:1px solid var(--line);border-left-width:4px;border-radius:10px;padding:16px 18px;margin:14px 0}
+  .card.crit{border-left-color:var(--crit)} .card.high{border-left-color:var(--high)}
+  .card.med{border-left-color:var(--med)} .card.low{border-left-color:var(--low)}
+  .card.new{border-left-color:var(--new)} .card.safe{border-left-color:var(--safe)}
+  .card .hdr{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:8px}
+  .card .id{font:700 13px ui-monospace,monospace;color:var(--mut);margin-right:2px}
+  .card .title{font-size:16px;font-weight:650;flex:1 1 auto}
+  .loc{font:12.5px ui-monospace,monospace;color:#c7d2e0;background:#0c0f13;border:1px solid var(--line);border-radius:5px;padding:2px 7px;display:inline-block;margin:2px 0 8px}
+  .card p{margin:6px 0}
+  .lab{color:var(--mut);font-weight:600;font-size:12.5px;text-transform:uppercase;letter-spacing:.03em}
+  .fix{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 13px;margin-top:10px}
+  .note{background:rgba(110,168,254,.07);border:1px solid rgba(110,168,254,.28);border-radius:8px;padding:12px 15px;margin:14px 0;font-size:13.5px}
+  .danger{background:rgba(255,92,92,.07);border-color:rgba(255,92,92,.32)}
+  .good{background:rgba(57,217,138,.07);border-color:rgba(57,217,138,.35)}
+  ul{margin:6px 0;padding-left:22px} li{margin:4px 0}
+  .foot{color:var(--mut);font-size:12px;margin-top:40px;border-top:1px solid var(--line);padding-top:14px}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mut);margin:6px 0 18px}
+  .step{display:inline-block;font:700 11px ui-monospace,monospace;color:#0c0f13;background:var(--accent);border-radius:5px;padding:1px 7px;margin-right:6px}
+  .kv{font-size:13px} .kv b{color:var(--mut);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Per-Owlet Dashboard + 100% Webull-Accurate P&amp;L</h1>
+  <p class="sub">Spec for approval. <strong>No code changed yet.</strong> Two linked workstreams: (A) make recorded P&amp;L match Webull to the penny, (B) extend the existing dashboard to per-owlet, verbose monitoring. Hard constraint throughout: <strong>zero chance of affecting live trading</strong>.</p>
+
+  <div class="meta">
+    <span><b>Date</b>2026-07-02</span>
+    <span><b>Branch</b>feat/regime-call-put-budget</span>
+    <span><b>Live money</b>kody, adam, dennis (cash/margin)</span>
+    <span><b>Trigger</b>adam DB +$538 vs real −$125.16; vinny wants verbose monitoring</span>
+    <span><b>Grounding</b>3 parallel code audits (dashboard, data model, fill path)</span>
+  </div>
+
+  <div class="note good">
+    <strong>Two facts that shrink this whole effort:</strong>
+    <ul>
+      <li><strong>A full dashboard already exists and is deployed</strong> — <code>options_owl/dashboard/</code>, the <code>owlet-dashboard</code> service on port <strong>8443</strong>. It already has bcrypt+JWT login, <strong>per-owlet isolation</strong> (each user sees only their agent via an <code>agent_id</code>-scoped query), a live WebSocket feed, and analytics pages. We <em>extend</em> it — we do not build a new one.</li>
+      <li><strong>Webull already exposes ground truth</strong> — <code>order_v2.get_order_history()</code> returns the broker's own settled fills + quantities per order, immune to the intraday rate-limit races that corrupt our live numbers. Reconciling against it is fully out-of-band (zero trading risk).</li>
+    </ul>
+  </div>
+
+  <div class="note danger">
+    <strong>The #1 rule for every item below.</strong> Nothing in this spec may add a blocking call, a lock, or a failure mode to the ~5&nbsp;s position-monitor loop or the order-placement path. Monitoring is <em>read-only</em>; new data capture is <em>fire-and-forget to a separate sink</em>; P&amp;L correction happens <em>out-of-band</em> against Webull's own history. If any single change here carried a non-trivial chance of stopping a bot from selling, it is deferred or redesigned.</p>
+  </div>
+
+  <h2>Executive summary</h2>
+  <p>You currently cannot trust the recorded P&amp;L: for adam today the DB showed <strong>+$538</strong> while the brokerage finished <strong>−$125.16</strong>. This is not one bug — it's five compounding ones on the trade-close path (below), and it poisons everything downstream, including the dashboard, which reads the same numbers from Postgres. <strong>Workstream A fixes the numbers; Workstream B is worthless until A is done.</strong></p>
+  <ul>
+    <li><strong>A — P&amp;L accuracy (foundation, do first).</strong> Make Webull's own order history the source of truth. A zero-risk nightly reconciler corrects the DB (SQLite + Postgres + portfolio balance) to the penny; a small, tested forward-capture change reduces intraday drift so the live view is close in real time and exact by EOD.</li>
+    <li><strong>B — Dashboard verbosity (build on what ships).</strong> Reuse the existing auth + per-owlet isolation + WebSocket. Add the verbose per-trade lifecycle timeline vinny wants — powered by piggybacking the FSM's already-computed per-cycle state onto the <em>existing</em> fire-and-forget 15&nbsp;s premium-tick flush, so it adds <strong>zero latency to the exit path</strong>.</li>
+  </ul>
+
+  <h2>Part A — 100% Webull-accurate P&amp;L</h2>
+
+  <h3>Root cause: why the DB drifts from Webull</h3>
+  <div class="legend">
+    <span><span class="pill t-bug">bug</span> makes P&amp;L wrong</span>
+    <span><span class="pill t-safe">safe fix</span> out-of-band / no hot-path risk</span>
+    <span><span class="pill t-risk">hot-path</span> touches order/monitor path — test hard</span>
+  </div>
+  <table>
+    <thead><tr><th>#</th><th>Root cause</th><th>Effect</th><th>Location</th></tr></thead>
+    <tbody>
+      <tr><td>A-1</td><td><code>close_trade</code> runs <em>first</em> and computes P&amp;L from the <em>market</em> premium + <em>simulated</em> slippage, then credits the portfolio balance with that approximation. <code>close_webull_position</code> runs second, fixes <code>pnl_dollars</code> from the real fill — but <strong>never updates <code>exit_premium</code> and never corrects the portfolio balance</strong>.</td><td>exit_premium ≠ pnl_dollars by construction; balance permanently approximate</td><td>paper_trader.py:3378 / 2059</td></tr>
+      <tr><td>A-2</td><td>Real fill is fetched via a <em>separate</em> <code>get_fill_price</code> call after the order. When Webull <strong>429-rate-limits</strong> (adam did today), it returns None and P&amp;L <strong>stays at the approximation</strong>.</td><td>whole trades booked at intended, not real, price</td><td>paper_trader.py:2256 / webull_executor.py:1470</td></tr>
+      <tr><td>A-3</td><td><strong>Commissions/fees are never subtracted.</strong> Every formula is <code>(exit−entry)×qty×100</code>.</td><td>systematic upward bias (~$0.55/ct + reg fees × ~dozens of contracts/day)</td><td>paper_trader.py:2301,3399,3754</td></tr>
+      <tr><td>A-4</td><td>Simulated exit slippage (<code>SIMULATED_EXIT_SLIPPAGE_BPS</code>) applied to a live trade — a fiction on top of the approximation.</td><td>adds noise vs reality</td><td>paper_trader.py:3395</td></tr>
+      <tr><td>A-5</td><td>The only place real account truth enters is the once-daily <code>sync_portfolio_from_webull</code> — a blunt reset of balance to live NLV, not a per-trade reconcile.</td><td>daily balance can look right while every trade is wrong</td><td>paper_trader.py:1079</td></tr>
+    </tbody>
+  </table>
+  <p>Net for adam today: approximate exit prices + no fees + 429-failed fill fetches + never-corrected portfolio = the <strong>+$538 vs −$125</strong> gap. All five are consistent with what we observed in the logs.</p>
+
+  <div class="card safe">
+    <div class="hdr"><span class="id">A0</span><span class="title">Ground-truth nightly reconciler — the "100% accuracy" deliverable</span><span class="pill t-safe">safe fix</span><span class="pill b-crit">do first</span></div>
+    <div class="loc">extend scripts/reconcile_webull.py (already live-API-backed) → scheduled per bot after close</div>
+    <p><strong>What:</strong> After close each day, pull <code>executor.get_order_history(start, end)</code> per bot — Webull's own settled fills + quantities (+ fees). Group orders into trade families by (day, symbol, strike, expiry, type), handling DCA adds and scale-out children. Compute realized P&amp;L per family = <code>Σ sell_proceeds − Σ buy_cost − fees</code>. Then write the truth back:</p>
+    <ul>
+      <li><code>webull_entry_fill_price</code> / <code>webull_exit_fill_price</code> (columns already exist), <code>exit_premium</code> <em>and</em> <code>pnl_dollars</code> — <strong>including <code>exit_premium</code>, which no current script fixes</strong>.</li>
+      <li><strong>Correct <code>paper_portfolio.current_balance</code> / <code>daily_pnl</code> / wins / losses</strong> — which <em>no</em> current script does. This is the missing piece that lets the recorded balance match the brokerage.</li>
+      <li>Mirror all corrections into <strong>Postgres</strong> (<code>trades</code>, <code>agent_state</code>) so the dashboard and <code>trade-pnl.py</code> both inherit the truth.</li>
+    </ul>
+    <div class="fix"><span class="lab">Why zero-risk</span> It runs as a standalone script/cron (or a job in the <code>owlet-dashboard</code> container), out-of-band, after market close. It only <em>reads</em> Webull and <em>corrects historical rows</em> — it never touches the live monitor loop, the order path, or an open position. Ships with a <strong>report-only mode (default)</strong> that prints "Webull says $X, DB says $Y, diff $Z per trade" and writes nothing until <code>--fix</code>.</div>
+    <p class="kv"><b>Acceptance:</b> run it for adam today → the reconciled total equals the brokerage's <strong>−$125.16</strong>, with a per-trade diff table showing exactly where the DB was wrong (expect: the MU stale-fill + missing fees + 429-missed fills).</p>
+  </div>
+
+  <div class="card med">
+    <div class="hdr"><span class="id">A1</span><span class="title">Forward capture — book the real fill at close, not the approximation</span><span class="pill t-risk">hot-path</span></div>
+    <div class="loc">webull_executor.py:29 (OrderResult), 1030/1236 (fill branches); paper_trader.py:2309 (close UPDATE)</div>
+    <ul>
+      <li>Add <code>fill_price</code> (and <code>commission</code>) to <code>OrderResult</code> and populate them from the order detail the escalation ladder <em>already fetched</em> — no new API round-trip, so <strong>no new 429 exposure</strong>. Eliminates the failure-prone separate <code>get_fill_price</code> call.</li>
+      <li>In <code>close_webull_position</code>, set <code>exit_premium = webull_exit_fill_price</code> in the same UPDATE that already fixes <code>pnl_dollars</code> — closes the A-1 disagreement.</li>
+      <li>Defer/true-up the portfolio balance credit to the real fill (or let A0 be the nightly backstop).</li>
+    </ul>
+    <div class="fix"><span class="lab">Safety</span> This touches the live close path, so: (1) reuse already-fetched payloads — add no blocking calls; (2) do not perturb the double-fill / naked-short guards; (3) full unit tests + a paper-bot canary before kody/adam. If A0 is running nightly, A1 is an <em>optimization</em> (less intraday drift), not a correctness dependency — so it can go slow and careful.</div>
+  </div>
+
+  <div class="card low">
+    <div class="hdr"><span class="id">A2</span><span class="title">Fees — read and subtract them</span><span class="pill t-bug">bug</span></div>
+    <div class="loc">webull_executor.py:1511 (add _extract_fees sibling to _extract_fill_price)</div>
+    <p>Add a <code>_extract_fees</code> that reads the commission/fee field from <code>get_order_detail</code>/<code>get_order_history</code> payloads, and subtract fees in the P&amp;L formulas. Removes the systematic upward bias. Lands naturally inside A0 (history payload) and A1 (detail payload).</p>
+  </div>
+
+  <div class="note">
+    <strong>Recommended sequencing for A:</strong> <span class="step">1</span> Ship <strong>A0 report-only</strong> and run it for adam today → prove we can reproduce −$125.16. <span class="step">2</span> Flip A0 to <code>--fix</code> + schedule nightly (per bot) → DB is penny-accurate to Webull by every EOD. <span class="step">3</span> Then A1 + A2 as a tested, canaried hot-path change to shrink intraday drift. After step 2 you already "know with 100% accuracy what's in Webull" every morning; steps 3 keeps the <em>live</em> view honest too.
+  </div>
+
+  <h2>Part B — Verbose per-owlet dashboard (extend <code>owlet-dashboard</code>)</h2>
+
+  <h3>What already exists (reuse, don't rebuild)</h3>
+  <table>
+    <thead><tr><th>Capability</th><th>Where</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td>FastAPI app on :8443, own container, 256M cap, journal mounted <code>:ro</code></td><td>options_owl/dashboard/app.py; docker-compose <code>owlet-dashboard</code></td><td>deployed</td></tr>
+      <tr><td>bcrypt + JWT login, <code>owl_token</code> cookie, <code>AuthMiddleware</code></td><td>dashboard/auth.py</td><td>deployed</td></tr>
+      <tr><td><strong>Per-owlet isolation</strong> — each user's JWT carries <code>agent_id</code>; every query filtered by it</td><td>dashboard/db.py</td><td>deployed</td></tr>
+      <tr><td>Live WebSocket <code>/ws</code> + Redis pub/sub (<code>owl:trade_update:*</code>)</td><td>dashboard/ws.py, static/ws.js</td><td>deployed</td></tr>
+      <tr><td>Analytics: P&amp;L curve, daily P&amp;L, exit distribution, ticker/hourly perf, duration</td><td>dashboard/db.py, /analytics</td><td>deployed</td></tr>
+      <tr><td>Per-trade <strong>premium chart data</strong> (15&nbsp;s premium/bid/ask/underlying series)</td><td>Postgres <code>trade_premium_ticks</code></td><td>deployed (data flowing)</td></tr>
+      <tr><td>Controls surface (paper-mode toggle, kill-switch) via Redis</td><td>dashboard/controls.py</td><td>deployed</td></tr>
+    </tbody>
+  </table>
+  <p>So the login-isolated, per-owlet foundation vinny asked for is <strong>already there</strong>. What's missing is <em>verbosity</em>: the screenshot's second-by-second lifecycle timeline.</p>
+
+  <div class="card new">
+    <div class="hdr"><span class="id">B1</span><span class="title">Persist the verbose lifecycle timeline (the core new feature)</span><span class="pill t-new">net-new</span><span class="pill t-safe">safe pattern</span></div>
+    <div class="loc">position_monitor.py:1801 (existing trade_premium_ticks fire-and-forget flush) + fsm.py evaluate() debug dict</div>
+    <p><strong>The good news:</strong> the FSM already computes the entire rich per-cycle state every ~5&nbsp;s — <code>state</code> (GRACE/DEVELOPING/TRAILING), <code>gain_pct</code>, <code>peak_gain_pct</code>, <code>drop_from_peak</code>, active stop, <code>underlying_move</code>, which gate would fire — in the <code>evaluate()</code> <code>debug</code> dict. Today it is <strong>discarded on HOLD</strong>. We just need to persist it.</p>
+    <p><strong>The safe way:</strong> the monitor already buffers a <code>trade_premium_ticks</code> row every 15&nbsp;s and flushes it <em>fire-and-forget</em> to Postgres. Piggyback the FSM debug snapshot onto that same throttled, non-blocking flush — either as JSONB columns on the tick, or a sibling <code>trade_state_snapshots</code> table written by the same buffer. <strong>Zero added latency on the exit path, zero change to exit logic</strong> — we serialize a dict that already exists in memory.</p>
+    <div class="fix"><span class="lab">Also add exit-lifecycle events</span> Today <code>trade_events</code> logs only <em>entry</em>-side decisions. Emit the exit-side transitions the screenshot shows — ratchet armed, trail tightened, peak updated, scale-out, gate fired — as fire-and-forget <code>trade_events</code> rows (JSONB). Same non-blocking sink; never in the gate-decision critical section.</div>
+  </div>
+
+  <div class="note">
+    <strong>Honesty about the screenshot.</strong> The exact labels in vinny's mockup — <code>VOTE RESOLVED</code>, <code>PEAK_REVAL_PASS</code>, <code>PD armed/tighten</code>, <code>SC_PEAK_REVAL_CALIB_BAIL</code>, <code>RUNNER</code> vs <code>INITIAL</code> — <strong>do not exist in our codebase</strong> (verified by full-repo grep). They appear to be from a different/aspirational system. Our real engine has equivalent concepts we <em>can</em> surface truthfully: FSM state, the profit-lock/breakeven-ratchet/step-lock "armed" + trail-"tighten" transitions ("PD" ≈ these), <code>runner_v1</code> P(runner) score (RUNNER), the initial vs DCA/scale-out leg (INITIAL), and the real <code>ExitReason</code> that fired. <strong>The spec will map the mockup to real, accurate terms rather than fabricate votes/labels we don't compute.</strong>
+  </div>
+
+  <div class="card new">
+    <div class="hdr"><span class="id">B2</span><span class="title">New / upgraded views</span><span class="pill t-new">net-new</span></div>
+    <ul>
+      <li><strong>Trade detail — verbose timeline:</strong> the premium chart (entry/exit/peak markers, from <code>trade_premium_ticks</code> + MFE/MAE) with the new per-cycle state stream underneath (from B1). This is the screenshot.</li>
+      <li><strong>Event stream:</strong> live feed of <code>trade_events</code> (now including exit lifecycle) over the existing WebSocket.</li>
+      <li><strong>Signals:</strong> incoming Discord + UW-flow signals with score, accept/reject, and the gate that rejected — from Postgres <code>ml_signals</code> / <code>trade_signals</code>.</li>
+      <li><strong>Positions / Performance / Trades:</strong> already exist; wire them to the A0-corrected numbers so P&amp;L is real.</li>
+      <li><strong>Admin / fleet view (kody only):</strong> current auth is strictly single-agent-per-user; add an <code>is_admin</code> flag so kody sees the whole fleet. Everyone else stays scoped to their own bot.</li>
+    </ul>
+  </div>
+
+  <h2>Safety architecture &amp; non-goals (applies to everything)</h2>
+  <ul>
+    <li><strong>Read-only to trading.</strong> The dashboard never writes a trading DB. Reads target <strong>Postgres</strong> (the shared store) or read-only SQLite (<code>mode=ro</code>), never contending with the bots' WAL writers.</li>
+    <li><strong>Physically separate process.</strong> All UI/serving stays in the <code>owlet-dashboard</code> container (already memory-capped, own port). A crash/OOM there cannot touch a bot.</li>
+    <li><strong>New capture is fire-and-forget to a separate sink.</strong> No new <code>await</code> DB write inside FSM <code>evaluate()</code> or the gate critical section — reuse the existing throttled, non-blocking premium-tick flush.</li>
+    <li><strong>Monitor-only in v1.</strong> You said both "manage their bots" and "zero chance to break things, just monitor." We honor the second: v1 is read-only. The existing kill-switch/paper-mode controls stay <em>as they are</em> (no new control actions, no per-owlet self-serve kill of a live bot) until a separately-specced, audited Phase 2.</li>
+    <li><strong>Cleanup:</strong> <code>CLAUDE.md:501</code> and the <code>.env</code> Supabase keys reference removed code (Supabase was deleted in <code>6d5e6fc</code>) — correct these so nobody assumes a Supabase backend exists.</li>
+  </ul>
+
+  <h2>Proposed order of work</h2>
+  <table>
+    <thead><tr><th>Phase</th><th>Item</th><th>Risk</th><th>Unblocks</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td><strong>A0 reconciler, report-only</strong> → reproduce adam −$125.16</td><td><span class="pill b-low">none (read-only)</span></td><td>trust; proves the model</td></tr>
+      <tr><td>2</td><td>A0 <code>--fix</code> + nightly schedule + Postgres mirror</td><td><span class="pill b-low">low (out-of-band)</span></td><td>penny-accurate DB by every EOD</td></tr>
+      <tr><td>3</td><td>A2 fees + A1 forward capture (tested, paper-canary first)</td><td><span class="pill b-med">hot-path — careful</span></td><td>accurate <em>intraday</em>, less nightly drift</td></tr>
+      <tr><td>4</td><td>B1 persist FSM timeline via existing fire-and-forget flush</td><td><span class="pill b-low">low (piggyback)</span></td><td>the verbose timeline data</td></tr>
+      <tr><td>5</td><td>B2 dashboard views + admin/fleet role</td><td><span class="pill b-low">none (read-only UI)</span></td><td>vinny's verbose per-owlet UI</td></tr>
+    </tbody>
+  </table>
+
+  <div class="note good">
+    <strong>Immediate next step (needs only your go):</strong> build <strong>A0 in report-only mode</strong> and run it against adam's Webull order history for today. It writes nothing — it just prints Webull's real per-trade fills vs the DB, and totals to the brokerage's −$125.16. That single run tells us, with certainty, where the money differs and confirms the fix model before we change any recorded data.
+  </div>
+
+  <div class="foot">
+    Spec authored 2026-07-02 from three parallel read-only code audits (existing dashboard, data model, Webull fill path). No code changed. Awaiting approval on scope + the Phase-1 report-only reconciler run.
+  </div>
+
+</div>
+</body>
+</html>
