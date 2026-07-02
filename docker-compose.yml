@@ -107,6 +107,10 @@ services:
       - PAPER_TRADE=false
       - WEBULL_KILL_SWITCH=false
       - EXIT_ENGINE=v5
+      # A1c canary (kody only for now): penny-match closed-trade P&L to real Webull fills.
+      # Read-only vs Webull + updates P&L display columns only — proven isolated from the trading
+      # path (17 tests incl. source-safety invariants). Expand to adam/dennis after Mon validation.
+      - ENABLE_WEBULL_PNL_RECONCILE=true
       # Account-type toggle. false = Individual CASH (current; GFV-limited intraday reinvest).
       # true = Individual MARGIN: auto-detects the margin account (UNLESS WEBULL_ACCOUNT_ID is pinned —
       # kody is, so update its ID too) + skips GFV so sale proceeds reinvest intraday. Sizes off net-liq

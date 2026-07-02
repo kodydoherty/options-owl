@@ -133,3 +133,145 @@ class TestA1cReconcile:
         trader = _trader(db, history=[{"order_id": "WBEXIT705", "avgFilledPrice": 6.0}])
         assert await trader.reconcile_closed_pnl_from_webull() == 0
         assert (await _row(db, 705))["webull_exit_fill_price"] == pytest.approx(5.50)
+
+
+class TestA1cResilienceAndEdges:
+    """It must NEVER raise, and must handle every messy real-world shape as a safe no-op."""
+
+    @pytest.mark.asyncio
+    async def test_never_raises_when_history_call_fails(self, tmp_path):
+        db = str(tmp_path / "t.db")
+        await init_paper_db(db)
+        await _seed(db, tid=710)
+        trader = _trader(db, history=[])
+        trader.webull_executor.get_order_history = AsyncMock(side_effect=RuntimeError("boom"))
+        # must swallow the error and return 0 — never propagate into the monitor loop
+        assert await trader.reconcile_closed_pnl_from_webull() == 0
+        assert (await _row(db, 710))["webull_exit_fill_price"] is None   # untouched
+
+    @pytest.mark.asyncio
+    async def test_malformed_history_no_crash(self, tmp_path):
+        db = str(tmp_path / "t.db")
+        await init_paper_db(db)
+        await _seed(db, tid=711, exit_oid="WBEXIT711")
+        # non-dicts, missing price, unrelated order — none match, nothing crashes
+        trader = _trader(db, history=["nope", 42, {"no_price": True}, {"order_id": "OTHER"}])
+        assert await trader.reconcile_closed_pnl_from_webull() == 0
+
+    @pytest.mark.asyncio
+    async def test_nested_combo_leg_extraction(self, tmp_path):
+        db = str(tmp_path / "t.db")
+        await init_paper_db(db)
+        await _seed(db, tid=712, exit_oid="WBEXIT712", entry_fill=2.0, contracts=1)
+        history = [{"orders": [{"order_id": "WBEXIT712", "avgFilledPrice": 4.0}]}]  # nested leg
+        assert await _trader(db, history=history).reconcile_closed_pnl_from_webull() == 1
+        assert (await _row(db, 712))["exit_premium"] == pytest.approx(4.0)
+
+    @pytest.mark.asyncio
+    async def test_dca_uses_blended_entry_basis(self, tmp_path):
+        db = str(tmp_path / "t.db")
+        await init_paper_db(db)
+        # DCA: webull_entry_fill_price is only the FIRST fill (2.0); blended avg is 3.0
+        async with aiosqlite.connect(db) as conn:
+            await conn.execute(
+                "INSERT INTO paper_trades (id, ticker, option_type, strike, contracts, "
+                "premium_per_contract, webull_entry_fill_price, dca_total_contracts, "
+                "total_cost, strategy, status, webull_order_id, webull_exit_order_id, "
+                "closed_at, expiry_date, " + _REQ + ") VALUES "
+                f"(713, 'SPY', 'call', 500, 2, 3.0, 2.0, 4, 600, 'A', 'closed', 'WB713', "
+                f"'WBEXIT713', '{datetime.now(tz=timezone.utc):%Y-%m-%dT%H:%M:%S}', "
+                f"'2026-07-02', {_REQV})"
+            )
+            await conn.commit()
+        history = [{"order_id": "WBEXIT713", "avgFilledPrice": 5.0}]
+        assert await _trader(db, history=history).reconcile_closed_pnl_from_webull() == 1
+        row = await _row(db, 713)
+        # pnl uses BLENDED 3.0 not raw 2.0: (5.0 - 3.0) * 2 * 100 = 400
+        assert row["pnl_dollars"] == pytest.approx(400.0)
+
+    @pytest.mark.asyncio
+    async def test_ignores_open_trades(self, tmp_path):
+        db = str(tmp_path / "t.db")
+        await init_paper_db(db)
+        async with aiosqlite.connect(db) as conn:
+            await conn.execute(
+                "INSERT INTO paper_trades (id, ticker, option_type, strike, contracts, "
+                "premium_per_contract, webull_entry_fill_price, total_cost, status, "
+                "webull_order_id, webull_exit_order_id, expiry_date, " + _REQ + ") VALUES "
+                f"(714, 'SPY', 'call', 500, 1, 2.0, 2.0, 200, 'open', 'WB714', 'WBEXIT714', "
+                f"'2026-07-02', {_REQV})"
+            )
+            await conn.commit()
+        # even though history has the fill, an OPEN trade is never touched
+        trader = _trader(db, history=[{"order_id": "WBEXIT714", "avgFilledPrice": 9.0}])
+        assert await trader.reconcile_closed_pnl_from_webull() == 0
+
+    @pytest.mark.asyncio
+    async def test_does_not_mutate_unrelated_columns(self, tmp_path):
+        db = str(tmp_path / "t.db")
+        await init_paper_db(db)
+        await _seed(db, tid=715, contracts=3, entry_fill=2.0, exit_oid="WBEXIT715")
+        before = await _cols(db, 715, "status, contracts, webull_order_id, webull_exit_order_id, "
+                                      "premium_per_contract, strike, entry_price")
+        await _trader(db, history=[{"order_id": "WBEXIT715", "avgFilledPrice": 4.0}]
+                      ).reconcile_closed_pnl_from_webull()
+        after = await _cols(db, 715, "status, contracts, webull_order_id, webull_exit_order_id, "
+                                     "premium_per_contract, strike, entry_price")
+        assert before == after   # identity/state columns untouched — only P&L changed
+
+
+class TestA1cCannotBreakTrading:
+    """Source-safety invariants — PROVE A1c can never affect the trading path (the pattern the
+    UnboundLocalError bug taught us to enforce statically)."""
+
+    def _src(self):
+        import inspect
+        return inspect.getsource(PaperTrader.reconcile_closed_pnl_from_webull)
+
+    def test_only_updates_pnl_display_columns(self):
+        src = self._src()
+        forbidden = ("status", "contracts", "webull_order_id", "webull_exit_order_id",
+                     "closed_at", "entry_price", "strike", "premium_per_contract",
+                     "opened_at", "expiry_date")
+        for chunk in src.split("UPDATE paper_trades SET")[1:]:
+            head = chunk.split("WHERE")[0]
+            for col in forbidden:
+                assert f"{col} =" not in head, f"reconcile UPDATE writes '{col}' — trading column!"
+
+    def test_only_reads_order_history_never_places_orders(self):
+        import re
+        src = self._src()
+        calls = set(re.findall(r"webull_executor\.(\w+)", src))
+        assert calls <= {"get_order_history"}, f"A1c calls unexpected executor method(s): {calls}"
+        for danger in ("sell_option", "buy_option", "place_option_order", "place_order",
+                       "cancel_order", "close_webull_position"):
+            assert danger not in src, f"A1c references order-placement call '{danger}'"
+
+    def test_guards_run_before_any_webull_call(self):
+        src = self._src()
+        gi = src.index("get_order_history")
+        assert src.index("ENABLE_WEBULL_PNL_RECONCILE") < gi  # flag gate first
+        assert src.index("PAPER_TRADE") < gi                  # paper/executor gate first
+
+    def test_body_wrapped_so_it_never_raises(self):
+        src = self._src()
+        assert "try:" in src and "except Exception" in src, "reconcile body not exception-wrapped"
+
+    def test_monitor_hook_is_gated_timeout_bounded_and_wrapped(self):
+        import inspect
+
+        from options_owl.execution import position_monitor
+        src = inspect.getsource(position_monitor.run_position_monitor)
+        assert "reconcile_closed_pnl_from_webull" in src
+        i = src.index("reconcile_closed_pnl_from_webull")
+        window = src[max(0, i - 800):i + 500]
+        assert "ENABLE_WEBULL_PNL_RECONCILE" in window, "A1c hook not flag-gated"
+        assert "asyncio.wait_for" in window, "A1c hook not timeout-bounded"
+        assert "except" in window, "A1c hook not exception-wrapped"
+
+
+async def _cols(db, tid, cols):
+    async with aiosqlite.connect(db) as conn:
+        conn.row_factory = aiosqlite.Row
+        return dict(await (await conn.execute(
+            f"SELECT {cols} FROM paper_trades WHERE id = ?", (tid,))).fetchone())
