@@ -18,6 +18,7 @@ from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from options_owl.dashboard.analytics_util import build_timeline, summarize_ticks
 from options_owl.dashboard.auth import (
     authenticate,
     change_password,
@@ -376,12 +377,32 @@ async def trade_detail(request: Request, trade_id: int):
     events = await get_trade_events(_pool, agent_id, trade.get("sqlite_id", trade_id))
     ticks = await get_premium_ticks(_pool, agent_id, trade.get("sqlite_id", trade_id))
 
+    # asyncpg hands back Decimal/datetime, which `| tojson` (the chart) can't serialize —
+    # normalize every tick cell to a JSON-safe scalar (datetime→ISO str, Decimal→float).
+    ticks = [
+        {
+            k: (v.isoformat() if hasattr(v, "isoformat")
+                else float(v) if hasattr(v, "__float__") else v)
+            for k, v in t.items()
+        }
+        for t in ticks
+    ]
+
+    # Verbose detail: derive peak/trough/drawdown/spread stats + a merged event+milestone
+    # timeline from data that already exists (no new capture). Pure helpers, never raise.
+    tick_stats = summarize_ticks(
+        ticks, trade.get("premium_per_contract"), trade.get("contracts")
+    )
+    timeline = build_timeline(trade, events, tick_stats)
+
     return _render("trade_detail.html", {
         "request": request,
         "user": user,
         "trade": trade,
         "events": events,
         "ticks": ticks,
+        "tick_stats": tick_stats,
+        "timeline": timeline,
     })
 
 
