@@ -35,14 +35,34 @@
     </div>
 </div>
 
+<!-- Range selector -->
+<div class="flex items-center gap-2 mb-3">
+    <span class="text-xs text-gray-500 uppercase mr-1">Range:</span>
+    {% for label, n in [('Today', 1), ('7D', 7), ('30D', 30), ('90D', 90)] %}
+    <a href="/?days={{ n }}"
+       class="px-3 py-1 rounded text-xs font-medium transition
+              {% if days == n %}bg-owl-accent text-white{% else %}bg-owl-card border border-owl-border text-gray-400 hover:text-white{% endif %}">
+        {{ label }}
+    </a>
+    {% endfor %}
+</div>
+
 <!-- P&L Sparkline -->
 {% if sparkline %}
 <div class="bg-owl-card border border-owl-border rounded-lg p-3 mb-6">
     <div class="flex items-center justify-between mb-1">
-        <span class="text-xs text-gray-500 uppercase">Recent Daily P&L</span>
-        <a href="/analytics" class="text-xs text-owl-accent hover:underline">View Full Analytics &rarr;</a>
+        <span class="text-xs text-gray-500 uppercase">Daily P&L — last {{ days }}d</span>
+        <a href="/analytics?days={{ days }}" class="text-xs text-owl-accent hover:underline">View Full Analytics &rarr;</a>
     </div>
-    <canvas id="sparkline" height="50"></canvas>
+    <!-- fixed-height wrapper: Chart.js maintainAspectRatio:false fills the PARENT, so the
+         parent MUST cap the height or the canvas grows unbounded (the "pushes down" bug). -->
+    <div class="relative w-full" style="height: 96px;">
+        <canvas id="sparkline"></canvas>
+    </div>
+</div>
+{% else %}
+<div class="bg-owl-card border border-owl-border rounded-lg p-6 mb-6 text-center text-gray-500 text-sm">
+    No closed trades in the last {{ days }} day{{ 's' if days != 1 else '' }}.
 </div>
 {% endif %}
 
