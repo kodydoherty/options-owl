@@ -1107,7 +1107,8 @@ def simulate_exit(closes, bids, asks, underlyings, entry_idx,
 
 def _sim_leg(closes, bids, asks, underlyings, start_idx, entry_premium, contracts,
              ticker, dte, expiry_date, *, keep_frac, activate_pct, puts_lock, is_put,
-             step_pct=0.0):
+             step_pct=0.0, hard_loss_pct=0.0,
+             stall_min=0.0, stall_loss_pct=0.0, stall_peak_pct=10.0):
     """Prod-faithful single-leg FSM sim (lock-and-re-enter experiment, 2026-06-29).
 
     Self-contained exit config (does NOT use the drifted harness baseline, which lacks
@@ -1126,6 +1127,13 @@ def _sim_leg(closes, bids, asks, underlyings, start_idx, entry_premium, contract
     cfg = apply_v7_wide_trail_exits(
         get_ticker_config(ticker, use_per_ticker=True, option_type=otype), is_put=is_put)
     s = _copy(_V6_SETTINGS)
+    # Prod fidelity: the deployed 0DTE -25% premium hardstop (fsm.py:271, 2026-06-16) IS live
+    # on all bots but is absent from the harness _V6_SETTINGS. Without it the baseline lets 0DTE
+    # bleed to the graduated stop, overstating the "cost" of any added hard cap. Turn it on so the
+    # hard_loss_pct overlay below measures the INCREMENTAL value of extending the cut to MULTI-DAY
+    # (0DTE is already cut at -25% by this gate; the overlay only binds wider / on >0DTE legs).
+    s.ENABLE_0DTE_PREMIUM_HARDSTOP = True
+    s.PREMIUM_HARDSTOP_0DTE_PCT = 25.0
     if step_pct > 0:
         # Stepped lock: hard floor every step_pct% of peak (wider room at low gains,
         # tighter as it climbs — the "step up as we lock in" logic). Pure step (flat off).
@@ -1157,6 +1165,35 @@ def _sim_leg(closes, bids, asks, underlyings, start_idx, entry_premium, contract
         bid = float(bids[idx]) if idx < len(bids) and not np.isnan(bids[idx]) else prem
         ask = float(asks[idx]) if idx < len(asks) and not np.isnan(asks[idx]) else prem
         und = float(underlyings[idx]) if idx < len(underlyings) and not np.isnan(underlyings[idx]) else 0.0
+        # MULTI-DAY hard-loss cap — models the proposed prod fix: extend the 0DTE
+        # premium hardstop to >0DTE legs. 0DTE already cuts at -25% via the real
+        # gate above (now in the baseline); this overlay fires only on multi-day
+        # (dte>0), which today has NO hard cut and bleeds to the 50% graduated
+        # backstop (adam's 1-DTE META put: -47%, peaked +1%, held ~1hr). Top
+        # priority, fires even during grace.
+        if hard_loss_pct > 0.0 and dte > 0:
+            loss_gain = (prem - entry_premium) / entry_premium * 100
+            if loss_gain <= -hard_loss_pct:
+                xp = bid if bid > 0 else prem
+                peak_gain = (state.peak_premium - entry_premium) / entry_premium * 100
+                pnl = locked + (xp - entry_premium) * remaining * 100
+                return {"pnl": pnl, "exit_idx": idx, "peak_gain": peak_gain,
+                        "reason": "hard_loss_cap"}
+        # DEAD-ON-ARRIVAL stall cut (multi-day) — cut a leg that NEVER WORKED: held
+        # long enough, down big, and its peak gain never cleared stall_peak_pct. This
+        # is the surgical alternative to a blanket cap — it spares positions that ran
+        # up then pulled back (peaked high) or that dipped and recovered (still climbing),
+        # and only kills the theta-bleeders (adam's META put: peaked +1%, -47%, ~1hr).
+        if stall_min > 0.0 and dte > 0:
+            held_min = idx - start_idx
+            cur_gain = (prem - entry_premium) / entry_premium * 100
+            peak_so_far = (state.peak_premium - entry_premium) / entry_premium * 100
+            if (held_min >= stall_min and cur_gain <= -stall_loss_pct
+                    and peak_so_far < stall_peak_pct):
+                xp = bid if bid > 0 else prem
+                pnl = locked + (xp - entry_premium) * remaining * 100
+                return {"pnl": pnl, "exit_idx": idx, "peak_gain": peak_so_far,
+                        "reason": "stall_cut"}
         now = entry_ts + timedelta(minutes=(idx - start_idx))
         mtc = max(0, (16 * 60) - (now.hour * 60 + now.minute))
         act = fsm.evaluate(state, prem, bid, ask, now, current_underlying=und,
@@ -3424,6 +3461,128 @@ def _lock_reenter_report():
             print(f"  {format(keep, '.0%'):<8}{('$' + format(results[keep], '+,.0f')):>12}{dv:>11}")
         bk = max(results, key=lambda k: results[k])
         print(f"  → best PUT keep: {bk:.0%} (${results[bk]:+,.0f})")
+
+    # ── Per-trade HARD-LOSS CAP sweep (2026-06-30) ──────────────────────────
+    # Tests Kody's gap: prod has NO hard ~20-25% per-trade stop. Multi-day puts
+    # ride the 50% PUT backstop; the "max loss per trade" setting is actually a
+    # DAILY cap. Cut ANY leg at -X% on top of the deployed LOCK (keep 80/arm 25/
+    # puts-on). Does it bank losers without clipping the slow-crash put winners?
+    def leg_hc(t, hc):
+        return _sim_leg(t["closes"], t["bids"], t["asks"], t["underlyings"], t["entry_idx"],
+                        t["entry_premium"], t["contracts"], t["ticker"], t["dte"], t["expiry"],
+                        keep_frac=0.8, activate_pct=25.0, puts_lock=True,
+                        is_put=t["is_put"], hard_loss_pct=hc)["pnl"]
+
+    CAPS = [0.0, 20.0, 25.0, 30.0, 35.0, 40.0, 50.0]
+    hc_tot, hc_call, hc_put = {}, {}, {}
+    for hc in CAPS:
+        hc_call[hc] = sum(leg_hc(t, hc) for t in _LR_TRADES if not t["is_put"])
+        hc_put[hc] = sum(leg_hc(t, hc) for t in _LR_TRADES if t["is_put"])
+        hc_tot[hc] = hc_call[hc] + hc_put[hc]
+    base = hc_tot[0.0]
+    print(f"\n  HARD-LOSS CAP sweep (deployed LOCK keep-80, {n} trades — cuts any leg at -X%):")
+    print(f"  {'cap':<10}{'TOTAL':>11}{'CALLS':>11}{'PUTS':>11}{'vs none':>11}")
+    print("  " + "-" * 54)
+    for hc in CAPS:
+        label = "none" if hc == 0 else f"-{hc:.0f}%"
+        dv = "" if hc == 0 else ("$" + format(hc_tot[hc] - base, "+,.0f"))
+        print(f"  {label:<10}{('$' + format(hc_tot[hc], '+,.0f')):>11}"
+              f"{('$' + format(hc_call[hc], '+,.0f')):>11}"
+              f"{('$' + format(hc_put[hc], '+,.0f')):>11}{dv:>11}")
+    bhc = max(CAPS, key=lambda k: hc_tot[k])
+    bhc_c = max(CAPS, key=lambda k: hc_call[k])
+    bhc_p = max(CAPS, key=lambda k: hc_put[k])
+    fmt = lambda k: "none" if k == 0 else f"-{k:.0f}%"  # noqa: E731
+    print(f"  → best TOTAL cap: {fmt(bhc)} (${hc_tot[bhc]:+,.0f}, {hc_tot[bhc]-base:+,.0f} vs none)")
+    print(f"  Best CALLS: {fmt(bhc_c)} | Best PUTS: {fmt(bhc_p)}")
+
+    # ── DEAD-ON-ARRIVAL stall-cut sweep (2026-07-01) ────────────────────────
+    # Surgical alt to the blanket cap: cut multi-day legs that NEVER WORKED
+    # (held >= min, down >= loss%, peak never cleared peak%). Should spare the
+    # dip-and-recover + ran-up-then-faded winners the blanket cap destroyed.
+    def leg_stall(t, mn, loss, pk):
+        return _sim_leg(t["closes"], t["bids"], t["asks"], t["underlyings"], t["entry_idx"],
+                        t["entry_premium"], t["contracts"], t["ticker"], t["dte"], t["expiry"],
+                        keep_frac=0.8, activate_pct=25.0, puts_lock=True, is_put=t["is_put"],
+                        stall_min=mn, stall_loss_pct=loss, stall_peak_pct=pk)["pnl"]
+
+    # (held_min, loss%, peak%) configs — from tight/early to loose/late
+    STALL = [(30, 25, 10), (30, 30, 10), (45, 25, 10), (45, 30, 15),
+             (30, 25, 5), (60, 25, 10), (45, 35, 15)]
+    st_base = base  # same LOCK-80 baseline (none)
+    print(f"\n  STALL-CUT sweep (deployed LOCK keep-80, {n} trades — cut never-worked multi-day legs):")
+    print(f"  {'held/loss/peak':<18}{'TOTAL':>11}{'CALLS':>11}{'PUTS':>11}{'vs none':>11}")
+    print("  " + "-" * 62)
+    st_res = {}
+    for (mn, loss, pk) in STALL:
+        c = sum(leg_stall(t, mn, loss, pk) for t in _LR_TRADES if not t["is_put"])
+        p = sum(leg_stall(t, mn, loss, pk) for t in _LR_TRADES if t["is_put"])
+        st_res[(mn, loss, pk)] = (c + p, c, p)
+        lbl = f">{mn}m/-{loss}%/pk<{pk}%"
+        print(f"  {lbl:<18}{('$' + format(c + p, '+,.0f')):>11}"
+              f"{('$' + format(c, '+,.0f')):>11}{('$' + format(p, '+,.0f')):>11}"
+              f"{('$' + format(c + p - st_base, '+,.0f')):>11}")
+    bst = max(st_res, key=lambda k: st_res[k][0])
+    bt, bc, bp = st_res[bst]
+    print(f"  → best STALL: >{bst[0]}m/-{bst[1]}%/pk<{bst[2]}% "
+          f"(${bt:+,.0f}, {bt - st_base:+,.0f} vs none)")
+    print(f"  (none baseline: ${st_base:+,.0f})")
+
+    # ── ENTRY TIME-OF-DAY analysis + late-entry cutoff sweep (2026-07-01) ────
+    # Kody: "the last hour / last 30 min is a big loser — stop buying new trades
+    # then." Bucket every trade by ENTRY time (entry_idx = minutes after the 9:30
+    # ET open; RTH = 390 min → 16:00). P&L via the deployed LOCK-80 config. Then
+    # sweep candidate "no new entries after HH:MM" cutoffs: the P&L of the entries
+    # AFTER each cutoff = what we'd forgo. Negative bucket → skipping is +EV.
+    def et_label(mins_from_open):
+        total = 9 * 60 + 30 + int(mins_from_open)
+        return f"{total // 60:02d}:{total % 60:02d}"
+
+    tod = []  # (entry_idx, is_put, dte, pnl)
+    for t in _LR_TRADES:
+        pnl = _sim_leg(t["closes"], t["bids"], t["asks"], t["underlyings"], t["entry_idx"],
+                       t["entry_premium"], t["contracts"], t["ticker"], t["dte"], t["expiry"],
+                       keep_frac=0.8, activate_pct=25.0, puts_lock=True, is_put=t["is_put"])["pnl"]
+        tod.append((t["entry_idx"], t["is_put"], int(t.get("dte", 0)), pnl))
+
+    # 30-min entry buckets
+    print(f"\n  ENTRY TIME-OF-DAY buckets ({n} trades, LOCK-80 P&L):")
+    print(f"  {'entry window':<16}{'#':>5}{'P&L':>12}{'avg/trade':>12}{'win%':>7}")
+    print("  " + "-" * 52)
+    edges = [(0, 60), (60, 120), (120, 180), (180, 240), (240, 300),
+             (300, 330), (330, 360), (360, 390), (390, 10_000)]
+    for lo, hi in edges:
+        grp = [p for (ix, _ip, _d, p) in tod if lo <= ix < hi]
+        if not grp:
+            continue
+        wins = sum(1 for p in grp if p > 0)
+        lbl = f"{et_label(lo)}-{et_label(min(hi, 390))}"
+        print(f"  {lbl:<16}{len(grp):>5}{('$' + format(sum(grp), '+,.0f')):>12}"
+              f"{('$' + format(sum(grp) / len(grp), '+,.0f')):>12}{wins / len(grp) * 100:>6.0f}%")
+
+    # Cutoff sweep — forgone P&L of entries AFTER each candidate cutoff
+    print(f"\n  LATE-ENTRY CUTOFF sweep (P&L we'd FORGO by not entering after HH:MM):")
+    print(f"  {'no entry after':<16}{'#cut':>6}{'forgone P&L':>13}{'calls':>11}{'puts':>11}")
+    print("  " + "-" * 57)
+    for cut in (240, 270, 300, 330, 360):  # 13:30, 14:00, 14:30, 15:00, 15:30
+        after = [(ip, p) for (ix, ip, _d, p) in tod if ix >= cut]
+        if not after:
+            continue
+        fc = sum(p for ip, p in after if not ip)
+        fp = sum(p for ip, p in after if ip)
+        tag = "  ← skipping these is +EV" if (fc + fp) < 0 else ""
+        print(f"  {et_label(cut):<16}{len(after):>6}{('$' + format(fc + fp, '+,.0f')):>13}"
+              f"{('$' + format(fc, '+,.0f')):>11}{('$' + format(fp, '+,.0f')):>11}{tag}")
+
+    # Multi-day (overnight-risk) vs 0DTE — the harness closes at EOD, so multi-day
+    # here is ALREADY EOD-closed; prod holds it overnight (unmodeled extra risk).
+    md = [p for (_ix, _ip, d, p) in tod if d > 0]
+    zd = [p for (_ix, _ip, d, p) in tod if d == 0]
+    print(f"\n  DTE split (harness closes at EOD — multi-day P&L excludes prod's overnight hold):")
+    if zd:
+        print(f"    0DTE:      {len(zd):>4} trades  ${sum(zd):+,.0f}  ({sum(1 for p in zd if p>0)/len(zd)*100:.0f}% win)")
+    if md:
+        print(f"    multi-day: {len(md):>4} trades  ${sum(md):+,.0f}  ({sum(1 for p in md if p>0)/len(md)*100:.0f}% win)")
 
 
 # ── Main ───────────────────────────────────────────────────────────────────

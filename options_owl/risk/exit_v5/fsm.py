@@ -258,6 +258,16 @@ class ExitFSM:
         if action:
             return action
 
+        # Gate 1b: EOD CLOSE-ALL — force-close MULTI-DAY positions at the EOD cutoff too, so nothing
+        # is held overnight into gap risk (the 0DTE cutoff above only closes 0DTE). 2026-07-01.
+        if (not is_0dte and self._settings
+                and getattr(self._settings, "ENABLE_EOD_CLOSE_ALL", False)
+                and minutes_to_close <= cfg.eod_cutoff_minutes_before_close):
+            return _exit(
+                ExitReason.EOD_CUTOFF,
+                f"EOD close-all (no overnight): {minutes_to_close:.0f}min to close",
+                debug=debug)
+
         # Gate 2: Bid disappearance
         action = check_bid_disappearance_gate(bid, state.seconds_at_zero_bid, cfg, debug)
         if action:
@@ -274,6 +284,24 @@ class ExitFSM:
                 return _exit(
                     ExitReason.PREMIUM_HARDSTOP,
                     f"0DTE premium hard-stop: {gain:.0f}% <= -{hs:.0f}% from entry (underlying-independent)",
+                    debug=debug)
+
+        # Gate 2.6: DEAD-ON-ARRIVAL stall cut (MULTI-DAY) — cut a leg that NEVER WORKED: held long
+        # enough, down big, and its peak gain never cleared the threshold. Fixes the 1-DTE put/call
+        # that bleeds an hour to the wide 50% graduated backstop (adam META 2026-07-01: peaked +1%,
+        # -47%, ~1hr). Spares ran-up-then-faded + dip-and-recover legs (they peaked higher). 0DTE is
+        # already covered by the -25% premium hardstop above. Validated 2026-07-01 (~P&L-neutral).
+        if (not is_0dte and self._settings
+                and getattr(self._settings, "ENABLE_STALL_CUT", False)):
+            stall_min = getattr(self._settings, "STALL_CUT_MIN_MINUTES", 30.0)
+            stall_loss = getattr(self._settings, "STALL_CUT_LOSS_PCT", 30.0)
+            stall_peak = getattr(self._settings, "STALL_CUT_PEAK_PCT", 10.0)
+            if (elapsed_min >= stall_min and drop_entry >= stall_loss
+                    and peak_gain < stall_peak):
+                return _exit(
+                    ExitReason.STALL_CUT,
+                    f"stall cut: held {elapsed_min:.0f}min, down {drop_entry:.0f}%, "
+                    f"peaked only {peak_gain:.0f}% (never worked)",
                     debug=debug)
 
         # ── 5-minute grace — skip most exits, but backstop still fires ──

@@ -657,3 +657,77 @@ class TestEntryChaseAggression:
         )
         assert seen["timeout"] == 4.0
         assert seen["poll"] == 1.0
+
+
+class TestReconnectResetsDataClient:
+    """B4 — _reconnect() must also drop the market-data client (it wraps the api client).
+
+    If it doesn't, _ensure_data_client() (which early-returns when non-None) keeps serving a
+    client built on the torn-down api client, silently breaking the live-quote entry chase.
+    """
+
+    def test_reconnect_nulls_data_client(self):
+        executor = WebullExecutor(_chase_settings())
+        executor._data_client = object()  # simulate a live market-data client
+        executor._ensure_clients = lambda: None  # don't actually rebuild SDK clients
+        executor._reconnect()
+        assert executor._data_client is None
+
+
+class TestFetchAskFreshnessGuard:
+    """B5 — an unverifiable-age Redis snapshot (missing/zero timestamp) must NOT be trusted."""
+
+    @pytest.mark.asyncio
+    async def test_missing_timestamp_falls_back_to_http(self, monkeypatch):
+        from options_owl.db import redis_client
+
+        executor = WebullExecutor(_chase_settings())
+
+        async def no_ts(ck):
+            return {"ask": 2.50}  # no 't' field -> age can't be verified
+
+        monkeypatch.setattr(redis_client, "get_option_snapshot", no_ts)
+        executor.get_option_quote = AsyncMock(return_value={"ask": 3.00})
+        ask = await executor._fetch_ask("SPY", 733.0, "2026-06-25", "put")
+        assert ask == 3.00  # freshness guard rejected the un-timestamped snapshot
+
+    @pytest.mark.asyncio
+    async def test_zero_timestamp_falls_back_to_http(self, monkeypatch):
+        from options_owl.db import redis_client
+
+        executor = WebullExecutor(_chase_settings())
+
+        async def zero_ts(ck):
+            return {"ask": 2.50, "t": 0}
+
+        monkeypatch.setattr(redis_client, "get_option_snapshot", zero_ts)
+        executor.get_option_quote = AsyncMock(return_value={"ask": 3.00})
+        ask = await executor._fetch_ask("SPY", 733.0, "2026-06-25", "put")
+        assert ask == 3.00
+
+
+class TestEntryChaseValueCap:
+    """L1 — the hard $5k order-value rail is re-applied to each escalated (repriced) rung."""
+
+    @pytest.mark.asyncio
+    async def test_value_cap_clamps_escalated_limit(self):
+        from options_owl.execution.webull_executor import MAX_ORDER_VALUE
+
+        executor = WebullExecutor(_chase_settings())
+        captured = {}
+
+        async def fake_submit(payload):
+            captured["limit"] = float(payload[0]["limit_price"])
+            return ("ORDER1", {}, None)
+
+        executor._fetch_ask = AsyncMock(return_value=1.00)
+        executor._submit_order_payload = fake_submit
+        executor._wait_for_fill = AsyncMock(return_value="FILLED")
+        # 60 contracts × ~$1.05 × 100 = ~$6,300 > $5,000 hard cap → limit must be clamped down
+        res = await executor._place_buy_with_escalation(
+            ticker="NVDA", strike=733.0, expiry_date="2026-06-25",
+            option_type="put", contracts=60, initial_limit=1.05,
+        )
+        assert res.fill_status == "FILLED"
+        assert captured["limit"] * 60 * 100 <= MAX_ORDER_VALUE
+        assert captured["limit"] == 0.83  # 5000/(60*100)=0.833 rounded DOWN to a legal penny step

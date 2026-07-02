@@ -202,7 +202,7 @@ the current runner_v1 + conf_linear sizing layers.
 | `MAX_POSITION_DOLLARS` | 50000 | active (no-op small accounts) |
 | `ENABLE_V7_RUNNER_TILT` | false | **OFF** — validate before enabling |
 | `ENABLE_FLOW_OTM_STRIKE` | false | **true all bots** — OTM strike for AMD/INTC/META/SPY calls + TSLA puts |
-| `ENABLE_V7_PROFIT_LOCK` | false | **true all bots** — CALL-only profit-lock (keep 60% of peak gain once +30%); puts keep wide trail |
+| `ENABLE_V7_PROFIT_LOCK` | false | **true all bots** — profit-lock keep **80%** of peak gain once **+25%** (`V7_PROFIT_LOCK_KEEP_FRAC=0.8`, `ACTIVATE_PCT=25`); **extended to PUTs** (`V7_PROFIT_LOCK_PUTS=true`, validated 2026-06-30). Supersedes the older CALL-only/keep-60/arm-30/puts-exempt config below. |
 | `ANTIMG_CALL_LEVELS` | `30` | **`30,80,150` all bots** — multi-level CALL adds (each a separate own-trail leg) |
 | `ENABLE_RUNNER_V1_SIZING` | false | **true all bots** (2026-06-22) — P(runner) CALL sizing; see sizing-stack subsection |
 | `ENABLE_CONF_LINEAR_SIZING` | false | **true all bots** (2026-06-22) — winner-concentration sizing; bounds 0.4–1.8 |
@@ -302,11 +302,14 @@ After the first live anti-martingale adds (TSLA/AMZN/SPY), two things were settl
   the separate-leg code is correct.** Safety: if the child INSERT fails after a Webull fill, it falls
   back to blending into the parent (tracked), then a CRITICAL alert, then the `_reconcile_positions`
   sweep recovers any orphan — a Webull-filled add is never left untracked.
-- **CALL-only profit-lock** (`ENABLE_V7_PROFIT_LOCK`, FSM gate 3.6, `check_profit_lock`): once a call
-  peaks +30%, exit when gain < 60% of peak gain — locks profit instead of round-tripping to breakeven
-  (the TSLA +111%→+34% complaint). Layered ON TOP of the V7 downside stops (additive). Validated +7%
-  call P&L / +3pts WR, consistent per-month. **PUTs are exempt** — the same rule HURTS puts (they ride
-  slow crashes; a tight give-back clips them), so puts keep the V7 wide trail.
+- **Profit-lock** (`ENABLE_V7_PROFIT_LOCK`, FSM gate 3.6, `check_profit_lock`): **CURRENT (2026-06-30):**
+  once a leg peaks **+25%** (`V7_PROFIT_LOCK_ACTIVATE_PCT=25`), exit when gain < **80%** of peak gain
+  (`V7_PROFIT_LOCK_KEEP_FRAC=0.8`) — locks profit instead of round-tripping to breakeven (the TSLA
+  +111%→+34% complaint). Layered ON TOP of the V7 downside stops (additive). **Now applies to PUTs too**
+  (`V7_PROFIT_LOCK_PUTS=true`, fleet-wide) — the 7-month re-validation showed lock beats the wide trail
+  on puts (+$544, "Best PUTS: lock"). *History:* originally shipped CALL-only at keep-60/arm-30 with puts
+  exempt (validated +7% call P&L / +3pts WR); tightened to keep-80/arm-25 and extended to puts on the
+  fixed gold-standard harness (2026-06-29/30, +105% on 15d calls).
 - Multi-level adds are higher-variance (amplify trending months, drag chop) — shipped LOCKED (the
   profit-lock covers add legs too, since they're calls). Memory: `add-handling-backtest-2026-06-16`.
 

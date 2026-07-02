@@ -138,9 +138,15 @@ def collect(is_put, wl):
                 ets = datetime(*map(int, d.split("-")), 9, 30, tzinfo=D.ET) + timedelta(minutes=mb)
                 ret, reason = _sim_reason(pp, mp, up, pp[0], ets, cfg, int(dte0), otype)
                 mult = flow_conviction_mult(csize, ev["prem"], ev["ask_frac"], is_idx, None)[0]
+                # Market-direction proxy: the UNDERLYING's % change from the day open at entry.
+                # A put bought while its underlying is rallying (mkt_chg > 0) is counter-trend
+                # (the today SPY-put -54% case). Stored so a filter can be swept in-memory.
+                day_open = stock[d].get(min(stock[d]), spot)
+                mkt_chg = round((spot - day_open) / day_open * 100, 2) if day_open else 0.0
                 out.append({"date": d, "ticker": tk, "side": otype, "cluster": csize,
                             "premium": ev["prem"], "ask_frac": round(ev["ask_frac"], 2),
-                            "conv_mult": round(mult, 2), "ret_pct": round(ret, 1), "exit_reason": reason})
+                            "conv_mult": round(mult, 2), "ret_pct": round(ret, 1),
+                            "exit_reason": reason, "mkt_chg": mkt_chg})
     return out
 
 

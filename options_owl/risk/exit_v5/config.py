@@ -223,7 +223,9 @@ class V5Config:
 _default = V5Config
 
 TICKER_CONFIGS: dict[str, V5Config] = {
-    # NVDA: EARLY_PROFIT — take gains at 20%, keep 70% of peak in soft trail
+    # NVDA: EARLY_PROFIT — NOTE: profit_target_general_pct is NULLIFIED under V7 wide-trail
+    # (apply_v7_wide_trail_exits zeroes it fleet-wide); only soft_trail_keep_pct=0.70 is LIVE.
+    # Kept for the non-V7 fallback; do not treat the 20% target as active in production.
     "NVDA": V5Config(
         profit_target_general_pct=20.0,
         soft_trail_keep_pct=0.70,
@@ -266,12 +268,12 @@ TICKER_CONFIGS: dict[str, V5Config] = {
             AdaptiveTier(300, 20), AdaptiveTier(100, 30), AdaptiveTier(30, 25),
         ),
     ),
-    # AVGO: EARLY_PROFIT — same as NVDA
+    # AVGO: EARLY_PROFIT — same as NVDA (profit_target_general_pct NULLIFIED by V7; soft trail is live)
     "AVGO": V5Config(
         profit_target_general_pct=20.0,
         soft_trail_keep_pct=0.70,
     ),
-    # MSFT: EARLY_PROFIT — same as NVDA
+    # MSFT: EARLY_PROFIT — same as NVDA (profit_target_general_pct NULLIFIED by V7; soft trail is live)
     "MSFT": V5Config(
         profit_target_general_pct=20.0,
         soft_trail_keep_pct=0.70,

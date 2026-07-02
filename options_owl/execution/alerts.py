@@ -10,6 +10,7 @@ Alerts fire for:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -65,9 +66,14 @@ async def send_alert(
 
     for uid in user_ids:
         try:
-            user = await client.fetch_user(uid)
-            await user.send(embed=embed)
+            # Bound the Discord gateway I/O — send_alert is awaited from the 5s monitor
+            # loop, and a stalled gateway send must never freeze the sell path. A timeout
+            # is caught below and logged (the alert is best-effort; exits take priority).
+            user = await asyncio.wait_for(client.fetch_user(uid), timeout=5)
+            await asyncio.wait_for(user.send(embed=embed), timeout=5)
             logger.info(f"Alert DM sent to user {uid}: {title}")
+        except asyncio.TimeoutError:
+            logger.error(f"Alert DM to user {uid} timed out (5s) — skipping: {title}")
         except Exception as exc:
             logger.error(f"Failed to DM alert to user {uid}: {exc}")
 

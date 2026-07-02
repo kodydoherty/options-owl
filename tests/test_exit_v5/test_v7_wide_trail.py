@@ -79,3 +79,16 @@ class TestV7WideTrailWiring:
                      ENABLE_V6_SCALEOUT=True)
         V5MonitorBridge(s)
         assert s.ENABLE_V6_SCALEOUT is True  # original object never mutated
+
+
+def test_v7_nullifies_early_profit_target_L4():
+    """L4 — NVDA/AVGO/MSFT profit_target_general_pct=20 is DEAD under V7 (zeroed);
+    only soft_trail_keep_pct survives. Documents that the 20% target is not active in prod."""
+    from options_owl.risk.exit_v5.config import TICKER_CONFIGS
+
+    for tk in ("NVDA", "AVGO", "MSFT"):
+        raw = TICKER_CONFIGS[tk]
+        assert raw.profit_target_general_pct == 20.0, f"{tk} raw config changed"
+        v7 = apply_v7_wide_trail_exits(raw)
+        assert v7.profit_target_general_pct == 0.0, f"{tk} V7 should zero the profit target"
+        assert v7.soft_trail_keep_pct == 0.70, f"{tk} soft trail must survive V7"

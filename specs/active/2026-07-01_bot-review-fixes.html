@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OptionsOwl — Bug &amp; Profitability Review (2026-07-01)</title>
+<style>
+  :root{
+    --bg:#0f1216; --panel:#171b21; --panel2:#1d222a; --ink:#e7ecf2; --mut:#9aa6b2;
+    --line:#2a313b; --accent:#6ea8fe;
+    --crit:#ff5c5c; --high:#ff9f43; --med:#ffd93d; --low:#7bd88f; --info:#6ea8fe;
+    --bug:#ff6b6b; --profit:#39d98a; --risk:#c792ea; --doc:#8fa0b3;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 22px 80px}
+  h1{font-size:26px;margin:0 0 4px}
+  h2{font-size:20px;margin:38px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:0 0 6px}
+  .sub{color:var(--mut);font-size:13px;margin:0 0 22px}
+  .meta{display:flex;flex-wrap:wrap;gap:10px 26px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 18px;margin:0 0 26px;font-size:13px}
+  .meta b{color:var(--mut);font-weight:600;margin-right:6px}
+  code{background:#0c0f13;border:1px solid var(--line);border-radius:5px;padding:1px 6px;font:12.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:#d7e3f4}
+  .pill{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.02em;padding:2px 8px;border-radius:20px;text-transform:uppercase;vertical-align:middle}
+  .b-crit{background:rgba(255,92,92,.15);color:var(--crit);border:1px solid rgba(255,92,92,.4)}
+  .b-high{background:rgba(255,159,67,.15);color:var(--high);border:1px solid rgba(255,159,67,.4)}
+  .b-med{background:rgba(255,217,61,.13);color:var(--med);border:1px solid rgba(255,217,61,.4)}
+  .b-low{background:rgba(123,216,143,.13);color:var(--low);border:1px solid rgba(123,216,143,.4)}
+  .b-info{background:rgba(110,168,254,.13);color:var(--info);border:1px solid rgba(110,168,254,.4)}
+  .t-bug{background:rgba(255,107,107,.12);color:var(--bug);border:1px solid rgba(255,107,107,.35)}
+  .t-profit{background:rgba(57,217,138,.12);color:var(--profit);border:1px solid rgba(57,217,138,.35)}
+  .t-risk{background:rgba(199,146,234,.12);color:var(--risk);border:1px solid rgba(199,146,234,.35)}
+  .t-doc{background:rgba(143,160,179,.12);color:var(--doc);border:1px solid rgba(143,160,179,.35)}
+  table{width:100%;border-collapse:collapse;margin:8px 0 4px;font-size:13px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--mut);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+  tr:hover td{background:rgba(255,255,255,.02)}
+  td a{color:var(--accent);text-decoration:none}
+  .card{background:var(--panel);border:1px solid var(--line);border-left-width:4px;border-radius:10px;padding:16px 18px;margin:14px 0}
+  .card.crit{border-left-color:var(--crit)}
+  .card.high{border-left-color:var(--high)}
+  .card.med{border-left-color:var(--med)}
+  .card.low{border-left-color:var(--low)}
+  .card .hdr{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:8px}
+  .card .id{font:700 13px ui-monospace,monospace;color:var(--mut);margin-right:2px}
+  .card .title{font-size:16px;font-weight:650;flex:1 1 auto}
+  .loc{font:12.5px ui-monospace,monospace;color:#c7d2e0;background:#0c0f13;border:1px solid var(--line);border-radius:5px;padding:2px 7px;display:inline-block;margin:2px 0 8px}
+  .card p{margin:6px 0}
+  .lab{color:var(--mut);font-weight:600;font-size:12.5px;text-transform:uppercase;letter-spacing:.03em}
+  .fix{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 13px;margin-top:10px}
+  .conf{font-size:12px;color:var(--mut)}
+  .note{background:rgba(110,168,254,.07);border:1px solid rgba(110,168,254,.28);border-radius:8px;padding:12px 15px;margin:14px 0;font-size:13.5px}
+  ul{margin:6px 0;padding-left:22px} li{margin:3px 0}
+  .foot{color:var(--mut);font-size:12px;margin-top:40px;border-top:1px solid var(--line);padding-top:14px}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mut);margin:6px 0 18px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>OptionsOwl — Bug &amp; Profitability Review</h1>
+  <p class="sub">Spec of proposed fixes. <strong>No code changed</strong> — this is the review + fix plan for approval before any real change.</p>
+
+  <div class="meta">
+    <span><b>Date</b>2026-07-01</span>
+    <span><b>Branch</b>feat/regime-call-put-budget</span>
+    <span><b>HEAD</b>0a306dc</span>
+    <span><b>Reviewers</b>4 parallel module audits + direct verification</span>
+    <span><b>Live money</b>kody, adam, dennis, vinny (+ vinny going margin)</span>
+    <span><b>Droplet-verified</b>DCA state, flag wiring, B1/B2 — via SSH (see Verification log)</span>
+  </div>
+
+  <div class="note" style="border-color:rgba(57,217,138,.4);background:rgba(57,217,138,.08)">
+    <strong>Status update (2026-07-02):</strong> The low-risk batch — <strong>B1, B4, B5, L1, L2, L3, L4, L5, L6</strong> —
+    is <strong>FIXED, tested, and DEPLOYED</strong> to the droplet via <code>rebuild.sh</code> (full suite 2735 passed;
+    <code>e2e_flow_test.py</code> PASS on all live bots; 0 post-restart errors). Remaining open items: B3, B6, B7, P1–P3
+    (behavior changes — backtest-then-ship) and R1–R3 (R1 fleet-stagger still off with 4 live bots; R2 resolved — vinny
+    authed on margin). A pre-existing follow-up surfaced during B1: V6 DCA blends the add at paper price even when the
+    Webull buy doesn't confirm — worth a conditional-blend guard (separate change).
+  </div>
+
+  <div class="note">
+    <strong>How to read this.</strong> Every finding below was <em>verified by reading the actual code</em> (and, for DCA, by checking the running <code>owlet-kody</code> container env on the droplet). Each has a concrete failure scenario, a proposed fix, and a confidence rating. <strong>BUG</strong> = correctness/money/freeze. <strong>PROFIT</strong> = edge left on the table. <strong>RISK</strong> = deployment/config exposure. Items marked <em>“validate first”</em> should get a backtest/paper pass before shipping, consistent with this project’s culture.
+  </div>
+
+  <h2>Executive summary</h2>
+  <p>The uncommitted branch work (new FSM gates, flow-put market-direction filter, late-entry cutoff) is <strong>correctly wired</strong> — variables exist, gates are ordered sanely, and <code>spy_change_from_open</code> is populated for both ML and flow. The material issues are elsewhere, in code paths that predate this branch, plus two deployment-config risks bundled into the uncommitted <code>docker-compose.yml</code>.</p>
+  <ul>
+    <li><strong>2 live-money bugs</strong> worth fixing before the next deploy: a monitor-freeze path (B1) and an exit-basis corruption on fast 0DTE moves (B3). <em>A third candidate (B2, wrong DCA P&amp;L) was investigated on the droplet and <strong>refuted</strong> — see Verification log.</em></li>
+    <li><strong>4 medium correctness/risk-control bugs</strong> (stale reconnect client, freshness-guard hole, loss-cap double-count, put-book fail-closed).</li>
+    <li><strong>3 profitability leaks</strong> where valid signals are silently rejected (ML morning window, flow vs momentum gate, runner dumped on a data gap).</li>
+    <li><strong>3 deployment risks</strong> in the pending config: fleet going 1→4 live with staggering off, vinny→margin on an unpinned/unauthed account, and 4 new risk flags flipped on at once.</li>
+  </ul>
+
+  <h2>Priority table</h2>
+  <div class="legend">
+    <span><span class="pill t-bug">bug</span> correctness / money</span>
+    <span><span class="pill t-profit">profit</span> edge left on table</span>
+    <span><span class="pill t-risk">risk</span> deploy / config</span>
+    <span><span class="pill t-doc">doc</span> documentation drift</span>
+  </div>
+  <table>
+    <thead><tr><th>ID</th><th>Finding</th><th>Type</th><th>Severity</th><th>Location</th><th>Conf.</th></tr></thead>
+    <tbody>
+      <tr><td><a href="#b1">B1</a></td><td>V6 DCA Webull calls not wrapped in <code>asyncio.wait_for</code> → monitor-loop freeze <em>(droplet-confirmed; DCA fires in prod)</em></td><td><span class="pill t-bug">bug</span></td><td><span class="pill b-crit">critical</span></td><td>position_monitor.py:506,518</td><td>High</td></tr>
+      <tr style="opacity:.55"><td><a href="#b2">B2</a></td><td><s>V6 DCA never sets <code>dca_total_contracts</code> → wrong P&amp;L</s> — <strong>REFUTED on droplet</strong> (field set at open; reconcile uses blended <code>premium_per_contract</code>)</td><td><span class="pill t-doc">refuted</span></td><td><span class="pill b-low">n/a</span></td><td>paper_trader.py:1607,2291</td><td>—</td></tr>
+      <tr><td><a href="#b3">B3</a></td><td>Entry re-anchor backstop can clobber a <em>correct</em> fill basis on a real ±70% 0DTE move</td><td><span class="pill t-bug">bug</span></td><td><span class="pill b-high">high</span></td><td>monitor_bridge.py:299–318</td><td>High/Med</td></tr>
+      <tr><td><a href="#b4">B4</a></td><td><code>_reconnect()</code> leaves stale <code>_data_client</code> → live-quote entry chase silently degraded</td><td><span class="pill t-bug">bug</span></td><td><span class="pill b-med">medium</span></td><td>webull_executor.py:112–117</td><td>High</td></tr>
+      <tr><td><a href="#b5">B5</a></td><td><code>_fetch_ask</code> freshness guard bypassed when snapshot timestamp is missing (<code>ts&lt;=0</code>)</td><td><span class="pill t-bug">bug</span></td><td><span class="pill b-med">medium</span></td><td>webull_executor.py:1124</td><td>High</td></tr>
+      <tr><td><a href="#b6">B6</a></td><td>Daily loss-cap uses raw <code>SUM(pnl_dollars)</code> → double-counts scaleout children</td><td><span class="pill t-bug">bug</span></td><td><span class="pill b-med">medium</span></td><td>position_monitor.py:1673</td><td>Med</td></tr>
+      <tr><td><a href="#b7">B7</a></td><td>PutMarketDirectionGate fails <em>closed</em> if <code>spy_change_from_open</code> is None → whole PUT book blocked silently</td><td><span class="pill t-bug">bug</span></td><td><span class="pill b-med">medium</span></td><td>pipeline.py:297</td><td>Med</td></tr>
+      <tr><td><a href="#p1">P1</a></td><td>TimeOfDayGate early-window (&lt;9:45) rejects ML CALLs (score 62–84 &lt; 85) — no ML branch</td><td><span class="pill t-profit">profit</span></td><td><span class="pill b-high">high</span></td><td>pipeline.py:1573</td><td>High</td></tr>
+      <tr><td><a href="#p2">P2</a></td><td>Flow signals NOT bypassed by MomentumConfirm / AntiChase gates → whale sweeps killed on 5m fade</td><td><span class="pill t-profit">profit</span></td><td><span class="pill b-med">medium</span></td><td>pipeline.py:1360,1400</td><td>Med</td></tr>
+      <tr><td><a href="#p3">P3</a></td><td>scalp_trail exits 0DTE when underlying data is merely <em>missing</em> → dumps a runner on a feed gap</td><td><span class="pill t-profit">profit</span></td><td><span class="pill b-med">medium</span></td><td>gates.py:117 / fsm.py:587</td><td>Med</td></tr>
+      <tr><td><a href="#l1">L1</a></td><td>Order safety caps ($5k/100ct) checked pre-escalation only; chase reprice can exceed them</td><td><span class="pill t-bug">bug</span></td><td><span class="pill b-low">low</span></td><td>webull_executor.py:538 vs 912</td><td>Med</td></tr>
+      <tr><td><a href="#l2">L2</a></td><td>Flow collector reads REST key names against the live WS payload → silent zero-trade if schema differs</td><td><span class="pill t-bug">bug</span></td><td><span class="pill b-low">low</span></td><td>uw_flow_collector.py:107</td><td>Med</td></tr>
+      <tr><td><a href="#l3">L3</a></td><td><code>conf_linear</code> settings/function default still 3.0 (aggressive) — over-concentration if env override dropped</td><td><span class="pill t-risk">risk</span></td><td><span class="pill b-low">low</span></td><td>vinny_strategy.py / settings.py</td><td>High</td></tr>
+      <tr><td><a href="#l4">L4</a></td><td>NVDA/AVGO/MSFT <code>profit_target_general_pct=20</code> is dead under live V7 (zeroed by wide-trail)</td><td><span class="pill t-doc">doc</span></td><td><span class="pill b-low">low</span></td><td>config.py:227–395</td><td>High</td></tr>
+      <tr><td><a href="#l5">L5</a></td><td>Discord <code>alert_*</code> awaits in monitor loop are unguarded (same freeze class as B1, lower odds)</td><td><span class="pill t-bug">bug</span></td><td><span class="pill b-low">low</span></td><td>position_monitor.py:1420,1442</td><td>Low</td></tr>
+      <tr><td><a href="#l6">L6</a></td><td>CLAUDE.md doc drift: says “CALL-only, keep-60, puts-exempt” profit-lock; actual defaults keep-80/arm-25/puts-on</td><td><span class="pill t-doc">doc</span></td><td><span class="pill b-low">low</span></td><td>CLAUDE.md / settings.py:274–276</td><td>High</td></tr>
+      <tr><td><a href="#r1">R1</a></td><td>Fleet going 1→4 live bots with <code>ENABLE_FLEET_STAGGER=false</code> — crowding/correlation tax reopens</td><td><span class="pill t-risk">risk</span></td><td><span class="pill b-high">high</span></td><td>docker-compose.yml</td><td>High</td></tr>
+      <tr><td><a href="#r2">R2</a></td><td>vinny → LIVE on margin with <code>WEBULL_ACCOUNT_ID</code> unpinned + likely never Webull-authed</td><td><span class="pill t-risk">risk</span></td><td><span class="pill b-high">high</span></td><td>docker-compose.yml (vinny)</td><td>High</td></tr>
+      <tr><td><a href="#r3">R3</a></td><td>4 new risk flags flipped on fleet-wide at once (STALL_CUT, EOD_CLOSE_ALL, LATE_ENTRY_CUTOFF, FLOW_PUT_MKT_DIR)</td><td><span class="pill t-risk">risk</span></td><td><span class="pill b-med">medium</span></td><td>docker-compose.yml / settings.py</td><td>Med</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Critical &amp; high bugs</h2>
+
+  <div class="card crit" id="b1">
+    <div class="hdr"><span class="id">B1</span><span class="title">V6 DCA Webull calls freeze the monitor loop</span><span class="pill t-bug">bug</span><span class="pill b-crit">critical</span></div>
+    <div class="loc">options_owl/execution/position_monitor.py:506 &amp; :518 (<code>_check_v6_dca</code>, called from the 5s loop at :1528, gated at :1523)</div>
+    <p><span class="lab">What’s wrong.</span> <code>await webull_executor.buy_option(...)</code> and <code>await webull_executor.get_fill_price(...)</code> are not wrapped in <code>asyncio.wait_for</code>. The surrounding <code>try/except</code> catches exceptions but <strong>not a hang</strong>. The sibling sell path deliberately wraps its Webull call in <code>asyncio.wait_for(..., timeout=45)</code> (paper_trader.py:2191) with a comment that a hung SDK socket must not stall the loop — the DCA buy path violates that same rule.</p>
+    <p><span class="lab">Live? (droplet-verified via SSH).</span> Yes. <code>ENABLE_V6_DCA=true</code> in the running containers of <strong>all four live bots</strong> (kody/adam/dennis/vinny) + yank. The guard at <code>position_monitor.py:1523</code> genuinely gates the call, and the deployed source at :506/:518 has the unguarded awaits (every other loop I/O uses <code>wait_for</code>). Prod logs show the path has <strong>actually fired</strong> (<code>V6 DCA Webull FILLED</code> ×2). Scoped to <code>V6_DCA_TICKERS=IWM,SPY,QQQ,AMZN,NVDA</code>, dip 15–35%.</p>
+    <p><span class="lab">Failure scenario.</span> An SPY position dips 20% → DCA fires → the Webull SDK socket is in the documented “no active connection” stale state → the <code>buy_option</code> await never returns → the entire monitor loop freezes → <strong>no other open position can be evaluated or sold</strong>. This is the exact unlimited-loss freeze class the safety rules exist to prevent.</p>
+    <div class="fix"><span class="lab">Proposed fix.</span> Wrap both awaits in <code>asyncio.wait_for(..., timeout=15)</code> (buy) / <code>timeout=10</code> (fill lookup) with graceful fallback (log + skip the add, keep the parent). Apply the identical guard to <code>_check_antimartingale_add</code> (:709,:719) so the latent path is safe too.</p></div>
+    <p class="conf">Confidence: <strong>High</strong> (code); DCA is live but ticker-scoped, so freeze odds are moderate, impact catastrophic.</p>
+  </div>
+
+  <div class="card low" id="b2" style="opacity:.72">
+    <div class="hdr"><span class="id">B2</span><span class="title"><s>V6-DCA’d trades reconcile against the wrong entry basis → wrong P&amp;L</s></span><span class="pill t-doc">refuted</span></div>
+    <div class="loc">paper_trader.py:1607 (open) &amp; :2291–2294 (reconcile) — verified on the droplet source</div>
+    <p><span class="lab">Original claim.</span> That <code>_check_v6_dca</code> never sets <code>dca_total_contracts</code>, so the exit reconcile falls back to the raw first-leg fill and mis-computes P&amp;L on DCA’d trades.</p>
+    <p><span class="lab">Why it’s refuted (SSH-checked).</span> <code>dca_total_contracts</code> is set to the initial contract count at <em>open</em> for <strong>every</strong> trade (<code>paper_trader.py:1607</code>, unconditional) — droplet data confirms 371 of 427 kody trades have it <code>&gt;0</code>. The reconcile only uses it as a boolean gate (<code>dca_qty &gt; 0</code>) and then reads <code>premium_per_contract</code> as the entry basis — which <code>_check_v6_dca</code> <em>does</em> correctly update to the blended average. The exact value of <code>dca_total_contracts</code> never feeds the P&amp;L math; the only place it’s used as a quantity is the separate <strong>V3</strong> <code>dca_add_contracts</code> path (:3534), which V6 DCA doesn’t touch. So V6-DCA’d trades reconcile on the correct blended cost. No fix needed.</p>
+    <p class="conf">Status: <strong>Refuted during droplet verification.</strong> Retained here for the audit trail.</p>
+  </div>
+
+  <div class="card high" id="b3">
+    <div class="hdr"><span class="id">B3</span><span class="title">Entry re-anchor backstop can corrupt a correct fill basis on a real fast 0DTE move</span><span class="pill t-bug">bug</span><span class="pill b-high">high</span></div>
+    <div class="loc">options_owl/risk/exit_v5/monitor_bridge.py:299–318 (evaluate-time fallback)</div>
+    <p><span class="lab">What’s wrong.</span> The one-shot fallback re-anchors <code>entry_premium = exit_premium</code> whenever <code>|(exit−entry)/entry| &ge; 0.70</code> within 60s of entry. It runs <em>independently</em> of the primary fill-reconcile (<code>_reconcile_entry_to_fill</code>), and its guard cannot distinguish a <em>phantom pre-fill quote</em> from a <em>real ±70% 0DTE move</em>. The comment’s claim that “&gt;70% never clobbers a real gamma move” is false for 0DTE.</p>
+    <p><span class="lab">Failure scenario (loser hidden).</span> Live fill correctly recorded at $1.00; underlying gaps against; first monitored cycle sees $0.30 (−70%). Backstop re-anchors entry → $0.30, but <code>peak_premium</code> stays $1.00 → computed <code>peak_gain = +233%</code>, <code>gain = 0%</code>. The real −70% loss is hidden and the profit-lock/hard-stop math is corrupted for the rest of the trade.</p>
+    <p><span class="lab">Failure scenario (winner clipped).</span> A legit +70% ripper in the first 60s resets <code>gain</code> to 0, destroying the trail/profit-lock anchor — the winner must re-run to +70% before any lock re-arms.</p>
+    <div class="fix"><span class="lab">Proposed fix.</span> Gate the fallback so it only fires when there is <em>no</em> valid <code>webull_entry_fill_price</code> (i.e. paper / missing-fill only) — the live-fill case is already handled correctly by <code>_reconcile_entry_to_fill</code>. Equivalently: skip the fallback when the primary reconcile has confirmed the basis against a real fill.</p></div>
+    <p class="conf">Confidence: <strong>High</strong> on the code path; <strong>Medium</strong> on frequency (first cycle is usually ~5s post-fill, so most real moves aren’t yet 70% — but 0DTE gaps can be).</p>
+  </div>
+
+  <h2>Medium bugs &amp; risk-control correctness</h2>
+
+  <div class="card med" id="b4">
+    <div class="hdr"><span class="id">B4</span><span class="title"><code>_reconnect()</code> leaves a stale market-data client</span><span class="pill t-bug">bug</span><span class="pill b-med">medium</span></div>
+    <div class="loc">webull_executor.py:112–117 (<code>_reconnect</code>) + 1432–1441 (<code>_ensure_data_client</code>)</div>
+    <p><span class="lab">What’s wrong.</span> <code>_reconnect()</code> nulls <code>_api_client</code> and <code>_trade_client</code> but not <code>_data_client</code>, and <code>_ensure_data_client()</code> early-returns when <code>_data_client is not None</code>. After any reconnect, the data client keeps wrapping the torn-down api client.</p>
+    <p><span class="lab">Failure scenario.</span> After an idle-period stale-connection reconnect, <code>_fetch_ask</code>’s HTTP fallback uses the dead data client and fails silently → the entry chase falls back to the back-derived <code>base_ask</code> instead of a fresh quote — reintroducing the exact stale-limit “not filled” misses the 2026-06-25 live-quote fix was built to eliminate. Order placement still works (<code>_trade_client</code>), so it’s silent degradation, not an outage.</p>
+    <div class="fix"><span class="lab">Proposed fix.</span> Add <code>self._data_client = None</code> to <code>_reconnect()</code>.</p></div>
+    <p class="conf">Confidence: <strong>High</strong> that state is lost; Medium on fill-quality impact.</p>
+  </div>
+
+  <div class="card med" id="b5">
+    <div class="hdr"><span class="id">B5</span><span class="title"><code>_fetch_ask</code> freshness guard bypassed when timestamp missing</span><span class="pill t-bug">bug</span><span class="pill b-med">medium</span></div>
+    <div class="loc">webull_executor.py:1124</div>
+    <p><span class="lab">What’s wrong.</span> <code>if ask &gt; 0 and (ts &lt;= 0 or time.time() - ts &lt;= max_age): return ask</code> — the <code>ts &lt;= 0</code> branch returns the Redis ask even when its age can’t be verified, defeating the docstring’s “a stale snapshot can never make the limit worse” guarantee. Also assumes <code>t</code> is epoch <em>seconds</em>; if the harvester ever writes milliseconds, <code>time.time() - ts</code> is hugely negative and always passes the guard.</p>
+    <p><span class="lab">Failure scenario.</span> A snapshot missing its <code>t</code> field (→ <code>ts=0</code>) prices the chase off an arbitrarily old ask → un-marketable limit (miss) or over-aggressive within the ceiling.</p>
+    <div class="fix"><span class="lab">Proposed fix.</span> Treat <code>ts &lt;= 0</code> as stale (fall through to HTTP), not fresh. Confirm the harvester writes <code>t</code> in seconds; if ms, normalize.</p></div>
+    <p class="conf">Confidence: <strong>High</strong> on the <code>ts&lt;=0</code> fallthrough; Medium on the unit concern (depends on harvester write format — worth a quick check).</p>
+  </div>
+
+  <div class="card med" id="b6">
+    <div class="hdr"><span class="id">B6</span><span class="title">Daily loss-cap sums raw <code>pnl_dollars</code> → double-counts scaleout children</span><span class="pill t-bug">bug</span><span class="pill b-med">medium</span></div>
+    <div class="loc">position_monitor.py:1673–1680</div>
+    <p><span class="lab">What’s wrong.</span> The max-loss circuit breaker does <code>SUM(pnl_dollars) WHERE status='closed' AND webull_order_id IS NOT NULL</code>. Scaleout/partial closes create a child row that copies the parent’s <code>webull_order_id</code> and carries its own <code>pnl_dollars</code>; the parent later closes with its own P&amp;L on the remaining contracts. This is the exact double-count CLAUDE.md warns against (“Do NOT use <code>SUM(pnl_dollars)</code> directly”).</p>
+    <p><span class="lab">Failure scenario.</span> On a multi-scaleout day the realized total is distorted → the loss-cap force-exit can trigger early on a green day or fail to trigger when it should. It’s a risk control fed by a known-unreliable aggregate.</p>
+    <div class="fix"><span class="lab">Proposed fix.</span> Compute the day’s realized P&amp;L with the same family-grouping logic as <code>scripts/trade-pnl.py</code> (exclude child rows or group parent+children), or filter to parent rows only.</p></div>
+    <p class="conf">Confidence: <strong>Medium</strong>.</p>
+  </div>
+
+  <div class="card med" id="b7">
+    <div class="hdr"><span class="id">B7</span><span class="title">PutMarketDirectionGate fails <em>closed</em> on missing SPY change → whole PUT book blocked silently</span><span class="pill t-bug">bug</span><span class="pill b-med">medium</span></div>
+    <div class="loc">pipeline.py:297–301</div>
+    <p><span class="lab">What’s wrong.</span> If <code>spy_change_from_open</code> is None, every non-flow PUT is rejected. It’s a deliberate safety default, but a single unpopulated ctx key silently kills the entire PUT book with only per-signal log lines and no aggregate alarm.</p>
+    <p><span class="lab">Failure scenario.</span> A regime/SPY-fetch failure leaves the key None during market hours → all ML/Discord puts rejected fleet-wide, unnoticed until someone reads logs.</p>
+    <div class="fix"><span class="lab">Proposed fix.</span> Keep fail-closed, but add a loud health signal: if the key is None for &gt;N consecutive signals during market hours, fire a Discord alert (reuse the premium-failure alerter). Consider a one-shot HTTP SPY fallback before failing.</p></div>
+    <p class="conf">Confidence: <strong>Medium</strong>. Behavior is intentional; the gap is observability.</p>
+  </div>
+
+  <h2>Profitability leaks</h2>
+
+  <div class="card high" id="p1">
+    <div class="hdr"><span class="id">P1</span><span class="title">ML CALLs rejected in the prime 9:30–9:45 window (85-score threshold, no ML branch)</span><span class="pill t-profit">profit</span><span class="pill b-high">high</span></div>
+    <div class="loc">pipeline.py:1573 (early check) &amp; :1587 (late check)</div>
+    <p><span class="lab">What’s wrong.</span> The early (&lt;9:45) and late (&ge;14:00) score checks compare <code>signal.score</code> to <code>TOD_EARLY_MIN_SCORE / TOD_LATE_MIN_SCORE</code> (default <strong>85</strong>, not overridden) with <strong>no <code>_is_ml_sourced</code> branch</strong>. But <code>AntiChaseGate</code> (:1382) and <code>PremiumCapGate</code> (:683) both explicitly carry that branch, with a comment that ML scores (<code>conf×100</code>, capped 100) shouldn’t be rescaled onto the Discord range. TimeOfDayGate was missed.</p>
+    <p><span class="lab">Failure scenario.</span> Verified: ML CALL score = <code>int(pattern_conf×100)</code>; with the live <code>ML_PATTERN_THRESHOLD=0.62</code> a passing call can score 62–84. Any such call firing before 9:45 ET → <code>score &lt; 85</code> → <strong>rejected</strong>, inside the backtested prime CALL window (9:30–10:30 = +$62k in the harness). The early check also hits ML puts (not put-exempt) with score 78–84.</p>
+    <div class="fix"><span class="lab">Proposed fix (validate first).</span> Add the same <code>_is_ml_sourced</code> handling used in AntiChase/PremiumCap — either exempt ML from the 85 gate or apply an ML-scaled early threshold (e.g. current pattern threshold). <em>Backtest the change</em> before shipping: the open-noise filter may be partly intentional, so confirm the morning window nets positive with ML included.</p></div>
+    <p class="conf">Confidence: <strong>High</strong> the mismatch exists and clips volume; the size of the gain needs a backtest.</p>
+  </div>
+
+  <div class="card med" id="p2">
+    <div class="hdr"><span class="id">P2</span><span class="title">Flow whale sweeps killed by the momentum/anti-chase gates</span><span class="pill t-profit">profit</span><span class="pill b-med">medium</span></div>
+    <div class="loc">pipeline.py:1400–1491 (MomentumConfirmGate), :1360–1397 (AntiChaseGate)</div>
+    <p><span class="lab">What’s wrong.</span> Neither gate calls <code>_is_flow_sourced</code>. Flow explicitly bypasses the sibling directional gates (<code>directional_regime</code>, <code>put_bearish_confirm</code>, <code>put_market_direction</code>, <code>put_ticker_exclusion</code>) because “the whale IS the conviction,” yet momentum_confirm — functionally the same kind of directional-quality gate — still applies.</p>
+    <p><span class="lab">Failure scenario.</span> A $6M ask-side SPY call sweep at 10:15 with the last three 5m candles red + soft RSI → MomentumConfirmGate collects 2+ negatives → FAIL, dropping a high-conviction entry. Same risk on AntiChaseGate if the underlying drifted &gt;0.3% from the signal’s <code>entry_price</code> before processing.</p>
+    <div class="fix"><span class="lab">Proposed fix (validate first).</span> Add the <code>_is_flow_sourced</code> bypass to both gates for consistency with the documented flow-bypass set. Confirm on the flow gold-standard report that removing these two gates for flow doesn’t regress PF.</p></div>
+    <p class="conf">Confidence: <strong>Medium</strong>.</p>
+  </div>
+
+  <div class="card med" id="p3">
+    <div class="hdr"><span class="id">P3</span><span class="title">scalp_trail dumps a 0DTE runner when underlying data is merely missing</span><span class="pill t-profit">profit</span><span class="pill b-med">medium</span></div>
+    <div class="loc">gates.py:117–123 + fsm.py:587–589</div>
+    <p><span class="lab">What’s wrong.</span> <code>_compute_underlying_move</code> returns <code>underlying_confirms=False</code> when there’s no underlying price (<code>has_underlying=False</code>). The 0DTE branch of <code>check_scalp_trail</code> exits on <code>not underlying_confirms</code> — so <em>missing</em> data is treated as <em>disconfirmation</em> on the exit-a-winner path.</p>
+    <p><span class="lab">Failure scenario.</span> A 0DTE call peaks +30%, fades to +17% (&lt;60% of peak), and the underlying feed has a transient gap that cycle → <code>underlying_confirms=False</code> → scalp-trail exits a genuine runner purely because underlying data was absent.</p>
+    <div class="fix"><span class="lab">Proposed fix.</span> Distinguish “underlying against” from “no underlying data.” When <code>has_underlying=False</code>, HOLD (let the adaptive/soft trail handle it) rather than treating absence as disconfirmation.</p></div>
+    <p class="conf">Confidence: <strong>Medium</strong>.</p>
+  </div>
+
+  <h2>Low severity, safety-rails &amp; doc</h2>
+
+  <div class="card low" id="l1">
+    <div class="hdr"><span class="id">L1</span><span class="title">Order safety caps checked only pre-escalation</span><span class="pill t-bug">bug</span><span class="pill b-low">low</span></div>
+    <div class="loc">webull_executor.py:538 (<code>_check_safety_limits</code>) vs 912–938 (escalation reprice)</div>
+    <p><code>MAX_ORDER_VALUE=$5000</code> / <code>MAX_ORDER_CONTRACTS=100</code> are validated on the initial limit only; the chase re-fetches a fresh ask and reprices up to <code>max_chase_pct</code> over it, so filled order value can float past $5k on a fast run-up. Dormant at current sizes (15% pos-cap ≈ $3,450 keeps initial well under $5k) but the rail doesn’t hold at scale.</p>
+    <div class="fix"><span class="lab">Proposed fix.</span> Re-apply the value cap to each escalated limit before submit.</div>
+  </div>
+
+  <div class="card low" id="l2">
+    <div class="hdr"><span class="id">L2</span><span class="title">Flow collector reads REST key names against the live WS payload</span><span class="pill t-bug">bug</span><span class="pill b-low">low</span></div>
+    <div class="loc">uw_flow_collector.py:107–114</div>
+    <p>The code derives <code>type/strike/expiry</code> from the OCC symbol because “the live WS does NOT carry them,” but still reads <code>total_premium</code>, <code>total_ask_side_prem</code>, <code>has_sweep</code> by their REST key names. If any differ on the WS, <code>total=0</code> or <code>ask_frac=0</code> → the alert is silently dropped at a gate — the same “flow never trades live” failure class as before, with no error logged.</p>
+    <div class="fix"><span class="lab">Proposed fix.</span> Log one raw WS payload at INFO on first alert and confirm the three keys exist; add a debug counter for “dropped: zero premium/ask_frac” so silent drops are visible.</div>
+  </div>
+
+  <div class="card low" id="l3">
+    <div class="hdr"><span class="id">L3</span><span class="title"><code>conf_linear</code> non-env default is still the aggressive 3.0</span><span class="pill t-risk">risk</span><span class="pill b-low">low</span></div>
+    <div class="loc">vinny_strategy.py / settings.py (function &amp; settings defaults)</div>
+    <p>Live bots are safe because docker-compose overrides the bounds to the validated 0.4–1.8, but the code/settings default still carries the old 0.3–3.0. If an env override is ever dropped, sizing silently reverts to over-concentration.</p>
+    <div class="fix"><span class="lab">Proposed fix.</span> Change the code/settings default to the validated <code>CONF_LINEAR_BUDGET_MAX=1.8</code> so the safe value is the default, not the override.</div>
+  </div>
+
+  <div class="card low" id="l4">
+    <div class="hdr"><span class="id">L4</span><span class="title">NVDA/AVGO/MSFT <code>profit_target_general_pct=20</code> is dead under V7</span><span class="pill t-doc">doc</span><span class="pill b-low">low</span></div>
+    <div class="loc">config.py:227–278 (EARLY_PROFIT configs) vs :389–395 (<code>apply_v7_wide_trail_exits</code> zeroes it)</div>
+    <p>With <code>ENABLE_V7_WIDE_TRAIL=true</code> (all bots), the per-ticker “+20% take-profit” is overwritten to 0 — only <code>soft_trail_keep_pct=0.70</code> survives. Likely intended (V7 = no ceiling), but the config reads as active tuning that’s actually dead. This is the “per-ticker key that silently does nothing” class the codebase has hit before.</p>
+    <div class="fix"><span class="lab">Proposed fix.</span> Remove the dead key or add a comment that V7 intentionally nullifies it.</div>
+  </div>
+
+  <div class="card low" id="l5">
+    <div class="hdr"><span class="id">L5</span><span class="title">Unguarded Discord alert awaits in the monitor loop</span><span class="pill t-bug">bug</span><span class="pill b-low">low</span></div>
+    <div class="loc">position_monitor.py:1420, :1442, sell-failure alert block</div>
+    <p>Same unguarded-I/O-in-loop class as B1, lower likelihood (discord.py has internal timeouts). If the gateway send stalls it stalls the loop.</p>
+    <div class="fix"><span class="lab">Proposed fix.</span> Wrap alert sends in <code>asyncio.wait_for(..., timeout=5)</code> or fire-and-forget via <code>asyncio.create_task</code>.</div>
+  </div>
+
+  <div class="card low" id="l6">
+    <div class="hdr"><span class="id">L6</span><span class="title">CLAUDE.md profit-lock docs are stale</span><span class="pill t-doc">doc</span><span class="pill b-low">low</span></div>
+    <div class="loc">CLAUDE.md (PUT section / key decisions) vs settings.py:274–276</div>
+    <p>CLAUDE.md still states “CALL-only profit-lock (keep 60%), PUTs exempt,” but the shipped defaults are <code>KEEP_FRAC=0.8</code>, <code>ACTIVATE_PCT=25</code>, <code>V7_PROFIT_LOCK_PUTS=true</code> fleet-wide. The next reader tuning exits will be misled.</p>
+    <div class="fix"><span class="lab">Proposed fix.</span> Update CLAUDE.md to the keep-80 / arm-25 / puts-on state and cite the 2026-06-29/06-30 validation.</div>
+  </div>
+
+  <h2>Deployment / config risks (pending in uncommitted <code>docker-compose.yml</code>)</h2>
+
+  <div class="card high" id="r1">
+    <div class="hdr"><span class="id">R1</span><span class="title">Fleet going 1→4 live bots with staggering disabled</span><span class="pill t-risk">risk</span><span class="pill b-high">high</span></div>
+    <p>The uncommitted compose flips dennis and vinny to <code>PAPER_TRADE=false</code>, making it <strong>4 live bots</strong> (kody/adam/dennis/vinny), all with <code>ENABLE_FLEET_STAGGER=false</code>. Staggering was disabled with the explicit justification “kody is the only live bot” — now void. Your own findings (memories <code>fleet-stagger</code>, <code>take-profit-cap-and-crowding</code>) show 4–5 identical bots are ~0.95 correlated and crowd thin-name fills (a large slippage tax at scale), and that a priority round-robin (K=2) cut fleet drawdown ~5×.</p>
+    <div class="fix"><span class="lab">Proposed action.</span> Before flipping the bots live, decide: re-enable <code>ENABLE_FLEET_STAGGER</code> / round-robin (K=2) across the 4 live bots, or accept the crowding tax knowingly. At minimum, size-check shared thin names (MU/SMCI/MSTR) against available liquidity.</div>
+  </div>
+
+  <div class="card high" id="r2">
+    <div class="hdr"><span class="id">R2</span><span class="title">vinny → LIVE on margin, account unpinned &amp; likely never authed</span><span class="pill t-risk">risk</span><span class="pill b-high">high</span></div>
+    <p>vinny is set to <code>PAPER_TRADE=false</code>, <code>MARGIN_ACCOUNT=true</code>, <code>WEBULL_ACCOUNT_ID</code> unpinned — relying on <code>_detect_account_id</code> to auto-select an Individual MARGIN account. Paper bots skip Webull init, so vinny may never have completed a Webull auth, and there’s no guarantee its account actually has a margin sub-account for auto-detect to find.</p>
+    <div class="fix"><span class="lab">Proposed action.</span> Pre-deploy checklist for vinny: (1) complete a fresh Webull auth (expect a phone push), (2) confirm a margin account exists / consider pinning <code>WEBULL_ACCOUNT_ID</code>, (3) on first start eyeball the <code>Live Webull balance: $X</code> log to confirm it reads the margin equity, (4) start with <code>WEBULL_KILL_SWITCH=true</code> for one session to verify wiring before arming.</div>
+  </div>
+
+  <div class="card med" id="r3">
+    <div class="hdr"><span class="id">R3</span><span class="title">Four new risk flags flipped on fleet-wide simultaneously</span><span class="pill t-risk">risk</span><span class="pill b-med">medium</span></div>
+    <p><code>ENABLE_STALL_CUT</code>, <code>ENABLE_EOD_CLOSE_ALL</code>, <code>ENABLE_LATE_ENTRY_CUTOFF</code>, and <code>ENABLE_FLOW_PUT_MKT_DIR</code> all go from off→on across all bots in one change. The code is correctly wired (verified). Two watch-items: (a) <code>EOD_CLOSE_ALL</code>’s justification (“the harness never holds overnight, so this only removes uncredited overnight tail”) is a validation <em>claim</em> worth confirming against the harness before trusting it fleet-wide; (b) <code>FLOW_PUT_MKT_DIR</code> in practice only gates <strong>SPY</strong> puts (the sole overlap between <code>INDEX_TICKERS</code> and the put whitelist) — which matches the validated result, but worth knowing it’s narrower than “index puts” reads.</p>
+    <div class="fix"><span class="lab">Proposed action.</span> These are low-risk individually; flipping all four plus 3 bots live in one deploy makes attribution hard if a metric moves. Consider landing the risk-control flags first (they’re defensive), then the live-bot flips as a separate change.</div>
+  </div>
+
+  <h2>Verification log (droplet, via SSH)</h2>
+  <div class="note">
+    These items were confirmed against the <strong>running containers and deployed source</strong> at <code>129.212.138.145:/root/options-owl</code> — not just the local repo.
+    <ul>
+      <li><strong>DCA is live &amp; the flag works end-to-end.</strong> <code>docker exec owlet-&lt;bot&gt; env</code> shows <code>ENABLE_V6_DCA=true</code> on kody, adam, dennis, vinny (all live) and yank. The guard at <code>position_monitor.py:1523</code> gates <code>_check_v6_dca</code> (defined :363, called :1528); it is not dead code. Prod logs contain <code>V6 DCA Webull order</code> / <code>V6 DCA Webull FILLED</code> lines — the path has actually placed real Webull adds.</li>
+      <li><strong>B1 confirmed on the deployed source.</strong> :506/:518 awaits are unwrapped; the 13+ other loop I/O calls all use <code>asyncio.wait_for</code>. Real freeze exposure whenever a DCA add hits a stale SDK socket.</li>
+      <li><strong>B2 refuted on the deployed source.</strong> <code>dca_total_contracts</code> set at open for all trades (:1607); reconcile (:2291–2294) uses it only as a <code>&gt;0</code> gate then reads the correctly-blended <code>premium_per_contract</code>; the quantity use at :3534 is the V3-only path. P&amp;L reconciles correctly. (This is the finding your instinct to “verify on the droplet” caught.)</li>
+      <li><strong>Config drift note.</strong> If you intended DCA to be OFF in prod, it currently is not — the local <code>docker-compose.yml</code> and every live container carry <code>ENABLE_V6_DCA=true</code>, and the gold-standard harness models DCA too (<code>backtest_gold_standard.py:112–113, 2214–2245</code>). Decide whether to (a) leave it on and fix B1, or (b) set <code>ENABLE_V6_DCA=false</code> fleet-wide — in which case B1/B2 become moot and DCA drops out of both prod and the backtest.</li>
+    </ul>
+  </div>
+
+  <h2>Verified clean (checked, no fix needed)</h2>
+  <ul>
+    <li><strong>Uncommitted FSM/pipeline changes</strong> — new gates reference only pre-defined vars; ordering is sane; STALL_CUT and EOD_CLOSE_ALL don’t interact badly (mutually-exclusive DTE branches); flow-put filter’s <code>spy_change_from_open</code> is populated for both ML and flow (fail-open on fetch error).</li>
+    <li><strong>UnboundLocalError class</strong> — <code>reason</code>/<code>description</code>/<code>exit_ctx</code> and the FSM’s conditional vars are all initialized before their blocks.</li>
+    <li><strong>Category/config-key mismatch</strong> — every <code>adaptive_highvol_tiers</code> config is a HIGH_VOL ticker; every <code>adaptive_standard_tiers</code> is STANDARD.</li>
+    <li><strong>Sizing composition</strong> — flow × runner_v1 × conf_linear × delta multipliers compose multiplicatively; caps applied last; <code>cost_per_contract&gt;0</code> guarded.</li>
+    <li><strong>Sell path I/O</strong> — every premium source, <code>sell_option</code>, portfolio sync, and position fetch in the loop is wrapped in <code>asyncio.wait_for</code> (the freeze gap is specifically the DCA/alert buy paths, B1/L5).</li>
+    <li><strong>Price-step rounding, double-fill guard, cluster-window deque, SELL naked-short block</strong> — all correct.</li>
+    <li><strong>Profit-lock / ratchet / soft-trail / adaptive-trail</strong> — layered without a round-trip-to-breakeven gap for CALLs (PUTs intentionally can give back a peak, documented).</li>
+  </ul>
+
+  <div class="foot">
+    Generated 2026-07-01 for branch <code>feat/regime-call-put-budget</code> @ <code>0a306dc</code>. No source files were modified. DCA state, flag wiring, and B1/B2 confirmed against the live droplet via SSH (all four live bots: <code>ENABLE_V6_DCA=true</code>, whitelist IWM/SPY/QQQ/AMZN/NVDA; DCA has fired in prod). Recommend fixing <strong>B1</strong> and <strong>B3</strong> before the next deploy (or setting <code>ENABLE_V6_DCA=false</code> to moot B1); treat P1–P3 as backtest-then-ship; resolve R1–R2 before flipping dennis/vinny live. <strong>B2 refuted during verification.</strong>
+  </div>
+
+</div>
+</body>
+</html>

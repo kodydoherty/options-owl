@@ -599,6 +599,40 @@ class TestSourceCodeSafety:
         # sell_option wrapper must use a generous timeout (>= internal poll window)
         assert "timeout=45" in src
 
+    def test_v6_dca_buy_path_has_timeout(self):
+        """B1: the V6 DCA Webull buy runs in the 5s monitor loop — a hung SDK socket must
+        NOT freeze the sell path. Both buy_option and get_fill_price must be wrapped in
+        asyncio.wait_for (the try/except catches errors but NOT a hang)."""
+        import inspect
+        from options_owl.execution import position_monitor
+
+        src = inspect.getsource(position_monitor._check_v6_dca)
+        # Every Webull SDK await in the DCA path must be inside an asyncio.wait_for(...).
+        assert "asyncio.wait_for(" in src, "V6 DCA buy path missing asyncio.wait_for guard"
+        for call in ("buy_option(", "get_fill_price("):
+            idx = src.find(call)
+            assert idx != -1, f"{call} not found in _check_v6_dca"
+            preceding = src[:idx]
+            assert preceding.rfind("asyncio.wait_for(") > preceding.rfind("await "), (
+                f"{call} in _check_v6_dca must be wrapped in asyncio.wait_for"
+            )
+
+    def test_antimartingale_add_buy_path_has_timeout(self):
+        """B1 (latent path): the anti-martingale add buy also runs in the monitor loop and
+        must be timeout-guarded for the same reason."""
+        import inspect
+        from options_owl.execution import position_monitor
+
+        src = inspect.getsource(position_monitor._check_antimartingale_add)
+        assert "asyncio.wait_for(" in src, "antimg add buy path missing asyncio.wait_for guard"
+        for call in ("buy_option(", "get_fill_price("):
+            idx = src.find(call)
+            assert idx != -1, f"{call} not found in _check_antimartingale_add"
+            preceding = src[:idx]
+            assert preceding.rfind("asyncio.wait_for(") > preceding.rfind("await "), (
+                f"{call} in _check_antimartingale_add must be wrapped in asyncio.wait_for"
+            )
+
 
 # ---------------------------------------------------------------------------
 # 5. Trade DB state consistency after close

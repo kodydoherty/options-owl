@@ -114,6 +114,11 @@ class WebullExecutor:
         logger.warning("Webull reconnect: tearing down stale clients and reinitializing")
         self._api_client = None
         self._trade_client = None
+        # The market-data client wraps _api_client; if we don't drop it too,
+        # _ensure_data_client() (which early-returns when non-None) keeps serving a
+        # client built on the torn-down api client — silently breaking the live-quote
+        # entry-chase fallback after every reconnect.
+        self._data_client = None
         self._ensure_clients()
 
     def _ensure_clients(self) -> None:
@@ -937,6 +942,22 @@ class WebullExecutor:
             if limit > ceiling:
                 limit = _round_option_price(ceiling, "SELL")
 
+            # Hard value-cap rail, re-applied per rung. _check_safety_limits validates the
+            # INITIAL limit once (pre-escalation); the chase reprices UPWARD off a fresh ask,
+            # so the escalated limit can float the order value past MAX_ORDER_VALUE. Clamp the
+            # limit (rounded DOWN to a legal step) so the rail holds on a fast run-up. No-op at
+            # current account sizes; a real brake at scale. An un-marketable clamped limit
+            # correctly means "don't overpay past the hard cap".
+            if contracts > 0 and limit * contracts * 100 > MAX_ORDER_VALUE:
+                capped = MAX_ORDER_VALUE / (contracts * 100)
+                clamped = _round_option_price(capped, "SELL")
+                if clamped < limit:
+                    logger.warning(
+                        f"WEBULL ENTRY CHASE: limit ${limit:.2f} → ${clamped:.2f} to hold "
+                        f"${MAX_ORDER_VALUE:.0f} order-value rail ({contracts}x)"
+                    )
+                    limit = clamped
+
             client_order_id = uuid.uuid4().hex[:32]
             last_client_id = client_order_id
 
@@ -1121,7 +1142,11 @@ class WebullExecutor:
                 if snap:
                     ask = float(snap.get("ask") or 0)
                     ts = float(snap.get("t") or 0)
-                    if ask > 0 and (ts <= 0 or time.time() - ts <= max_age):
+                    # Only trust the Redis ask when its age can be VERIFIED and is fresh.
+                    # A missing/zero timestamp (ts <= 0) means we can't prove freshness, so
+                    # fall through to the HTTP quote rather than pricing the chase off an
+                    # ask of unknown age (the freshness guard must never be bypassable).
+                    if ask > 0 and ts > 0 and (time.time() - ts) <= max_age:
                         return ask
             except Exception as exc:
                 logger.debug(f"_fetch_ask redis miss for {ticker} ${strike} {option_type}: {exc}")

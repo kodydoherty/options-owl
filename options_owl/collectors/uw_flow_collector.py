@@ -71,6 +71,9 @@ def _f(v, default=0.0) -> float:
         return default
 
 
+_logged_sample_payload = False
+
+
 def evaluate_flow_alert(alert: dict, settings) -> FlowSignal | None:
     """Pure filter+builder: return a FlowSignal if the alert qualifies, else None.
 
@@ -78,6 +81,16 @@ def evaluate_flow_alert(alert: dict, settings) -> FlowSignal | None:
     (if required), and the ticker is on the direction-appropriate whitelist (PUT names for
     puts, CALL names for calls). PUT sweep -> bearish/PUT; CALL sweep -> bullish/CALL.
     """
+    # Diagnostic: log the FIRST raw payload's keys once so a live-WS schema drift (e.g.
+    # a renamed total_premium/total_ask_side_prem/has_sweep field) is visible instead of
+    # silently dropping every alert at a gate (the historical "flow never trades" class).
+    global _logged_sample_payload
+    if not _logged_sample_payload:
+        _logged_sample_payload = True
+        try:
+            logger.info(f"UW_FLOW: first raw alert keys={sorted(alert.keys())}")
+        except Exception:
+            pass
     # type/strike/expiry: REST flow-alerts has these as fields; the live WS does NOT — it encodes
     # them in the OCC `option_chain` symbol (e.g. MSTR260618C00115000). Derive from there when absent.
     opt_type = str(alert.get("type", "")).lower()
@@ -106,11 +119,22 @@ def evaluate_flow_alert(alert: dict, settings) -> FlowSignal | None:
 
     total = _f(alert.get("total_premium"))
     if total < settings.UW_FLOW_MIN_PREMIUM:
+        # total==0 with a valid whitelisted ticker is a red flag for a missing/renamed
+        # premium key on the live WS, not a genuinely tiny sweep — surface it at debug.
+        logger.debug(
+            f"UW_FLOW drop: {ticker} {opt_type} total_premium={total:.0f} "
+            f"< min {settings.UW_FLOW_MIN_PREMIUM}"
+        )
         return None
     ask_frac = _f(alert.get("total_ask_side_prem")) / total if total > 0 else 0.0
     if ask_frac < settings.UW_FLOW_ASK_FRAC:
+        logger.debug(
+            f"UW_FLOW drop: {ticker} {opt_type} ask_frac={ask_frac:.2f} "
+            f"< min {settings.UW_FLOW_ASK_FRAC}"
+        )
         return None
     if settings.UW_FLOW_REQUIRE_SWEEP and not bool(alert.get("has_sweep")):
+        logger.debug(f"UW_FLOW drop: {ticker} {opt_type} no has_sweep")
         return None
 
     return FlowSignal(

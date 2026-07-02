@@ -503,20 +503,30 @@ async def _check_v6_dca(
         try:
             aggress_pct = getattr(settings, "WEBULL_ENTRY_AGGRESS_PCT", 2.0)
             aggressive_limit = round(exit_premium * (1 + aggress_pct / 100), 2)
-            result = await paper_trader.webull_executor.buy_option(
-                ticker=ticker,
-                strike=trade["strike"],
-                expiry_date=trade.get("expiry_date", "") or "",
-                option_type=trade.get("option_type", "call").upper(),
-                contracts=add_contracts,
-                limit_price=aggressive_limit,
+            # HARD TIMEOUT: this Webull buy runs inside the 5s monitor loop. A hung SDK
+            # socket (the documented "no active connection" idle failure) must NOT freeze
+            # the loop — a frozen monitor can't sell ANY open position. The sibling sell
+            # path wraps its Webull call the same way (see close_webull_position).
+            result = await asyncio.wait_for(
+                paper_trader.webull_executor.buy_option(
+                    ticker=ticker,
+                    strike=trade["strike"],
+                    expiry_date=trade.get("expiry_date", "") or "",
+                    option_type=trade.get("option_type", "call").upper(),
+                    contracts=add_contracts,
+                    limit_price=aggressive_limit,
+                ),
+                timeout=45,
             )
             if result.success:
                 # Get actual fill price from Webull
                 wb_fill = None
                 if result.client_order_id:
-                    wb_fill = await paper_trader.webull_executor.get_fill_price(
-                        result.client_order_id
+                    wb_fill = await asyncio.wait_for(
+                        paper_trader.webull_executor.get_fill_price(
+                            result.client_order_id
+                        ),
+                        timeout=15,
                     )
                 if wb_fill and wb_fill > 0:
                     dca_fill_price = wb_fill
@@ -706,9 +716,14 @@ async def _check_antimartingale_add(
     if paper_trader.webull_executor is not None:
         try:
             limit = round(exit_premium * (1 + getattr(settings, "WEBULL_ENTRY_AGGRESS_PCT", 2.0) / 100), 2)
-            result = await paper_trader.webull_executor.buy_option(
-                ticker=ticker, strike=trade["strike"], expiry_date=trade.get("expiry_date", "") or "",
-                option_type=otype.upper(), contracts=add_contracts, limit_price=limit,
+            # HARD TIMEOUT (same rationale as V6 DCA): this add runs in the 5s monitor loop;
+            # a hung SDK socket must never freeze the sell path for every other open trade.
+            result = await asyncio.wait_for(
+                paper_trader.webull_executor.buy_option(
+                    ticker=ticker, strike=trade["strike"], expiry_date=trade.get("expiry_date", "") or "",
+                    option_type=otype.upper(), contracts=add_contracts, limit_price=limit,
+                ),
+                timeout=45,
             )
             if not result.success:
                 logger.error(f"  #{trade_id} {ticker} ANTIMG Webull FAILED: {result.error}")
@@ -716,7 +731,8 @@ async def _check_antimartingale_add(
                                       f"trade#{trade_id} +{level}% error={result.error}", trade_id=trade_id)
                 return True
             add_order_id = str(result.order_id) if result.order_id else None
-            wb = (await paper_trader.webull_executor.get_fill_price(result.client_order_id)
+            wb = (await asyncio.wait_for(
+                      paper_trader.webull_executor.get_fill_price(result.client_order_id), timeout=15)
                   if result.client_order_id else None)
             if wb and wb > 0:
                 fill_price = wb

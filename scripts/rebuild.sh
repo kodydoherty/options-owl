@@ -95,18 +95,30 @@ if [ "$ADAM_PAPER" = "true" ] || [ "$ADAM_KILL" = "true" ]; then
 fi
 echo "owlet-adam: PAPER_TRADE=$ADAM_PAPER WEBULL_KILL_SWITCH=$ADAM_KILL — OK (live, margin)"
 
-# Fleet model 2026-06-22: kody is the ONLY live bot; dennis is now PAPER. Guard the
-# new direction — block if dennis is accidentally flipped back to LIVE.
+# dennis → LIVE 2026-06-30 (Kody's call — 3rd live bot after kody+adam). Guard the
+# live direction — block if dennis is accidentally flipped back to paper.
 DENNIS_PAPER=$(grep -A15 'owlet-dennis:' "$LOCAL_DIR/docker-compose.yml" | grep 'PAPER_TRADE=' | head -1 | sed 's/.*PAPER_TRADE=//')
 DENNIS_KILL=$(grep -A15 'owlet-dennis:' "$LOCAL_DIR/docker-compose.yml" | grep 'WEBULL_KILL_SWITCH=' | head -1 | sed 's/.*WEBULL_KILL_SWITCH=//')
-if [ "$DENNIS_PAPER" != "true" ] || [ "$DENNIS_KILL" != "true" ]; then
+if [ "$DENNIS_PAPER" = "true" ] || [ "$DENNIS_KILL" = "true" ]; then
   echo ""
   echo "DEPLOY BLOCKED: owlet-dennis has PAPER_TRADE=$DENNIS_PAPER WEBULL_KILL_SWITCH=$DENNIS_KILL"
-  echo "Fleet model: only kody is LIVE; dennis must be PAPER (PAPER_TRADE=true, WEBULL_KILL_SWITCH=true)."
-  echo "If you intend dennis to go LIVE again, update this guard first, then re-run."
+  echo "dennis is a LIVE bot. This would switch it to paper. If intentional, edit then re-run."
   exit 1
 fi
-echo "owlet-dennis: PAPER_TRADE=$DENNIS_PAPER WEBULL_KILL_SWITCH=$DENNIS_KILL — OK (paper)"
+echo "owlet-dennis: PAPER_TRADE=$DENNIS_PAPER WEBULL_KILL_SWITCH=$DENNIS_KILL — OK (live)"
+
+# vinny → LIVE on MARGIN 2026-07-01 (Kody's call — 4th live bot). Guard the live
+# direction — block if vinny is accidentally flipped back to paper. (-A40: vinny's
+# PAPER_TRADE sits deeper in its block, like adam's.)
+VINNY_PAPER=$(grep -A40 'owlet-vinny:' "$LOCAL_DIR/docker-compose.yml" | grep 'PAPER_TRADE=' | head -1 | sed 's/.*PAPER_TRADE=//')
+VINNY_KILL=$(grep -A40 'owlet-vinny:' "$LOCAL_DIR/docker-compose.yml" | grep 'WEBULL_KILL_SWITCH=' | head -1 | sed 's/.*WEBULL_KILL_SWITCH=//')
+if [ "$VINNY_PAPER" = "true" ] || [ "$VINNY_KILL" = "true" ]; then
+  echo ""
+  echo "DEPLOY BLOCKED: owlet-vinny has PAPER_TRADE=$VINNY_PAPER WEBULL_KILL_SWITCH=$VINNY_KILL"
+  echo "vinny is a LIVE bot (margin). This would switch it to paper. If intentional, edit then re-run."
+  exit 1
+fi
+echo "owlet-vinny: PAPER_TRADE=$VINNY_PAPER WEBULL_KILL_SWITCH=$VINNY_KILL — OK (live, margin)"
 
 # ---------------------------------------------------------------------------
 # Step 2: Sync code to droplet

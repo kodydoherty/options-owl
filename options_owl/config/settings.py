@@ -248,13 +248,29 @@ class Settings(BaseSettings):
     # PUT PF 1.39→1.49 + caps the call disaster tail (the NVDA -42% case). 0DTE only.
     ENABLE_0DTE_PREMIUM_HARDSTOP: bool = False
     PREMIUM_HARDSTOP_0DTE_PCT: float = 25.0
+    # Dead-on-arrival STALL CUT (multi-day) — cut a leg that NEVER WORKED: held >= N min, down >= X%,
+    # and its peak gain never cleared Y%. Fixes the 1-DTE put/call that bleeds an hour to the wide 50%
+    # graduated backstop (adam META 2026-07-01: peaked +1%, -47%, held ~1hr). Validated 2026-07-01 on
+    # the prod-faithful harness: >30m/-30%/pk<10% is ~P&L-neutral (-$558/-0.4% over 7mo) while it cuts
+    # the bleeders. Multi-day only (0DTE already has the -25% premium hardstop above).
+    ENABLE_STALL_CUT: bool = False
+    STALL_CUT_MIN_MINUTES: float = 30.0
+    STALL_CUT_LOSS_PCT: float = 30.0
+    STALL_CUT_PEAK_PCT: float = 10.0
+    # EOD CLOSE-ALL (no overnight) — force-close MULTI-DAY positions at the EOD cutoff too, so nothing
+    # is held overnight into gap risk. The 0DTE EOD cutoff only closes 0DTE; this extends it to
+    # multi-day. The whole backtested edge is already an EOD-close result (harness never holds
+    # overnight), so this keeps the edge and removes the uncredited overnight tail. 2026-07-01.
+    ENABLE_EOD_CLOSE_ALL: bool = False
     # Winner-concentration sizing: replace the legacy ML-confidence buckets (incl. the backwards
     # 0.80-0.90 tier) with a MONOTONIC conf→budget curve — starve marginal trades, size up the
     # high-confidence ones (capped by MAX_POSITION_PCT). ML PATTERN trades only (flow passes None).
-    # Validated 2.5yr (gold-standard sweep 2026-06-16): 0.3→3.0 gave PF 1.95→3.78, P&L 4.6x, ~same DD.
+    # Validated 2.5yr (gold-standard sweep 2026-06-16): 0.3→3.0 gave PF 1.95→3.78, P&L 4.6x, ~same DD;
+    # the CONSERVATIVE 0.4–1.8 was re-validated on the 6-month gold-standard (+107% P&L at LOWER DD) and
+    # is the shipped default so the safe bounds are the default, not just a per-bot env override.
     ENABLE_CONF_LINEAR_SIZING: bool = False
-    CONF_LINEAR_BUDGET_MIN: float = 0.3      # budget mult at CONF_LINEAR_REF_MIN (marginal trades)
-    CONF_LINEAR_BUDGET_MAX: float = 3.0      # budget mult at CONF_LINEAR_REF_MAX (high-confidence)
+    CONF_LINEAR_BUDGET_MIN: float = 0.4      # budget mult at CONF_LINEAR_REF_MIN (marginal trades)
+    CONF_LINEAR_BUDGET_MAX: float = 1.8      # budget mult at CONF_LINEAR_REF_MAX (high-confidence)
     CONF_LINEAR_REF_MIN: float = 0.74        # confidence mapped to BUDGET_MIN
     CONF_LINEAR_REF_MAX: float = 0.95        # confidence mapped to BUDGET_MAX
     V7_PROFIT_LOCK_KEEP_FRAC: float = 0.8        # keep 80% of peak gain (2026-06-29: backtest +$852/+105% vs 60% on calls, 15d; the faders fade, tight lock banks it)
@@ -399,6 +415,14 @@ class Settings(BaseSettings):
     # +$3.3k/64d (PF 1.40->1.50) and blocks the LRCX-type tail. Set per-bot in docker-compose.
     FLOW_CALL_MAX_PREMIUM: float = 0.0
     FLOW_PUT_MAX_PREMIUM: float = 0.0   # symmetric put cap (2026-06-26); set 9.0 per-bot
+    # Flow-put MARKET-DIRECTION filter (2026-07-01): flow normally BYPASSES put_market_direction
+    # (own whitelist), but flow INDEX puts bought into a rally are counter-trend losers (the
+    # 2026-07-01 SPY-put -54% case — bought while SPY was +0.86%). Light re-application: block a
+    # flow put on an INDEX ticker when SPY is up more than FLOW_PUT_MKT_DIR_MAX_CHG% from the open.
+    # Validated on 727 flow puts: SPY puts +$6,326 / PF 1.32→1.59 at +0.5% (edge concentrated in
+    # index; non-index flow puts keep the bypass, ~neutral). +0.5% is the non-monotonic optimum.
+    ENABLE_FLOW_PUT_MKT_DIR: bool = False
+    FLOW_PUT_MKT_DIR_MAX_CHG: float = 0.5
 
     # Spread-cost gate: reject entries where bid-ask spread > threshold % of premium
     ENABLE_V6_SPREAD_GATE: bool = False
@@ -681,6 +705,13 @@ class Settings(BaseSettings):
     TOD_LATE_MIN_SCORE: int = 85
     ENTRY_HARD_CUTOFF_HOUR: int = 15  # no new entries after 3:55 PM ET regardless of score
     ENTRY_HARD_CUTOFF_MINUTE: int = 55  # (theta crush in last 5 min makes even correct alerts lose)
+    # LATE-ENTRY CUTOFF (last 90 min) — no new entries after this time, ALL sources incl. flow.
+    # Live data (kody+adam, real Webull fills) shows the 14:00-16:00 window is net-negative
+    # (kody 14:00 -$732, adam 14:00 -$676/15:00 -$188) — late entries burn (Kody's TSLA last-min
+    # losses). Default 14:30 ET = the last 90 min. Focus the late session on EXITING, not buying. 2026-07-01.
+    ENABLE_LATE_ENTRY_CUTOFF: bool = False
+    ENTRY_LATE_CUTOFF_HOUR: int = 14
+    ENTRY_LATE_CUTOFF_MINUTE: int = 30
 
     # Morning cutoff: block ALL entries after this time (backtest: only 9:30-11:00 AM ET is profitable)
     ENABLE_MORNING_CUTOFF: bool = True

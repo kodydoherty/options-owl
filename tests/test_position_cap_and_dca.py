@@ -184,6 +184,61 @@ class TestV6DCACapLogic:
                         f"(5% of $23K at ${exit_premium}/share)"
                     )
 
+    @pytest.mark.asyncio
+    async def test_dca_buy_hang_does_not_freeze_monitor(self, dca_settings, mock_trade):
+        """B1 functional: a HUNG Webull buy_option must NOT freeze _check_v6_dca (which runs
+        in the 5s monitor loop). The asyncio.wait_for guard trips, the except handler logs,
+        and the call returns instead of blocking forever."""
+        import asyncio as _aio
+        from contextlib import asynccontextmanager
+        from datetime import datetime
+        from unittest.mock import patch as _patch
+
+        from options_owl.execution import position_monitor
+        from options_owl.execution.position_monitor import _check_v6_dca, _v6_dca_fired
+
+        _v6_dca_fired.discard(100)
+
+        class _HangingExec:
+            async def buy_option(self, **k):
+                await _aio.sleep(3600)  # simulate a stalled SDK socket
+
+            async def get_fill_price(self, coid):
+                await _aio.sleep(3600)
+
+        mock_pt = MagicMock()
+        mock_pt.get_portfolio_balance = AsyncMock(return_value=23000.0)
+        mock_pt.webull_executor = _HangingExec()
+
+        mock_conn = AsyncMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=None)
+
+        @asynccontextmanager
+        async def _fake_connect(path):
+            yield mock_conn
+
+        # Shrink the internal wait_for so the hang trips fast; keep a real ref for the outer bound.
+        real_wait_for = _aio.wait_for
+
+        async def fast_wait_for(coro, timeout):
+            return await real_wait_for(coro, timeout=0.05)
+
+        fake_now = datetime(2026, 5, 19, 10, 40, 0)
+        with _patch("options_owl.execution.position_monitor._now_et", return_value=fake_now), \
+             _patch("options_owl.execution.position_monitor.datetime") as mock_dt, \
+             _patch("options_owl.execution.position_monitor._connect_db", _fake_connect), \
+             _patch.object(position_monitor.asyncio, "wait_for", fast_wait_for):
+            mock_dt.fromisoformat.return_value = datetime(2026, 5, 19, 10, 30, 0)
+            mock_dt.now.return_value = datetime(2026, 5, 19, 10, 40, 0)
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+
+            # Bounded by the REAL wait_for — if the guard were missing this would hang to 3s and fail.
+            await real_wait_for(
+                _check_v6_dca(mock_trade, 1.60, 130.0, dca_settings, mock_pt, "test.db"),
+                timeout=3,
+            )
+
     def test_dca_cap_math(self):
         """Verify DCA cap calculation matches expected values."""
         # $23K portfolio, 5% cap, $1.60 premium

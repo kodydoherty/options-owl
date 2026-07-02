@@ -119,6 +119,10 @@ services:
       # are net losers; validated +$3.3k/64d, PF 1.40->1.50; blocks the LRCX-type −$445 tail). 2026-06-24.
       - FLOW_CALL_MAX_PREMIUM=9.0
       - FLOW_PUT_MAX_PREMIUM=9.0
+      # Flow-put market-direction filter (2026-07-01): block flow INDEX puts when SPY is up >0.5%
+      # from the open (counter-trend — the SPY-put -54% case). Validated: SPY puts +$6,326/PF 1.32→1.59.
+      - ENABLE_FLOW_PUT_MKT_DIR=true
+      - FLOW_PUT_MKT_DIR_MAX_CHG=0.5
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
@@ -162,6 +166,15 @@ services:
       # 0DTE premium hard-stop -25%: cut a 0DTE contract down 25% from entry regardless of underlying
       # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
       - ENABLE_0DTE_PREMIUM_HARDSTOP=true
+      # 2026-07-01 late-day/overnight risk controls (all fleet-wide, env-gated):
+      #  • STALL_CUT: cut dead-on-arrival multi-day legs (>30m held, -30%, peaked <10%) — kills the
+      #    1-DTE bleeder that rode the wide 50% backstop for an hour (adam META). Validated ~neutral.
+      #  • EOD_CLOSE_ALL: force-close multi-day at the EOD cutoff — no overnight gap risk.
+      #  • LATE_ENTRY_CUTOFF: no new entries after 14:30 ET (last 90 min) — live fills show 14:00-16:00
+      #    is net-negative (Kody's TSLA last-min burns). Applies to ALL sources incl. flow.
+      - ENABLE_STALL_CUT=true
+      - ENABLE_EOD_CLOSE_ALL=true
+      - ENABLE_LATE_ENTRY_CUTOFF=true
       - PREMIUM_HARDSTOP_0DTE_PCT=25
       # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
       - MAX_SIZING_BALANCE=50000
@@ -232,9 +245,9 @@ services:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=10000
       - FLEET_RANK=2
-      # dennis → PAPER 2026-06-22 (fleet model: only kody live; also retires the expired-Webull-token issue).
-      - PAPER_TRADE=true
-      - WEBULL_KILL_SWITCH=true
+      # dennis → LIVE 2026-06-30 (Kody's call — re-auth Webull; 2nd live-money bot after kody+adam, $10k).
+      - PAPER_TRADE=false
+      - WEBULL_KILL_SWITCH=false
       - EXIT_ENGINE=v5
       # Account-type toggle. false = Individual CASH (current; GFV-limited intraday reinvest).
       # true = Individual MARGIN: auto-detects the margin account (UNLESS WEBULL_ACCOUNT_ID is pinned —
@@ -248,6 +261,10 @@ services:
       # are net losers; validated +$3.3k/64d, PF 1.40->1.50; blocks the LRCX-type −$445 tail). 2026-06-24.
       - FLOW_CALL_MAX_PREMIUM=9.0
       - FLOW_PUT_MAX_PREMIUM=9.0
+      # Flow-put market-direction filter (2026-07-01): block flow INDEX puts when SPY is up >0.5%
+      # from the open (counter-trend — the SPY-put -54% case). Validated: SPY puts +$6,326/PF 1.32→1.59.
+      - ENABLE_FLOW_PUT_MKT_DIR=true
+      - FLOW_PUT_MKT_DIR_MAX_CHG=0.5
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
@@ -284,6 +301,15 @@ services:
       # 0DTE premium hard-stop -25%: cut a 0DTE contract down 25% from entry regardless of underlying
       # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
       - ENABLE_0DTE_PREMIUM_HARDSTOP=true
+      # 2026-07-01 late-day/overnight risk controls (all fleet-wide, env-gated):
+      #  • STALL_CUT: cut dead-on-arrival multi-day legs (>30m held, -30%, peaked <10%) — kills the
+      #    1-DTE bleeder that rode the wide 50% backstop for an hour (adam META). Validated ~neutral.
+      #  • EOD_CLOSE_ALL: force-close multi-day at the EOD cutoff — no overnight gap risk.
+      #  • LATE_ENTRY_CUTOFF: no new entries after 14:30 ET (last 90 min) — live fills show 14:00-16:00
+      #    is net-negative (Kody's TSLA last-min burns). Applies to ALL sources incl. flow.
+      - ENABLE_STALL_CUT=true
+      - ENABLE_EOD_CLOSE_ALL=true
+      - ENABLE_LATE_ENTRY_CUTOFF=true
       - PREMIUM_HARDSTOP_0DTE_PCT=25
       # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
       - MAX_SIZING_BALANCE=50000
@@ -385,6 +411,10 @@ services:
       # are net losers; validated +$3.3k/64d, PF 1.40->1.50; blocks the LRCX-type −$445 tail). 2026-06-24.
       - FLOW_CALL_MAX_PREMIUM=9.0
       - FLOW_PUT_MAX_PREMIUM=9.0
+      # Flow-put market-direction filter (2026-07-01): block flow INDEX puts when SPY is up >0.5%
+      # from the open (counter-trend — the SPY-put -54% case). Validated: SPY puts +$6,326/PF 1.32→1.59.
+      - ENABLE_FLOW_PUT_MKT_DIR=true
+      - FLOW_PUT_MKT_DIR_MAX_CHG=0.5
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
@@ -417,6 +447,15 @@ services:
       # 0DTE premium hard-stop -25%: cut a 0DTE contract down 25% from entry regardless of underlying
       # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
       - ENABLE_0DTE_PREMIUM_HARDSTOP=true
+      # 2026-07-01 late-day/overnight risk controls (all fleet-wide, env-gated):
+      #  • STALL_CUT: cut dead-on-arrival multi-day legs (>30m held, -30%, peaked <10%) — kills the
+      #    1-DTE bleeder that rode the wide 50% backstop for an hour (adam META). Validated ~neutral.
+      #  • EOD_CLOSE_ALL: force-close multi-day at the EOD cutoff — no overnight gap risk.
+      #  • LATE_ENTRY_CUTOFF: no new entries after 14:30 ET (last 90 min) — live fills show 14:00-16:00
+      #    is net-negative (Kody's TSLA last-min burns). Applies to ALL sources incl. flow.
+      - ENABLE_STALL_CUT=true
+      - ENABLE_EOD_CLOSE_ALL=true
+      - ENABLE_LATE_ENTRY_CUTOFF=true
       - PREMIUM_HARDSTOP_0DTE_PCT=25
       # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
       - MAX_SIZING_BALANCE=50000
@@ -490,14 +529,15 @@ services:
       - ENABLE_POLYGON_WS=false
       - WEBULL_APP_KEY=${VINNY_WEBULL_APP_KEY}
       - WEBULL_APP_SECRET=${VINNY_WEBULL_APP_SECRET}
-      - PAPER_TRADE=true
-      - WEBULL_KILL_SWITCH=true
+      # vinny → LIVE on MARGIN 2026-07-01 (Kody's call — 4th live bot: kody+adam+dennis+vinny).
+      # WEBULL_ACCOUNT_ID unpinned, so MARGIN_ACCOUNT=true auto-detects vinny's Individual MARGIN account.
+      - PAPER_TRADE=false
+      - WEBULL_KILL_SWITCH=false
       - EXIT_ENGINE=v5
-      # Account-type toggle. false = Individual CASH (current; GFV-limited intraday reinvest).
-      # true = Individual MARGIN: auto-detects the margin account (UNLESS WEBULL_ACCOUNT_ID is pinned —
-      # kody is, so update its ID too) + skips GFV so sale proceeds reinvest intraday. Sizes off net-liq
-      # (no extra leverage). PDT no longer a constraint. Flip per-bot when ready, then redeploy that bot.
-      - MARGIN_ACCOUNT=false
+      # Account-type toggle. false = Individual CASH (GFV-limited intraday reinvest).
+      # true = Individual MARGIN: auto-detects the margin account (UNLESS WEBULL_ACCOUNT_ID is pinned)
+      # + skips GFV so sale proceeds reinvest intraday. Sizes off net-liq (no extra leverage).
+      - MARGIN_ACCOUNT=true
       # Data-freshness guard: halt NEW entries + alert if the harvester feed goes stale during market
       # hours (catches frozen-but-fresh-timestamp data). Sell path unaffected; fails OPEN on error.
       - ENABLE_DATA_FRESHNESS_GUARD=true
@@ -505,6 +545,10 @@ services:
       # are net losers; validated +$3.3k/64d, PF 1.40->1.50; blocks the LRCX-type −$445 tail). 2026-06-24.
       - FLOW_CALL_MAX_PREMIUM=9.0
       - FLOW_PUT_MAX_PREMIUM=9.0
+      # Flow-put market-direction filter (2026-07-01): block flow INDEX puts when SPY is up >0.5%
+      # from the open (counter-trend — the SPY-put -54% case). Validated: SPY puts +$6,326/PF 1.32→1.59.
+      - ENABLE_FLOW_PUT_MKT_DIR=true
+      - FLOW_PUT_MKT_DIR_MAX_CHG=0.5
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
@@ -540,6 +584,15 @@ services:
       # 0DTE premium hard-stop -25%: cut a 0DTE contract down 25% from entry regardless of underlying
       # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
       - ENABLE_0DTE_PREMIUM_HARDSTOP=true
+      # 2026-07-01 late-day/overnight risk controls (all fleet-wide, env-gated):
+      #  • STALL_CUT: cut dead-on-arrival multi-day legs (>30m held, -30%, peaked <10%) — kills the
+      #    1-DTE bleeder that rode the wide 50% backstop for an hour (adam META). Validated ~neutral.
+      #  • EOD_CLOSE_ALL: force-close multi-day at the EOD cutoff — no overnight gap risk.
+      #  • LATE_ENTRY_CUTOFF: no new entries after 14:30 ET (last 90 min) — live fills show 14:00-16:00
+      #    is net-negative (Kody's TSLA last-min burns). Applies to ALL sources incl. flow.
+      - ENABLE_STALL_CUT=true
+      - ENABLE_EOD_CLOSE_ALL=true
+      - ENABLE_LATE_ENTRY_CUTOFF=true
       - PREMIUM_HARDSTOP_0DTE_PCT=25
       # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
       - MAX_SIZING_BALANCE=50000
@@ -608,6 +661,10 @@ services:
       # are net losers; validated +$3.3k/64d, PF 1.40->1.50; blocks the LRCX-type −$445 tail). 2026-06-24.
       - FLOW_CALL_MAX_PREMIUM=9.0
       - FLOW_PUT_MAX_PREMIUM=9.0
+      # Flow-put market-direction filter (2026-07-01): block flow INDEX puts when SPY is up >0.5%
+      # from the open (counter-trend — the SPY-put -54% case). Validated: SPY puts +$6,326/PF 1.32→1.59.
+      - ENABLE_FLOW_PUT_MKT_DIR=true
+      - FLOW_PUT_MKT_DIR_MAX_CHG=0.5
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
@@ -640,6 +697,15 @@ services:
       # 0DTE premium hard-stop -25%: cut a 0DTE contract down 25% from entry regardless of underlying
       # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
       - ENABLE_0DTE_PREMIUM_HARDSTOP=true
+      # 2026-07-01 late-day/overnight risk controls (all fleet-wide, env-gated):
+      #  • STALL_CUT: cut dead-on-arrival multi-day legs (>30m held, -30%, peaked <10%) — kills the
+      #    1-DTE bleeder that rode the wide 50% backstop for an hour (adam META). Validated ~neutral.
+      #  • EOD_CLOSE_ALL: force-close multi-day at the EOD cutoff — no overnight gap risk.
+      #  • LATE_ENTRY_CUTOFF: no new entries after 14:30 ET (last 90 min) — live fills show 14:00-16:00
+      #    is net-negative (Kody's TSLA last-min burns). Applies to ALL sources incl. flow.
+      - ENABLE_STALL_CUT=true
+      - ENABLE_EOD_CLOSE_ALL=true
+      - ENABLE_LATE_ENTRY_CUTOFF=true
       - PREMIUM_HARDSTOP_0DTE_PCT=25
       # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
       - MAX_SIZING_BALANCE=50000

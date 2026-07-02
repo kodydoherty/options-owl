@@ -572,7 +572,7 @@ _MIN_ML_CONFIDENCE_PUT = 0.65  # PUT model validated at 0.65 threshold (AUC 0.80
 
 def _ml_confidence_to_mult(
     ml_confidence: float | None, is_put: bool = False,
-    conf_linear: bool = False, cb_min: float = 0.3, cb_max: float = 3.0,
+    conf_linear: bool = False, cb_min: float = 0.4, cb_max: float = 1.8,
     cr_min: float = 0.74, cr_max: float = 0.95,
 ) -> tuple[float, str]:
     """Map ML confidence to budget multiplier (ML pattern trades only; flow passes None).
@@ -583,6 +583,8 @@ def _ml_confidence_to_mult(
     with a MONOTONIC curve: starve marginal trades (cb_min at cr_min) and size high-confidence ones
     up (cb_max at cr_max), linear between. Validated 2.5yr (gold-standard sweep 2026-06-16): 0.3→3.0
     gave PF 1.95→3.78, P&L 4.6x, ~same drawdown. The top end is bounded downstream by MAX_POSITION_PCT.
+    Default bounds are the CONSERVATIVE 0.4–1.8 (6-month re-validation: +107% P&L at LOWER DD); callers
+    override via CONF_LINEAR_BUDGET_MIN/MAX.
     """
     if ml_confidence is None:
         return _FALLBACK_MULT, "no_ml"
@@ -765,8 +767,8 @@ def score_to_contracts(
     put_budget_multiplier: float = 0.50,
     max_position_dollars: float = 0.0,
     conf_linear: bool = False,
-    conf_budget_min: float = 0.3,
-    conf_budget_max: float = 3.0,
+    conf_budget_min: float = 0.4,
+    conf_budget_max: float = 1.8,
     conf_ref_min: float = 0.74,
     conf_ref_max: float = 0.95,
 ) -> int:

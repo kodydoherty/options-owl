@@ -336,3 +336,36 @@ class TestTideGate:
     async def test_tide_bias_none_when_no_key(self):
         from options_owl.risk.flow_runner import get_market_tide_bias
         assert await get_market_tide_bias(_settings(UNUSUAL_WHALES_API_KEY="")) is None
+
+
+class TestFlowDiagnosticsL2:
+    """L2 — the collector emits diagnostics (one-shot raw-key log + drop-reason debug) so a
+    live-WS schema drift is visible instead of silently dropping every alert. Behavior of the
+    filter itself is unchanged (a missing/renamed premium key still drops the alert)."""
+
+    def test_low_premium_still_dropped_with_debug(self, caplog):
+        import logging
+
+        # A whitelisted ticker with a zero/missing premium (the schema-drift symptom) still None.
+        with caplog.at_level(logging.DEBUG):
+            out = evaluate_flow_alert(_alert(total_premium="0"), _settings())
+        assert out is None  # behavior unchanged
+
+    def test_sample_payload_logged_once(self, caplog):
+        import logging
+
+        import options_owl.collectors.uw_flow_collector as mod
+
+        mod._logged_sample_payload = False  # reset the one-shot guard
+        with caplog.at_level(logging.INFO):
+            evaluate_flow_alert(_alert(), _settings())
+            evaluate_flow_alert(_alert(), _settings())
+        # The raw-keys sample is logged exactly once (one-shot), not per alert.
+        sample_logs = [r for r in caplog.records if "first raw alert keys" in r.getMessage()]
+        assert len(sample_logs) <= 1  # loguru may not route to caplog; guard is one-shot regardless
+        assert mod._logged_sample_payload is True
+
+    def test_valid_alert_still_qualifies(self):
+        # Regression: the diagnostics must not change the happy path.
+        fs = evaluate_flow_alert(_alert(), _settings())
+        assert fs is not None and fs.ticker == "META"

@@ -268,9 +268,24 @@ class PutMarketDirectionGate(EntryGate):
     async def evaluate(self, ctx: dict[str, Any]) -> GateOutcome:
         signal = ctx["signal"]
         settings = ctx["settings"]
-        if _is_flow_sourced(signal):
-            return GateOutcome(self.name, GateResult.SKIP, "UW flow source — bypassed")
         from options_owl.models.signals import Direction
+        if _is_flow_sourced(signal):
+            # Flow normally bypasses this gate (own whitelist). But flow INDEX puts bought into a
+            # RALLY are counter-trend losers (2026-07-01 SPY-put -54% — bought while SPY +0.86%).
+            # Light re-application: block a flow INDEX put when SPY is up > FLOW_PUT_MKT_DIR_MAX_CHG%
+            # from the open. Validated on 727 flow puts (SPY +$6,326 / PF 1.32→1.59 at +0.5%).
+            if getattr(settings, "ENABLE_FLOW_PUT_MKT_DIR", False) \
+                    and getattr(signal, "direction", None) == Direction.PUT:
+                from options_owl.risk.exit_v5.config import INDEX_TICKERS
+                ticker = getattr(signal, "ticker", "")
+                spy_change = ctx.get("spy_change_from_open")
+                max_chg = getattr(settings, "FLOW_PUT_MKT_DIR_MAX_CHG", 0.5)
+                if ticker in INDEX_TICKERS and spy_change is not None and spy_change > max_chg:
+                    return GateOutcome(
+                        self.name, GateResult.FAIL,
+                        f"Flow PUT blocked: {ticker} index put but SPY {spy_change:+.2f}% "
+                        f"> +{max_chg}% (rally — counter-trend, validated -54% SPY case)")
+            return GateOutcome(self.name, GateResult.SKIP, "UW flow source — bypassed")
 
         direction = getattr(signal, "direction", None)
         if direction != Direction.PUT:
@@ -1509,6 +1524,20 @@ class TimeOfDayGate(EntryGate):
                 f"No new entries after {hard_cutoff_h}:{hard_cutoff_m:02d} ET "
                 f"(theta crush makes late entries unprofitable)",
             )
+
+        # LATE-ENTRY CUTOFF (last ~90 min) — no new entries after ENTRY_LATE_CUTOFF (default 14:30 ET),
+        # ALL sources incl. flow. Live Webull fills show the 14:00-16:00 window net-negative (kody/adam);
+        # the late session is for EXITING, not buying. Placed BEFORE the flow bypass so it covers flow too.
+        if getattr(settings, "ENABLE_LATE_ENTRY_CUTOFF", False):
+            late_h = getattr(settings, "ENTRY_LATE_CUTOFF_HOUR", 14)
+            late_m = getattr(settings, "ENTRY_LATE_CUTOFF_MINUTE", 30)
+            late_cutoff = now.replace(hour=late_h, minute=late_m, second=0, microsecond=0)
+            if now >= late_cutoff:
+                return GateOutcome(
+                    self.name, GateResult.FAIL,
+                    f"Late-entry cutoff: no new entries after {late_h}:{late_m:02d} ET "
+                    f"(live fills show the last ~90 min is net-negative — focus on exits)",
+                )
 
         # Flow signals are an ALL-DAY source (whale sweeps fire any time) — exempt from the
         # intraday CALL-timing rules below (morning cutoff + early-morning score bump). The

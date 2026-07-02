@@ -43,3 +43,33 @@ def test_high_conf_sizes_bigger_than_legacy():
     marginal = score_to_contracts(95, ml_confidence=0.74, conf_linear=True, **kw)
     assert big > legacy                       # high conf: 3.0x >> legacy 0.95x
     assert marginal < legacy                  # marginal starved: 0.3x < legacy 0.95x
+
+
+def test_default_bounds_are_conservative_L3():
+    """L3 — the shipped DEFAULT conf_linear bounds are the validated 0.4-1.8, not 0.3-3.0.
+
+    Live bots override via env; making 0.4-1.8 the DEFAULT removes the latent over-
+    concentration footgun if an env override is ever dropped.
+    """
+    lo, _ = _ml_confidence_to_mult(0.74, conf_linear=True)   # at ref_min -> cb_min default
+    hi, _ = _ml_confidence_to_mult(0.95, conf_linear=True)   # at ref_max -> cb_max default
+    assert abs(lo - 0.4) < 0.01
+    assert abs(hi - 1.8) < 0.01
+
+
+def test_signature_and_settings_defaults_L3():
+    """L3 — score_to_contracts + _ml_confidence_to_mult + Settings all default to 0.4/1.8."""
+    import inspect
+
+    from options_owl.config.settings import Settings
+
+    s1 = inspect.signature(_ml_confidence_to_mult)
+    assert s1.parameters["cb_min"].default == 0.4
+    assert s1.parameters["cb_max"].default == 1.8
+
+    s2 = inspect.signature(score_to_contracts)
+    assert s2.parameters["conf_budget_min"].default == 0.4
+    assert s2.parameters["conf_budget_max"].default == 1.8
+
+    assert Settings.model_fields["CONF_LINEAR_BUDGET_MIN"].default == 0.4
+    assert Settings.model_fields["CONF_LINEAR_BUDGET_MAX"].default == 1.8
