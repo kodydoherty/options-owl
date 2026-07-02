@@ -26,6 +26,19 @@ class Settings(BaseSettings):
     WEBULL_ENTRY_POLL_SEC: float = 1.0  # fill-status poll cadence within a rung (was 3s)
     WEBULL_ENTRY_USE_LIVE_QUOTE: bool = True  # price the chase off the harvester's live Redis ask (HTTP fallback) so the limit isn't stale by rest-time
     WEBULL_ENTRY_QUOTE_MAX_AGE_SEC: float = 20.0  # reject a Redis snapshot older than this (falls back to HTTP) — a stale quote can never make the limit worse
+    # Fast-EXIT chase (2026-07-02): the sell side is a single submit + slow cross-cycle retry, so a
+    # fast-diving 0DTE gives back profit before the price tier advances. When ON, a SELL runs a tight
+    # in-line tiered chase — a few progressively-more-marketable prices, ~2.5s apart, priced off the
+    # FRESH bid — so if one price doesn't fill fast we cross harder immediately. SAME double-fill safety
+    # as the entry chase: cancel-AND-CONFIRM before every re-price; abort rather than leave two live
+    # sell orders (a stray 2nd sell = naked short). Default OFF → canary on a paper bot first.
+    ENABLE_FAST_EXIT_CHASE: bool = False
+    WEBULL_EXIT_FILL_ATTEMPTS: int = 4        # in-line sell rungs per exit order
+    WEBULL_EXIT_PER_ATTEMPT_SEC: float = 2.5  # per-rung fill wait (exits are urgent — faster than entry)
+    WEBULL_EXIT_POLL_SEC: float = 1.0         # fill-status poll cadence within a rung
+    WEBULL_EXIT_AGGRESS_PCT: float = 2.0      # rung 1 crosses this % BELOW the fresh bid (barely marketable)
+    WEBULL_EXIT_STEP_PCT: float = 6.0         # each further rung crosses this much more below the bid
+    WEBULL_EXIT_MAX_DISCOUNT_PCT: float = 25.0  # floor: never sell more than this % below the bid
     MAX_ENTRY_RETRIES: int = 3  # retry entry up to N times with fresh pricing (10s per attempt)
     MAX_ENTRY_CHASE_PCT: float = 15.0  # max % above signal premium we'll chase on retries
     GFV_BUFFER_PCT: float = 15.0  # safety buffer on GFV limit (only allow 85% of start-of-day balance)

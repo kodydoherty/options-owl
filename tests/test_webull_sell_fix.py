@@ -33,6 +33,7 @@ def _make_settings(**overrides):
         "DATA_FEED_POLL_INTERVAL": 15,
         "PORTFOLIO_SIZE": 5000,
         "ENABLE_PUT_TRADING": True,
+        "ENABLE_FAST_EXIT_CHASE": False,  # these tests exercise the legacy single-submit SELL path
     }
     defaults.update(overrides)
     for k, v in defaults.items():

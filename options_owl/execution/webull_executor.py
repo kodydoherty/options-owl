@@ -616,9 +616,6 @@ class WebullExecutor:
         logger.debug(f"WEBULL payload: {order_payload}")
 
         # BUY (entry) orders: chase the fill with a re-pricing escalation ladder.
-        # SELL (exit) orders: single attempt here — exit-side escalation is
-        # driven by paper_trader.close_webull_position (which re-calls us with a
-        # fresh, lower bid on each retry and handles position_id re-lookup).
         if side.upper() == "BUY":
             return await self._place_buy_with_escalation(
                 ticker=ticker,
@@ -629,7 +626,22 @@ class WebullExecutor:
                 initial_limit=limit_price,
             )
 
-        # ---- SELL: single submit + wait (existing behavior) ----
+        # SELL (exit) orders. When ENABLE_FAST_EXIT_CHASE is on, run the tight in-line
+        # tiered chase (a few progressively-marketable prices, ~2.5s apart) so a fast-diving
+        # 0DTE fills before the price craters — same double-fill safety as the entry chase.
+        # When OFF (default), keep the legacy single-submit path below; exit-side escalation
+        # is then driven only by paper_trader.close_webull_position across monitor cycles.
+        if getattr(self.settings, "ENABLE_FAST_EXIT_CHASE", False):
+            return await self._place_sell_with_escalation(
+                ticker=ticker,
+                strike=strike,
+                expiry_date=expiry_date,
+                option_type=option_type,
+                contracts=contracts,
+                initial_limit=limit_price,
+            )
+
+        # ---- SELL: single submit + wait (legacy behavior, flag OFF) ----
         try:
             order_id, result, error = await self._submit_order_payload(order_payload)
             if not order_id:
@@ -1118,6 +1130,198 @@ class WebullExecutor:
         )
         return last_result
 
+    async def _place_sell_with_escalation(
+        self,
+        *,
+        ticker: str,
+        strike: float,
+        expiry_date: str,
+        option_type: str,
+        contracts: int,
+        initial_limit: float,
+    ) -> OrderResult:
+        """Fast, tiered EXIT chase — the sell-side mirror of _place_buy_with_escalation.
+
+        A fast-diving 0DTE gives back profit while the slow cross-cycle retry advances one
+        price tier per 5s monitor cycle. This crosses DOWN toward/below the FRESH bid in a
+        few tight rungs (~2.5s apart): rung 1 barely marketable, each further rung more
+        marketable, floored at WEBULL_EXIT_MAX_DISCOUNT_PCT below the bid — so if one price
+        doesn't fill fast we cross harder immediately.
+
+        SAFETY (identical invariant to the entry chase): cancel-AND-CONFIRM the working
+        order before EVERY re-price. If a rung fills during the cancel race, honor it and
+        STOP. If the cancel cannot be confirmed dead, ABORT — never leave two live sell
+        orders (a stray second sell would oversell the position / go naked short).
+        """
+        max_attempts = int(getattr(self.settings, "WEBULL_EXIT_FILL_ATTEMPTS", 4) or 4)
+        max_attempts = max(1, max_attempts)
+        per_attempt_timeout = float(getattr(self.settings, "WEBULL_EXIT_PER_ATTEMPT_SEC", 2.5) or 2.5)
+        poll_interval = float(getattr(self.settings, "WEBULL_EXIT_POLL_SEC", 1.0) or 1.0)
+        aggress_pct = float(getattr(self.settings, "WEBULL_EXIT_AGGRESS_PCT", 2.0) or 2.0)
+        step_pct = float(getattr(self.settings, "WEBULL_EXIT_STEP_PCT", 6.0) or 6.0)
+        max_discount = float(getattr(self.settings, "WEBULL_EXIT_MAX_DISCOUNT_PCT", 25.0) or 25.0)
+        use_live_quote = bool(getattr(self.settings, "WEBULL_ENTRY_USE_LIVE_QUOTE", True))
+
+        # Reference bid: the caller's limit was priced off a bid at the start of the cycle;
+        # use it as the fallback anchor when no fresh quote is available. The per-rung floor
+        # is measured off this anchor so the discount can't run away on a bad fresh read.
+        base_bid = initial_limit if initial_limit and initial_limit > 0 else 0.01
+        last_result: OrderResult | None = None
+        last_client_id: str | None = None
+
+        for attempt in range(max_attempts):
+            # Price each rung off the FRESHEST bid (harvester Redis first, HTTP fallback).
+            bid = base_bid
+            if use_live_quote or attempt > 0:
+                fresh = await self._fetch_bid(ticker, strike, expiry_date, option_type)
+                if fresh and fresh > 0:
+                    bid = fresh
+                    base_bid = fresh  # keep the floor anchored to the latest bid
+
+            # Cross progressively further BELOW the bid; capped at max_discount below it.
+            discount_pct = min(aggress_pct + attempt * step_pct, max_discount)
+            floor_price = round(base_bid * (1 - max_discount / 100), 2)
+            limit = round(bid * (1 - discount_pct / 100), 2)
+            if limit < floor_price:
+                limit = floor_price
+            limit = max(0.01, limit)
+            # Round to a legal step. Round DOWN (SELL) so we never round UP through the floor.
+            limit = _round_option_price(limit, "SELL")
+            if limit < 0.01:
+                limit = 0.01
+
+            client_order_id = uuid.uuid4().hex[:32]
+            last_client_id = client_order_id
+
+            logger.info(
+                f"WEBULL EXIT CHASE attempt {attempt + 1}/{max_attempts}: "
+                f"SELL {contracts}x {ticker} ${strike} {option_type} "
+                f"@ ${limit:.2f} (bid=${bid:.2f}, cross={discount_pct:.0f}% below, "
+                f"floor=${floor_price:.2f}) [client_id={client_order_id}]"
+            )
+
+            payload = self._build_order_payload(
+                client_order_id=client_order_id,
+                ticker=ticker,
+                strike=strike,
+                expiry_date=expiry_date,
+                option_type=option_type,
+                side="SELL",
+                contracts=contracts,
+                limit_price=limit,
+            )
+
+            try:
+                order_id, result, error = await self._submit_order_payload(payload)
+            except Exception as exc:
+                logger.error(f"WEBULL EXIT ORDER ERROR: {type(exc).__name__}: {exc}")
+                last_result = OrderResult(
+                    success=False, client_order_id=client_order_id,
+                    error=str(exc), fill_status="FAILED",
+                )
+                continue  # submission raised — nothing placed, safe to try next rung
+
+            if not order_id:
+                logger.error(f"WEBULL EXIT ORDER REJECTED: {error}")
+                last_result = OrderResult(
+                    success=False, client_order_id=client_order_id, error=str(error),
+                    details=result if isinstance(result, dict) else None, fill_status="FAILED",
+                )
+                continue  # no live order to cancel; advance the ladder
+
+            fill_status = await self._wait_for_fill(
+                client_order_id, timeout_seconds=per_attempt_timeout, poll_interval=poll_interval,
+            )
+
+            if fill_status == "FILLED":
+                logger.info(
+                    f"WEBULL EXIT FILLED (attempt {attempt + 1}): SELL {contracts}x "
+                    f"{ticker} ${strike} {option_type} @ ${limit:.2f} — order_id={order_id}"
+                )
+                return OrderResult(
+                    success=True, order_id=str(order_id), client_order_id=client_order_id,
+                    details=result if isinstance(result, dict) else None, fill_status="FILLED",
+                )
+
+            if fill_status in ("PARTIAL_FILLED", "PARTIAL"):
+                # Some contracts sold. STOP the ladder and return the partial — the monitor's
+                # next cycle re-looks-up the (now smaller) position and sells the remainder.
+                # Re-pricing the remainder here would need a fresh position_id and risks a
+                # double-submit; the cross-cycle retry is the safe path for the tail.
+                filled_qty = await self._get_filled_quantity(client_order_id)
+                logger.warning(
+                    f"WEBULL EXIT PARTIAL FILL (attempt {attempt + 1}): "
+                    f"{filled_qty or '?'}/{contracts}x {ticker} ${strike} {option_type} "
+                    f"@ ${limit:.2f} — cancelling remainder, monitor will finish next cycle"
+                )
+                await self.cancel_order(client_order_id)
+                return OrderResult(
+                    success=True, order_id=str(order_id), client_order_id=client_order_id,
+                    details=result if isinstance(result, dict) else None,
+                    fill_status="PARTIAL", filled_quantity=filled_qty,
+                )
+
+            last_result = OrderResult(
+                success=False, order_id=str(order_id), client_order_id=client_order_id,
+                error=f"Exit not filled after {per_attempt_timeout:.0f}s (status={fill_status})",
+                fill_status=fill_status or "SUBMITTED",
+            )
+
+            # DOUBLE-FILL GUARD (naked-short prevention): cancel-and-CONFIRM before any re-submit.
+            confirm_status = await self._confirm_cancelled(client_order_id)
+            if confirm_status in ("FILLED", "PARTIAL_FILLED", "PARTIAL"):
+                # Filled in the race with our cancel — honor it and STOP. Never place another
+                # sell on top of a live fill (that would oversell the position).
+                filled_qty = (
+                    None if confirm_status == "FILLED"
+                    else await self._get_filled_quantity(client_order_id)
+                )
+                logger.warning(
+                    f"WEBULL EXIT FILLED DURING CANCEL (attempt {attempt + 1}): "
+                    f"{ticker} ${strike} {option_type} status={confirm_status} "
+                    f"order_id={order_id} — honoring fill, halting chase"
+                )
+                return OrderResult(
+                    success=True, order_id=str(order_id), client_order_id=client_order_id,
+                    details=result if isinstance(result, dict) else None,
+                    fill_status="FILLED" if confirm_status == "FILLED" else "PARTIAL",
+                    filled_quantity=filled_qty,
+                )
+
+            if confirm_status not in ("CANCELLED", "REJECTED", "EXPIRED"):
+                # Cannot confirm the prior sell is dead — refuse to re-submit (an uncancelled
+                # working sell + a new one = oversell / naked short).
+                logger.error(
+                    f"WEBULL EXIT CHASE ABORTED: could not confirm cancel of "
+                    f"order_id={order_id} (status={confirm_status}) — refusing to re-submit "
+                    f"to avoid overselling"
+                )
+                return OrderResult(
+                    success=False, order_id=str(order_id), client_order_id=client_order_id,
+                    error=(
+                        f"Exit not filled and prior order cancel unconfirmed "
+                        f"(status={confirm_status}) — aborted chase to avoid overselling"
+                    ),
+                    fill_status=fill_status or "SUBMITTED",
+                )
+
+            logger.warning(
+                f"WEBULL EXIT NOT FILLED (attempt {attempt + 1}/{max_attempts}): "
+                f"{ticker} ${strike} {option_type} @ ${limit:.2f} — prior order "
+                f"cancelled (confirmed), crossing harder"
+            )
+
+        if last_result is None:
+            last_result = OrderResult(
+                success=False, client_order_id=last_client_id,
+                error="No exit attempts made", fill_status="FAILED",
+            )
+        logger.warning(
+            f"WEBULL EXIT MISS: SELL {contracts}x {ticker} ${strike} {option_type} "
+            f"— not filled after {max_attempts} chase attempts (monitor will retry next cycle)"
+        )
+        return last_result
+
     async def _fetch_ask(
         self, ticker: str, strike: float, expiry_date: str, option_type: str,
     ) -> float | None:
@@ -1161,6 +1365,48 @@ class WebullExecutor:
             try:
                 ask = float(quote["ask"])
                 return ask if ask > 0 else None
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    async def _fetch_bid(
+        self, ticker: str, strike: float, expiry_date: str, option_type: str,
+    ) -> float | None:
+        """Freshest available BID for an option — the sell-side mirror of _fetch_ask.
+
+        Used by the fast-exit chase to price each sell rung off the CURRENT bid rather
+        than a bid that's stale by the time the order rests (a diving 0DTE moves fast).
+        Same freshness guard: a Redis snapshot is trusted ONLY when its age is verifiable
+        and fresh; otherwise fall back to the HTTP quote.
+        """
+        # 1) Harvester live Redis snapshot (fresh, no API round-trip)
+        if getattr(self.settings, "WEBULL_ENTRY_USE_LIVE_QUOTE", True):
+            try:
+                import time
+
+                from options_owl.db import redis_client
+
+                max_age = float(getattr(self.settings, "WEBULL_ENTRY_QUOTE_MAX_AGE_SEC", 20.0) or 20.0)
+                contract_key = f"{ticker.upper()}:{option_type.lower()}:{float(strike)}:{expiry_date}"
+                snap = await redis_client.get_option_snapshot(contract_key)
+                if snap:
+                    bid = float(snap.get("bid") or 0)
+                    ts = float(snap.get("t") or 0)
+                    if bid > 0 and ts > 0 and (time.time() - ts) <= max_age:
+                        return bid
+            except Exception as exc:
+                logger.debug(f"_fetch_bid redis miss for {ticker} ${strike} {option_type}: {exc}")
+
+        # 2) HTTP quote fallback
+        try:
+            quote = await self.get_option_quote(ticker, strike, expiry_date, option_type)
+        except Exception as exc:
+            logger.debug(f"_fetch_bid failed for {ticker} ${strike} {option_type}: {exc}")
+            return None
+        if quote and quote.get("bid"):
+            try:
+                bid = float(quote["bid"])
+                return bid if bid > 0 else None
             except (TypeError, ValueError):
                 return None
         return None

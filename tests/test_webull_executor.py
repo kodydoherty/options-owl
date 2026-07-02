@@ -731,3 +731,137 @@ class TestEntryChaseValueCap:
         assert res.fill_status == "FILLED"
         assert captured["limit"] * 60 * 100 <= MAX_ORDER_VALUE
         assert captured["limit"] == 0.83  # 5000/(60*100)=0.833 rounded DOWN to a legal penny step
+
+
+def _exit_settings(**overrides):
+    """Settings with the fast-exit-chase knobs set to real numbers."""
+    defaults = {
+        "PAPER_TRADE": False,
+        "WEBULL_KILL_SWITCH": False,
+        "ENABLE_FAST_EXIT_CHASE": True,
+        "WEBULL_ENTRY_USE_LIVE_QUOTE": True,
+        "WEBULL_ENTRY_QUOTE_MAX_AGE_SEC": 20.0,
+        "WEBULL_EXIT_FILL_ATTEMPTS": 4,
+        "WEBULL_EXIT_PER_ATTEMPT_SEC": 2.5,
+        "WEBULL_EXIT_POLL_SEC": 1.0,
+        "WEBULL_EXIT_AGGRESS_PCT": 2.0,
+        "WEBULL_EXIT_STEP_PCT": 6.0,
+        "WEBULL_EXIT_MAX_DISCOUNT_PCT": 25.0,
+    }
+    defaults.update(overrides)
+    return _make_settings(**defaults)
+
+
+class TestExitChase:
+    """Fast, tiered EXIT chase (ENABLE_FAST_EXIT_CHASE) — sell-side mirror of the entry
+    chase, crossing DOWN toward the bid, with the SAME double-fill (naked-short) safety."""
+
+    async def _run(self, executor, wait_returns, confirm_return="CANCELLED", contracts=2):
+        limits = []
+
+        async def fake_submit(payload):
+            limits.append(float(payload[0]["limit_price"]))
+            return (f"OID{len(limits)}", {}, None)
+
+        state = {"i": 0}
+
+        async def fake_wait(coid, timeout_seconds, poll_interval):
+            i = state["i"]
+            state["i"] += 1
+            return wait_returns[i] if i < len(wait_returns) else "SUBMITTED"
+
+        executor._fetch_bid = AsyncMock(return_value=1.00)  # clean, fresh bid
+        executor._submit_order_payload = fake_submit
+        executor._wait_for_fill = fake_wait
+        executor._confirm_cancelled = AsyncMock(return_value=confirm_return)
+        executor.cancel_order = AsyncMock(return_value=True)
+        executor._get_filled_quantity = AsyncMock(return_value=1)
+        res = await executor._place_sell_with_escalation(
+            ticker="SPY", strike=733.0, expiry_date="2026-07-02",
+            option_type="put", contracts=contracts, initial_limit=1.00,
+        )
+        return res, limits
+
+    @pytest.mark.asyncio
+    async def test_fills_rung1_just_below_bid(self):
+        executor = WebullExecutor(_exit_settings())
+        res, limits = await self._run(executor, ["FILLED"])
+        assert res.fill_status == "FILLED"
+        assert limits == [0.98]  # bid 1.00 × (1 - 2% aggress)
+
+    @pytest.mark.asyncio
+    async def test_crosses_harder_when_not_filled(self):
+        executor = WebullExecutor(_exit_settings())
+        res, limits = await self._run(executor, ["SUBMITTED", "SUBMITTED", "FILLED"])
+        assert res.fill_status == "FILLED"
+        assert limits == [0.98, 0.92, 0.86]  # 2%, 8%, 14% below bid — progressively marketable
+
+    @pytest.mark.asyncio
+    async def test_floor_caps_the_discount(self):
+        executor = WebullExecutor(_exit_settings(
+            WEBULL_EXIT_MAX_DISCOUNT_PCT=10.0, WEBULL_EXIT_FILL_ATTEMPTS=6))
+        res, limits = await self._run(executor, ["SUBMITTED"] * 6)
+        assert min(limits) >= 0.90 - 1e-9   # never more than 10% below the bid
+        assert 0.90 in limits
+
+    @pytest.mark.asyncio
+    async def test_honors_fill_during_cancel_and_stops(self):
+        """SAFETY: if a rung fills in the race with our cancel, honor it and DO NOT submit
+        another sell on top (that would oversell / go naked short)."""
+        executor = WebullExecutor(_exit_settings())
+        res, limits = await self._run(executor, ["SUBMITTED"], confirm_return="FILLED")
+        assert res.fill_status == "FILLED"
+        assert len(limits) == 1  # exactly one submit — no second sell after the surprise fill
+
+    @pytest.mark.asyncio
+    async def test_aborts_when_cancel_unconfirmed(self):
+        """SAFETY: if we can't confirm the prior sell is dead, ABORT — never leave two live
+        sell orders working."""
+        executor = WebullExecutor(_exit_settings())
+        res, limits = await self._run(executor, ["SUBMITTED"], confirm_return="WORKING")
+        assert res.success is False
+        assert "oversell" in res.error.lower()
+        assert len(limits) == 1  # never re-submitted
+
+    @pytest.mark.asyncio
+    async def test_partial_fill_returns_partial_and_stops(self):
+        executor = WebullExecutor(_exit_settings())
+        res, limits = await self._run(executor, ["PARTIAL"])
+        assert res.success is True
+        assert res.fill_status == "PARTIAL"
+        assert len(limits) == 1  # remainder left for the monitor's next cycle
+        executor.cancel_order.assert_awaited()  # unfilled remainder cancelled
+
+    @pytest.mark.asyncio
+    async def test_limits_are_legal_steps_above_3_dollars(self):
+        executor = WebullExecutor(_exit_settings())
+        executor._fetch_bid = AsyncMock(return_value=4.00)  # >$3 → nickel increments
+        limits = []
+
+        async def fake_submit(payload):
+            limits.append(float(payload[0]["limit_price"]))
+            return (f"OID{len(limits)}", {}, None)
+
+        state = {"i": 0}
+
+        async def fake_wait(coid, timeout_seconds, poll_interval):
+            state["i"] += 1
+            return "SUBMITTED"
+
+        executor._submit_order_payload = fake_submit
+        executor._wait_for_fill = fake_wait
+        executor._confirm_cancelled = AsyncMock(return_value="CANCELLED")
+        await executor._place_sell_with_escalation(
+            ticker="SPY", strike=733.0, expiry_date="2026-07-02",
+            option_type="put", contracts=2, initial_limit=4.00,
+        )
+        for lim in limits:
+            assert abs((lim / 0.05) - round(lim / 0.05)) < 1e-9, f"{lim} not a nickel step"
+
+    def test_place_option_order_routes_sell_through_chase(self):
+        """The SELL routing is gated on ENABLE_FAST_EXIT_CHASE and calls the chase."""
+        import inspect
+
+        src = inspect.getsource(WebullExecutor.place_option_order)
+        assert "ENABLE_FAST_EXIT_CHASE" in src
+        assert "_place_sell_with_escalation" in src
