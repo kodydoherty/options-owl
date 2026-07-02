@@ -41,6 +41,7 @@ from options_owl.dashboard.db import (
     get_closed_trades,
     get_daily_pnl,
     get_exit_distribution,
+    get_fleet_overview,
     get_hourly_performance,
     get_open_trades,
     get_pnl_curve,
@@ -251,7 +252,9 @@ async def login_submit(
             status_code=401,
         )
 
-    token = create_token(user["username"], user["agent_id"])
+    token = create_token(
+        user["username"], user["agent_id"], user.get("is_admin", False)
+    )
     response = RedirectResponse("/", status_code=302)
     response.set_cookie(
         "owl_token",
@@ -442,6 +445,39 @@ async def signals_page(request: Request, limit: int = Query(default=150, ge=1, l
     signals = await get_recent_signals(_pool, user["agent_id"], limit=limit)
     return _render("signals.html", {
         "request": request, "user": user, "signals": signals, "limit": limit,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Fleet overview — ADMIN ONLY (kody)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/fleet", response_class=HTMLResponse)
+async def fleet_page(request: Request):
+    user = request.state.user
+    # Hard gate: only admins (kody) see cross-bot data. Everyone else stays scoped to
+    # their own owlet — this is the ONLY route that reads across agents.
+    if not user.get("is_admin"):
+        return HTMLResponse("<h1>403 — Forbidden</h1>", status_code=403)
+
+    agents = await get_fleet_overview(_pool)
+
+    # Live paper/kill state per bot (Redis controls) — best-effort, never blocks the page.
+    for a in agents:
+        try:
+            a["paper_mode"], a["kill_switch"] = await asyncio.gather(
+                get_paper_mode(a["agent_id"]),
+                get_kill_switch(a["agent_id"]),
+            )
+        except Exception:
+            a["paper_mode"], a["kill_switch"] = None, None
+
+    fleet_pnl = sum(float(a["daily_pnl"] or 0) for a in agents)
+    fleet_total = sum(float(a["total_pnl"] or 0) for a in agents)
+    return _render("fleet.html", {
+        "request": request, "user": user, "agents": agents,
+        "fleet_pnl": fleet_pnl, "fleet_total": fleet_total,
     })
 
 

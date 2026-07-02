@@ -32,10 +32,11 @@ def verify_password(password: str, hashed: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def create_token(username: str, agent_id: str) -> str:
+def create_token(username: str, agent_id: str, is_admin: bool = False) -> str:
     payload = {
         "sub": username,
         "agent_id": agent_id,
+        "is_admin": bool(is_admin),
         "exp": int(time.time()) + TOKEN_EXPIRE_SECONDS,
         "iat": int(time.time()),
     }

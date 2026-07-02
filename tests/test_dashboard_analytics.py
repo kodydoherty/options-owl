@@ -324,3 +324,65 @@ class TestActivityFeeds:
         assert "META" in html and "SPY" in html
         assert "bg-indigo-950/40" in html   # consumed row highlight
         assert "—" in html                   # None fields rendered as dash, no crash
+
+
+# ---------------------------------------------------------------------------
+# Item 3: admin / fleet view
+# ---------------------------------------------------------------------------
+
+
+class TestFleetAdmin:
+    def test_token_carries_is_admin(self):
+        from options_owl.dashboard.auth import create_token, decode_token
+        assert decode_token(create_token("kody", "owlet_kody", True))["is_admin"] is True
+        assert decode_token(create_token("vinny", "owlet_vinny"))["is_admin"] is False
+
+    def test_fleet_route_registered_and_gated(self):
+        import inspect as _i
+
+        from options_owl.dashboard.app import app, fleet_page
+        routes = {r.path for r in app.routes if hasattr(r, "path")}
+        assert "/fleet" in routes
+        src = _i.getsource(fleet_page)
+        assert 'user.get("is_admin")' in src
+        assert "403" in src  # non-admins are refused
+
+    def test_fleet_overview_query_exists_and_computes_win_rate(self):
+        import inspect as _i
+
+        from options_owl.dashboard import db
+        assert callable(db.get_fleet_overview)
+        assert "win_rate" in _i.getsource(db.get_fleet_overview)
+        assert "America/New_York" in _i.getsource(db.get_fleet_overview)  # ET day
+
+    def test_fleet_renders_modes(self):
+        agents = [
+            {"agent_id": "owlet_kody", "portfolio_size": 23000, "open_count": 2,
+             "daily_pnl": 340.0, "today_trades": 3, "total_pnl": 12000.0, "wins": 60,
+             "total_trades": 100, "win_rate": 60.0, "last_heartbeat": datetime(2026, 7, 2, 12, 0),
+             "paper_mode": False, "kill_switch": False},
+            {"agent_id": "owlet_vinny", "portfolio_size": 3123, "open_count": 0,
+             "daily_pnl": -50.0, "today_trades": 1, "total_pnl": 400.0, "wins": 5,
+             "total_trades": 10, "win_rate": 50.0, "last_heartbeat": datetime(2026, 7, 2, 12, 0),
+             "paper_mode": True, "kill_switch": False},
+            {"agent_id": "owlet_yank", "portfolio_size": 3600, "open_count": 0,
+             "daily_pnl": 0.0, "today_trades": 0, "total_pnl": 0.0, "wins": 0,
+             "total_trades": 0, "win_rate": 0.0, "last_heartbeat": datetime(2026, 7, 2, 12, 0),
+             "paper_mode": None, "kill_switch": True},
+        ]
+        html = _render_template("fleet.html", agents=agents, fleet_pnl=290.0,
+                                fleet_total=12400.0,
+                                user={"sub": "kody", "agent_id": "owlet_kody", "is_admin": True})
+        assert "owlet_kody" in html and "owlet_vinny" in html
+        assert "LIVE" in html      # kody live
+        assert "paper" in html     # vinny paper
+        assert "KILLED" in html    # yank kill switch
+        assert "$23,000" in html   # portfolio formatting
+
+    def test_fleet_nav_link_only_for_admins(self):
+        admin_html = _render_template("events.html", events=[], limit=150, event_type="",
+                                      user={"sub": "kody", "agent_id": "owlet_kody", "is_admin": True})
+        assert '/fleet' in admin_html
+        plain_html = _render_template("events.html", events=[], limit=150, event_type="",
+                                      user={"sub": "vinny", "agent_id": "owlet_vinny", "is_admin": False})
+        assert '/fleet' not in plain_html

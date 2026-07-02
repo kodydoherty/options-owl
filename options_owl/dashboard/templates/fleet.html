@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Fleet — OptionsOwl{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+    <h1 class="text-xl font-bold text-white">Fleet Overview <span class="text-amber-400 text-xs align-middle">admin</span></h1>
+    <div class="flex gap-6 text-sm">
+        <div>
+            <div class="text-xs text-gray-500 uppercase">Fleet Today</div>
+            <div class="font-bold {{ fleet_pnl | pnl_class }}">{{ fleet_pnl | money }}</div>
+        </div>
+        <div>
+            <div class="text-xs text-gray-500 uppercase">Fleet All-time</div>
+            <div class="font-bold {{ fleet_total | pnl_class }}">{{ fleet_total | money }}</div>
+        </div>
+    </div>
+</div>
+
+{% if agents %}
+<div class="bg-owl-card border border-owl-border rounded-lg overflow-x-auto">
+    <table class="w-full text-sm">
+        <thead class="text-xs text-gray-500 uppercase border-b border-owl-border">
+            <tr>
+                <th class="text-left px-3 py-2">Owlet</th>
+                <th class="text-left px-3 py-2">Mode</th>
+                <th class="text-right px-3 py-2">Portfolio</th>
+                <th class="text-right px-3 py-2">Open</th>
+                <th class="text-right px-3 py-2">Today P&amp;L</th>
+                <th class="text-right px-3 py-2">Today #</th>
+                <th class="text-right px-3 py-2">All-time P&amp;L</th>
+                <th class="text-right px-3 py-2">Win %</th>
+                <th class="text-left px-3 py-2">Heartbeat</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for a in agents %}
+            <tr class="border-b border-owl-border/50">
+                <td class="px-3 py-2 text-white font-medium">{{ a.agent_id }}</td>
+                <td class="px-3 py-2">
+                    {% if a.kill_switch %}
+                    <span class="text-xs px-1.5 py-0.5 rounded bg-red-900 text-red-300">KILLED</span>
+                    {% elif a.paper_mode is none %}
+                    <span class="text-xs text-gray-600">—</span>
+                    {% elif a.paper_mode %}
+                    <span class="text-xs px-1.5 py-0.5 rounded bg-gray-700 text-gray-300">paper</span>
+                    {% else %}
+                    <span class="text-xs px-1.5 py-0.5 rounded bg-green-900 text-green-300">LIVE</span>
+                    {% endif %}
+                </td>
+                <td class="px-3 py-2 text-right text-gray-300">${{ "{:,.0f}".format(a.portfolio_size or 0) }}</td>
+                <td class="px-3 py-2 text-right text-gray-300">{{ a.open_count }}</td>
+                <td class="px-3 py-2 text-right font-medium {{ a.daily_pnl | pnl_class }}">{{ a.daily_pnl | money }}</td>
+                <td class="px-3 py-2 text-right text-gray-400">{{ a.today_trades }}</td>
+                <td class="px-3 py-2 text-right {{ a.total_pnl | pnl_class }}">{{ a.total_pnl | money }}</td>
+                <td class="px-3 py-2 text-right text-gray-300">{{ "%.0f"|format(a.win_rate) }}%</td>
+                <td class="px-3 py-2 text-gray-500 text-xs">{{ a.last_heartbeat | fdate }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+<p class="text-xs text-gray-600 mt-3">Read-only. Today's P&amp;L is recomputed from closed trades on the ET calendar day.</p>
+{% else %}
+<div class="bg-owl-card border border-owl-border rounded-lg p-8 text-center text-gray-500">
+    No agent state recorded yet.
+</div>
+{% endif %}
+{% endblock %}

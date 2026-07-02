@@ -127,6 +127,59 @@ async def get_agent_state(pool: asyncpg.Pool, agent_id: str) -> dict | None:
         return dict(row) if row else None
 
 
+async def get_fleet_overview(pool: asyncpg.Pool) -> list[dict]:
+    """One row per agent for the ADMIN fleet view — portfolio size, today's P&L, open
+    positions, all-time win rate, and heartbeat staleness. Not agent-scoped by design; the
+    route gates this behind ``is_admin`` (kody only).
+
+    Today's P&L / count are recomputed from the trades table on the ET calendar day (more
+    authoritative than agent_state.daily_pnl, which the bot writes opportunistically).
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT
+                 s.agent_id,
+                 s.portfolio_size,
+                 s.last_heartbeat,
+                 COALESCE(o.open_count, 0)     AS open_count,
+                 COALESCE(d.daily_pnl, 0)      AS daily_pnl,
+                 COALESCE(d.today_trades, 0)   AS today_trades,
+                 COALESCE(c.total_trades, 0)   AS total_trades,
+                 COALESCE(c.wins, 0)           AS wins,
+                 COALESCE(c.total_pnl, 0)      AS total_pnl
+               FROM agent_state s
+               LEFT JOIN (
+                 SELECT agent_id, COUNT(*) AS open_count
+                 FROM trades WHERE status = 'open' GROUP BY agent_id
+               ) o ON o.agent_id = s.agent_id
+               LEFT JOIN (
+                 SELECT agent_id,
+                        SUM(pnl_dollars) AS daily_pnl,
+                        COUNT(*) AS today_trades
+                 FROM trades
+                 WHERE status = 'closed'
+                   AND (closed_at AT TIME ZONE 'America/New_York')::date
+                       = (NOW() AT TIME ZONE 'America/New_York')::date
+                 GROUP BY agent_id
+               ) d ON d.agent_id = s.agent_id
+               LEFT JOIN (
+                 SELECT agent_id,
+                        COUNT(*) AS total_trades,
+                        COUNT(*) FILTER (WHERE pnl_dollars > 0) AS wins,
+                        SUM(pnl_dollars) AS total_pnl
+                 FROM trades WHERE status = 'closed' GROUP BY agent_id
+               ) c ON c.agent_id = s.agent_id
+               ORDER BY s.agent_id""",
+        )
+        out = []
+        for r in rows:
+            d = dict(r)
+            total = d["total_trades"] or 0
+            d["win_rate"] = round(d["wins"] / total * 100, 1) if total else 0.0
+            out.append(d)
+        return out
+
+
 async def get_portfolio_stats(pool: asyncpg.Pool, agent_id: str) -> dict:
     """Compute portfolio stats from trades table."""
     async with pool.acquire() as conn:
