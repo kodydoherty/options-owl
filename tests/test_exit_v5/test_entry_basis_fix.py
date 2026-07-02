@@ -71,6 +71,22 @@ class TestReconcileEntryToFill:
         bridge.evaluate(t2, 2.70, 712.0, _now_et(10, 5))  # 5 min later
         assert bridge._states[1].entry_premium == 1.25  # untouched
 
+    def test_reanchors_despite_dca_total_contracts_set(self):
+        """REGRESSION (adam SPY #396, 2026-07-02): dca_total_contracts is the INITIAL
+        contract count — set on EVERY trade at open, NOT a DCA marker. The old guard
+        (`or dca_total_contracts`) short-circuited this reconcile for every trade, so the
+        FSM stayed stuck on the pre-fill phantom basis. A normal (non-DCA) trade whose
+        blended == fill must STILL re-anchor to the real fill even with the field set."""
+        bridge = V5MonitorBridge(FakeSettings())
+        t = _trade(premium=0.52)  # pre-fill SmartEntry quote
+        bridge.evaluate(t, 0.52, 712.0, _now_et(10, 0))
+        assert bridge._states[1].entry_premium == 0.52
+        # Real fill $1.23 reconciles; blended==fill (no real DCA); dca_total_contracts=4.
+        t2 = _trade(premium=1.23, webull_entry_fill_price=1.23, dca_total_contracts=4)
+        bridge.evaluate(t2, 1.30, 712.0, _now_et(10, 0, 5))
+        assert bridge._states[1].entry_premium == 1.23  # corrected to the real fill
+        assert bridge._states[1].entry_from_real_fill is True
+
 
 class TestEvaluateBackstop:
     """Fallback net — instant implausible gain ⇒ cached entry is a phantom, re-anchor."""
@@ -103,3 +119,16 @@ class TestEvaluateBackstop:
         t = _trade(premium=1.25, opened_at="2026-04-28T14:00:00")
         bridge.evaluate(t, 2.62, 712.0, _now_et(10, 2))  # 2 min after entry
         assert bridge._states[1].entry_premium == 1.25
+
+    def test_fallback_never_overrides_real_fill(self):
+        """B3 (2026-07-02): once the basis is the AUTHORITATIVE Webull fill, the live-
+        premium fallback must NEVER fire — a genuine fast +70% 0DTE move would otherwise
+        re-anchor a CORRECT basis to the live premium and corrupt gain%/trail/profit-lock."""
+        bridge = V5MonitorBridge(FakeSettings())
+        # Fill known at open → entry authoritative from cycle 1.
+        t = _trade(premium=1.00, webull_entry_fill_price=1.00)
+        bridge.evaluate(t, 1.00, 712.0, _now_et(10, 0))
+        assert bridge._states[1].entry_from_real_fill is True
+        # A REAL +80% move within 60s must NOT re-anchor — entry stays the real fill.
+        bridge.evaluate(t, 1.80, 712.0, _now_et(10, 0, 10))
+        assert bridge._states[1].entry_premium == 1.00

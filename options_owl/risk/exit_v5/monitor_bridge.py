@@ -144,15 +144,21 @@ class V5MonitorBridge:
         dca_occurred = bool(trade.get("dca_last_add_at")) or (
             webull_fill > 0 and blended > 0 and abs(blended - webull_fill) > 0.01
         )
+        # entry_authoritative = the basis is the real cost (Webull fill or DCA blend),
+        # not a pre-fill quote. The pre-fill "premium_per_contract" branch below is the
+        # ONLY non-authoritative case (fill not yet reconciled to the DB).
         if dca_occurred and blended > 0:
             entry_prem = blended
             entry_source = "blended(DCA)"
+            entry_authoritative = True
         elif webull_fill > 0:
             entry_prem = webull_fill
             entry_source = "webull_fill"
+            entry_authoritative = True
         else:
             entry_prem = blended
             entry_source = "premium_per_contract"
+            entry_authoritative = False
 
         peak_premium = trade.get("mfe_premium") or entry_prem
         # Guard: peak can never be below entry (mfe may be stale/null pre-DCA).
@@ -170,6 +176,7 @@ class V5MonitorBridge:
             entry_underlying_price=trade.get("entry_price", 0.0),
             dte=dte,
             expiry_date=expiry_date,
+            entry_from_real_fill=entry_authoritative,
         )
 
         # RESTART DURABILITY (FIX 3c): restore scaled_out so a trade that already
@@ -221,9 +228,23 @@ class V5MonitorBridge:
             fill = trade.get("webull_entry_fill_price") or 0.0
             if fill <= 0:
                 return  # no fill price yet (or paper) — the evaluate() fallback covers extremes
-            if bool(trade.get("dca_last_add_at")) or (trade.get("dca_total_contracts") or 0):
-                return  # blended average is correct for DCA — don't clobber
+            # Skip ONLY when a REAL DCA blended the entry (the blended avg is then correct).
+            # dca_total_contracts is the INITIAL contract count (set at open for EVERY trade),
+            # NOT a DCA marker — using it here disabled this reconcile for every trade, which
+            # left the FSM stuck on the pre-fill phantom basis (e.g. adam SPY #396: real fill
+            # $1.23 but FSM ran the trail/profit-lock off a phantom $1.41). Use the same
+            # reliable signal _build_state uses: a real add sets dca_last_add_at, or leaves the
+            # blended premium diverging from the first fill by more than a rounding penny.
+            blended = trade.get("premium_per_contract", 0.0) or 0.0
+            dca_occurred = bool(trade.get("dca_last_add_at")) or (
+                blended > 0 and abs(blended - fill) > 0.01
+            )
+            if dca_occurred:
+                # Blended average IS the authoritative basis — mark it and stop.
+                state.entry_from_real_fill = True
+                return
             if abs(state.entry_premium - fill) <= max(0.02, 0.02 * fill):
+                state.entry_from_real_fill = True  # already on the real fill
                 return  # already aligned
             # Only re-anchor early — the fill reconciles within seconds of open.
             if state.entry_time is not None:
@@ -236,6 +257,7 @@ class V5MonitorBridge:
                     pass
             old = state.entry_premium
             state.entry_premium = fill
+            state.entry_from_real_fill = True  # now on the authoritative Webull fill
             if state.peak_premium < fill:
                 state.peak_premium = fill
             logger.warning(
@@ -296,7 +318,15 @@ class V5MonitorBridge:
         # reconcile didn't catch (paper bot, missing fill price, or a future cause).
         # Re-anchor entry to the live premium (≈ what we actually paid). One-shot, early
         # only, conservative threshold so it never clobbers a real gamma move.
-        if not state.entry_anchor_checked and state.entry_premium > 0 and exit_premium > 0:
+        #
+        # CRITICAL (2026-07-02): only when the basis is NOT already authoritative. When
+        # we're on the real Webull fill (or DCA blend), this fallback must NEVER fire —
+        # a real fast ±70% 0DTE move would otherwise re-anchor to the live premium and
+        # corrupt a correct basis (the phantom that stuck adam SPY #396 at $1.41 vs the
+        # real $1.23). Reconcile-to-fill is authoritative; this is only the pre-fill net.
+        if (not state.entry_from_real_fill
+                and not state.entry_anchor_checked
+                and state.entry_premium > 0 and exit_premium > 0):
             state.entry_anchor_checked = True
             instant_dev = (exit_premium - state.entry_premium) / state.entry_premium
             elapsed_ok = True

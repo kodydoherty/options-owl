@@ -108,6 +108,11 @@ class TradeState:
     # Entry-basis sanity backstop (2026-06-26): one-shot check that the cached entry
     # premium isn't a phantom (pre-fill quote). Set True once validated/re-anchored.
     entry_anchor_checked: bool = False
+    # True once entry_premium is anchored to the AUTHORITATIVE cost basis (the real
+    # Webull fill, or the blended DCA average) — NOT a pre-fill quote. When True, the
+    # live-premium fallback re-anchor must NOT override it (it would inject a wrong
+    # basis on a real fast move). Set by _build_state / _reconcile_entry_to_fill.
+    entry_from_real_fill: bool = False
     # Stepping-tier profit lock: highest HARD floor gain% armed (monotonic). 0 = unarmed.
     step_lock_floor_gain: float = 0.0
 
