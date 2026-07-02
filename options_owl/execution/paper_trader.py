@@ -2115,9 +2115,13 @@ class PaperTrader:
             sell_price = base_price * 0.85
             price_source = "bid-15%"
         else:
-            # Retry 4+: near-market — just get out
-            sell_price = base_price * 0.80
-            price_source = f"bid-20%(retry#{retry_count})"
+            # Retry 4+: keep crossing DEEPER every attempt so a thin/wide book still
+            # fills instead of orphaning (the MU #399 failure: parked at -20% off a
+            # stale bid, 39 no-fills). -20% at retry 4, then another -5% per attempt,
+            # floored at -50% below the (now venue-sourced) bid.
+            step = max(0.50, 0.80 - 0.05 * (retry_count - 4))
+            sell_price = base_price * step
+            price_source = f"bid-{int(round((1 - step) * 100))}%(retry#{retry_count})"
 
         # Floor: never sell below $0.01
         sell_price = max(sell_price, 0.01)
@@ -2453,11 +2457,44 @@ class PaperTrader:
         return None
 
     async def _get_fresh_option_bid(self, trade: dict) -> float | None:
-        """Fetch the current bid price for an option contract from Polygon.
+        """Fetch the current bid price for an option contract to price the exit.
 
-        Used to adjust sell limit price on retry — ensures we're pricing
-        at what the market will actually pay, not a stale premium.
+        Sourced from **Webull's own market data first** (the SAME book we execute
+        against), Polygon only as a fallback. This ordering matters: for a thin
+        contract Polygon's NBBO can be stale/wide vs the real venue — e.g. adam's
+        MU $985 put 2026-07-02 quoted ~$12 on Polygon while Webull's real market
+        was ~$5.25. Pricing the sell off the $12 produced a $9.76 limit that never
+        crossed the $5.25 book → 39 no-fills → the position orphaned and bled from
+        -19% to -51%. Pricing off the venue bid ($5.25) fills immediately.
         """
+        ticker = trade["ticker"]
+        strike = trade["strike"]
+        option_type = trade["option_type"].lower()
+        expiry = trade.get("expiry_date") or ""
+
+        # 1) WEBULL venue quote — authoritative for what will actually fill.
+        if self.webull_executor is not None:
+            try:
+                q = await asyncio.wait_for(
+                    self.webull_executor.get_option_quote(
+                        ticker, strike, expiry, option_type,
+                    ),
+                    timeout=10,
+                )
+                if q and q.get("bid") and q["bid"] > 0:
+                    logger.debug(
+                        f"Fresh WEBULL bid for {ticker} ${strike} {option_type}: "
+                        f"bid=${float(q['bid']):.2f} ask=${float(q.get('ask') or 0):.2f}"
+                    )
+                    return float(q["bid"])
+                if q and q.get("mid") and q["mid"] > 0:
+                    return float(q["mid"]) * 0.98  # slight discount — we're selling
+            except asyncio.TimeoutError:
+                logger.debug(f"Webull quote timed out (10s) for {ticker} ${strike} — Polygon fallback")
+            except Exception as exc:
+                logger.debug(f"Webull quote failed for {ticker} ${strike}: {exc} — Polygon fallback")
+
+        # 2) Polygon fallback (only when the venue quote is unavailable).
         try:
             from options_owl.collectors.polygon_options import (
                 _snapshot_quote,
@@ -2465,10 +2502,6 @@ class PaperTrader:
             )
             import httpx
 
-            ticker = trade["ticker"]
-            strike = trade["strike"]
-            option_type = trade["option_type"].lower()
-            expiry = trade.get("expiry_date") or ""
             api_key = self.settings.POLYGON_API_KEY
 
             if not api_key:
