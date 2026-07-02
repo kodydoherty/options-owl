@@ -119,13 +119,14 @@
       <li><strong>Correct <code>paper_portfolio.current_balance</code> / <code>daily_pnl</code> / wins / losses</strong> — which <em>no</em> current script does. This is the missing piece that lets the recorded balance match the brokerage.</li>
       <li>Mirror all corrections into <strong>Postgres</strong> (<code>trades</code>, <code>agent_state</code>) so the dashboard and <code>trade-pnl.py</code> both inherit the truth.</li>
     </ul>
-    <div class="fix"><span class="lab">Why zero-risk</span> It runs as a standalone script/cron (or a job in the <code>owlet-dashboard</code> container), out-of-band, after market close. It only <em>reads</em> Webull and <em>corrects historical rows</em> — it never touches the live monitor loop, the order path, or an open position. Ships with a <strong>report-only mode (default)</strong> that prints "Webull says $X, DB says $Y, diff $Z per trade" and writes nothing until <code>--fix</code>.</div>
-    <p class="kv"><b>Acceptance:</b> run it for adam today → the reconciled total equals the brokerage's <strong>−$125.16</strong>, with a per-trade diff table showing exactly where the DB was wrong (expect: the MU stale-fill + missing fees + 429-missed fills).</p>
+    <div class="fix"><span class="lab">Why low-risk — and the one real constraint (found 2026-07-02)</span> It runs out-of-band, after market close, correcting <em>historical rows</em> only — it never touches the live monitor loop, the order path, or an open position. Ships <strong>report-only by default</strong> (prints "Webull says $X, DB says $Y, diff $Z per trade"; writes nothing until <code>--fix</code>). <strong>But:</strong> a Webull account is capped at <strong>10 auth tokens</strong> and <em>every fresh client mints one</em> (<code>webull_executor.py:141-160</code>), so a <em>separate</em> reconcile process during market hours can evict the <strong>live bot's</strong> token and knock it offline mid-trade. Therefore A0 must run <strong>in-process via the bot's own already-authenticated executor</strong> (mints nothing) — or, if standalone, <strong>only after close when the bot is idle</strong>. Never spin up a fresh Webull client against a live account mid-session. (Also: it must call <code>init()</code> to resolve the account ID — unpinned accounts like adam 401 otherwise; fixed in <code>reconcile_webull.py</code> <code>f082ca6</code>.)</div>
+    <p class="kv"><b>Acceptance:</b> run it for adam <em>after close</em> → the reconciled total equals the brokerage's <strong>−$125.16</strong>, with a per-trade diff table showing exactly where the DB was wrong (expect: the MU stale-fill + missing fees + 429-missed fills).</p>
   </div>
 
   <div class="card med">
-    <div class="hdr"><span class="id">A1</span><span class="title">Forward capture — book the real fill at close, not the approximation</span><span class="pill t-risk">hot-path</span></div>
+    <div class="hdr"><span class="id">A1</span><span class="title">Forward capture — book the real fill at close, not the approximation <span class="pill t-safe">the durable fix</span></span><span class="pill t-risk">hot-path</span></div>
     <div class="loc">webull_executor.py:29 (OrderResult), 1030/1236 (fill branches); paper_trader.py:2309 (close UPDATE)</div>
+    <p><strong>This is the real answer to "know 100% accurately," and it costs zero new Webull tokens</strong> — the bot <em>already</em> calls <code>get_fill_price</code> at close on its own authenticated session. We just make that value (plus fees) reliably land in the DB. Once A1 is solid, the DB is accurate as trades happen and the A0 reconciler becomes a nightly <em>audit/backfill</em>, not a correctness dependency.</p>
     <ul>
       <li>Add <code>fill_price</code> (and <code>commission</code>) to <code>OrderResult</code> and populate them from the order detail the escalation ladder <em>already fetched</em> — no new API round-trip, so <strong>no new 429 exposure</strong>. Eliminates the failure-prone separate <code>get_fill_price</code> call.</li>
       <li>In <code>close_webull_position</code>, set <code>exit_premium = webull_exit_fill_price</code> in the same UPDATE that already fixes <code>pnl_dollars</code> — closes the A-1 disagreement.</li>
@@ -141,7 +142,7 @@
   </div>
 
   <div class="note">
-    <strong>Recommended sequencing for A:</strong> <span class="step">1</span> Ship <strong>A0 report-only</strong> and run it for adam today → prove we can reproduce −$125.16. <span class="step">2</span> Flip A0 to <code>--fix</code> + schedule nightly (per bot) → DB is penny-accurate to Webull by every EOD. <span class="step">3</span> Then A1 + A2 as a tested, canaried hot-path change to shrink intraday drift. After step 2 you already "know with 100% accuracy what's in Webull" every morning; steps 3 keeps the <em>live</em> view honest too.
+    <strong>Recommended sequencing for A:</strong> <span class="step">1</span> Run <strong>A0 report-only for adam after close</strong> (bot idle) → prove we can reproduce −$125.16. <span class="step">2</span> Flip A0 to <code>--fix</code> + schedule nightly after close (per bot), reusing the bot's session or an idle-bot window → DB penny-accurate to Webull by every EOD. <span class="step">3</span> Then <strong>A1 + A2</strong> as a tested, canaried hot-path change — the <em>durable, zero-new-token</em> fix that keeps the <em>live</em> view honest so A0 downgrades to a nightly audit. After step 2 you "know with 100% accuracy what's in Webull" every morning; after A1 you know it intraday.
   </div>
 
   <h2>Part B — Verbose per-owlet dashboard (extend <code>owlet-dashboard</code>)</h2>
@@ -189,6 +190,7 @@
     <li><strong>Read-only to trading.</strong> The dashboard never writes a trading DB. Reads target <strong>Postgres</strong> (the shared store) or read-only SQLite (<code>mode=ro</code>), never contending with the bots' WAL writers.</li>
     <li><strong>Physically separate process.</strong> All UI/serving stays in the <code>owlet-dashboard</code> container (already memory-capped, own port). A crash/OOM there cannot touch a bot.</li>
     <li><strong>New capture is fire-and-forget to a separate sink.</strong> No new <code>await</code> DB write inside FSM <code>evaluate()</code> or the gate critical section — reuse the existing throttled, non-blocking premium-tick flush.</li>
+    <li><strong>Never spawn a fresh Webull client against a live account during market hours.</strong> Webull caps each account at <strong>10 auth tokens</strong>; every new client mints one and can evict the live bot's token. Any Webull-history work reuses the bot's <em>existing</em> authenticated session (in-process) or runs after close on an idle bot. Health checks read logs, never a live probe. <em>(This is why the 2026-07-02 dry-run 401'd — a separate client with no resolved account; a warning shot, not a fluke.)</em></li>
     <li><strong>Monitor-only in v1.</strong> You said both "manage their bots" and "zero chance to break things, just monitor." We honor the second: v1 is read-only. The existing kill-switch/paper-mode controls stay <em>as they are</em> (no new control actions, no per-owlet self-serve kill of a live bot) until a separately-specced, audited Phase 2.</li>
     <li><strong>Cleanup:</strong> <code>CLAUDE.md:501</code> and the <code>.env</code> Supabase keys reference removed code (Supabase was deleted in <code>6d5e6fc</code>) — correct these so nobody assumes a Supabase backend exists.</li>
   </ul>
@@ -206,11 +208,11 @@
   </table>
 
   <div class="note good">
-    <strong>Immediate next step (needs only your go):</strong> build <strong>A0 in report-only mode</strong> and run it against adam's Webull order history for today. It writes nothing — it just prints Webull's real per-trade fills vs the DB, and totals to the brokerage's −$125.16. That single run tells us, with certainty, where the money differs and confirms the fix model before we change any recorded data.
+    <strong>Immediate next step (needs only your go):</strong> the A0 report tool already exists (<code>reconcile_webull.py --dry-run</code>, account-ID bug now fixed). Run it for adam <strong>right after the close</strong> (bot idle → no token-eviction risk). It writes nothing — it prints Webull's real per-trade fills vs the DB and totals to the brokerage's −$125.16, confirming the fix model before we change any recorded data.
   </div>
 
   <div class="foot">
-    Spec authored 2026-07-02 from three parallel read-only code audits (existing dashboard, data model, Webull fill path). No code changed. Awaiting approval on scope + the Phase-1 report-only reconciler run.
+    Spec authored 2026-07-02 from three parallel read-only code audits (existing dashboard, data model, Webull fill path). Revised same day after a read-only reconcile dry-run surfaced the Webull <strong>10-token-cap</strong> constraint (separate clients mint tokens → can evict the live bot) and an account-ID bug (<code>reconcile_webull.py f082ca6</code>) — A0 now runs in-process/post-close, A1 is the durable zero-token fix. No trading code changed. Awaiting go on the after-close adam reconcile run + A1 build.
   </div>
 
 </div>
