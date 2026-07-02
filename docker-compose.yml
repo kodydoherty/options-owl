@@ -538,6 +538,10 @@ services:
       # true = Individual MARGIN: auto-detects the margin account (UNLESS WEBULL_ACCOUNT_ID is pinned)
       # + skips GFV so sale proceeds reinvest intraday. Sizes off net-liq (no extra leverage).
       - MARGIN_ACCOUNT=true
+      # CANARY (2026-07-02): fast tiered EXIT chase — sub-cycle repricing off the Webull venue bid,
+      # same double-fill safety as the entry chase. vinny = smallest live account; validate here before
+      # fleet-wide. Others stay false (legacy venue-priced escalation, already fixed).
+      - ENABLE_FAST_EXIT_CHASE=true
       # Data-freshness guard: halt NEW entries + alert if the harvester feed goes stale during market
       # hours (catches frozen-but-fresh-timestamp data). Sell path unaffected; fails OPEN on error.
       - ENABLE_DATA_FRESHNESS_GUARD=true

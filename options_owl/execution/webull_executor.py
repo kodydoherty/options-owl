@@ -1374,12 +1374,25 @@ class WebullExecutor:
     ) -> float | None:
         """Freshest available BID for an option — the sell-side mirror of _fetch_ask.
 
-        Used by the fast-exit chase to price each sell rung off the CURRENT bid rather
-        than a bid that's stale by the time the order rests (a diving 0DTE moves fast).
-        Same freshness guard: a Redis snapshot is trusted ONLY when its age is verifiable
-        and fresh; otherwise fall back to the HTTP quote.
+        Sourced from Webull's OWN venue quote FIRST (the book we sell into — authoritative
+        for what will actually fill), then the harvester's freshness-guarded Redis snapshot
+        as a fast fallback. The venue-first ordering is deliberate: Polygon-fed quotes can be
+        stale/wide for a thin contract (the MU #399 lesson — Polygon $12 vs Webull $5.25), so
+        for EXITS we trust the venue, unlike the entry chase (_fetch_ask) which prefers Redis
+        for speed. Prices each sell rung off the CURRENT bid so the limit stays marketable in
+        a fast-diving 0DTE.
         """
-        # 1) Harvester live Redis snapshot (fresh, no API round-trip)
+        # 1) WEBULL venue quote — authoritative for what fills.
+        try:
+            quote = await self.get_option_quote(ticker, strike, expiry_date, option_type)
+            if quote and quote.get("bid"):
+                bid = float(quote["bid"])
+                if bid > 0:
+                    return bid
+        except Exception as exc:
+            logger.debug(f"_fetch_bid venue quote failed for {ticker} ${strike}: {exc}")
+
+        # 2) Harvester live Redis snapshot (fast fallback, freshness-guarded).
         if getattr(self.settings, "WEBULL_ENTRY_USE_LIVE_QUOTE", True):
             try:
                 import time
@@ -1396,19 +1409,6 @@ class WebullExecutor:
                         return bid
             except Exception as exc:
                 logger.debug(f"_fetch_bid redis miss for {ticker} ${strike} {option_type}: {exc}")
-
-        # 2) HTTP quote fallback
-        try:
-            quote = await self.get_option_quote(ticker, strike, expiry_date, option_type)
-        except Exception as exc:
-            logger.debug(f"_fetch_bid failed for {ticker} ${strike} {option_type}: {exc}")
-            return None
-        if quote and quote.get("bid"):
-            try:
-                bid = float(quote["bid"])
-                return bid if bid > 0 else None
-            except (TypeError, ValueError):
-                return None
         return None
 
     async def _wait_for_fill(

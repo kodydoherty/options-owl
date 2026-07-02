@@ -865,3 +865,23 @@ class TestExitChase:
         src = inspect.getsource(WebullExecutor.place_option_order)
         assert "ENABLE_FAST_EXIT_CHASE" in src
         assert "_place_sell_with_escalation" in src
+
+
+class TestFetchBidVenueFirst:
+    """_fetch_bid (fast-exit chase) must prefer Webull's own venue quote — the MU #399
+    lesson: Polygon/Redis quotes can be stale/wide for thin contracts."""
+
+    @pytest.mark.asyncio
+    async def test_prefers_webull_venue_bid(self):
+        executor = WebullExecutor(_exit_settings())
+        executor.get_option_quote = AsyncMock(return_value={"bid": 5.25, "ask": 5.60, "mid": 5.42})
+        bid = await executor._fetch_bid("MU", 985.0, "2026-07-02", "put")
+        assert bid == 5.25
+        executor.get_option_quote.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_venue_failure_returns_none_gracefully(self):
+        executor = WebullExecutor(_exit_settings(WEBULL_ENTRY_USE_LIVE_QUOTE=False))
+        executor.get_option_quote = AsyncMock(side_effect=RuntimeError("socket dead"))
+        bid = await executor._fetch_bid("MU", 985.0, "2026-07-02", "put")
+        assert bid is None  # no venue, redis disabled → None, never raises
