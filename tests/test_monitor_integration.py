@@ -572,7 +572,8 @@ class TestSourceCodeSafety:
         import inspect
         from options_owl.execution import position_monitor
 
-        source = inspect.getsource(position_monitor.run_position_monitor)
+        # The guarded close/abandonment logic lives in _finalize_full_close.
+        source = inspect.getsource(position_monitor._finalize_full_close)
 
         # The transient path must reopen without setting exit_source='manual'.
         assert "is_position_gone = outcome is SellOutcome.POSITION_NOT_FOUND" in source, \

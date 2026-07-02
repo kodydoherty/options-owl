@@ -1135,6 +1135,207 @@ async def _reconcile_positions(
 
 
 # ---------------------------------------------------------------------------
+# Orphan-safe close helpers — SINGLE chokepoint so NO close path can leave a
+# trade closed-in-DB but still open on Webull (the MU #399 orphan class).
+# ---------------------------------------------------------------------------
+
+
+async def _finalize_full_close(
+    paper_trader, trade, current_price, exit_premium, reason, db_path, discord_client,
+) -> bool:
+    """Close ALL contracts on a trade with the orphan-safe guard.
+
+    close_trade (DB) → re-read contracts (DCA) → close_webull_position (Webull sell).
+    If the live sell fails **transiently**, REVERT the DB close and reopen the trade so
+    the monitor retries next cycle — a live position is never left closed-in-DB-but-
+    open-on-Webull. Only a confirmed POSITION_NOT_FOUND (after the retry budget) force-
+    closes as manual. Returns True when the trade is done (sold / paper / abandoned),
+    False when it was reopened for retry (caller should ``continue``).
+    """
+    from options_owl.execution.paper_trader import SellOutcome
+
+    ticker = trade["ticker"]
+    close_result = await paper_trader.close_trade(
+        trade_id=trade["id"], exit_price=current_price,
+        exit_premium=exit_premium, reason=reason,
+    )
+    # Re-read contract count — DCA may have added contracts since we loaded the dict.
+    try:
+        async with _connect_db(db_path) as conn:
+            cur = await conn.execute(
+                "SELECT contracts FROM paper_trades WHERE id = ?", (trade["id"],),
+            )
+            row = await cur.fetchone()
+            if row and row[0] != trade["contracts"]:
+                logger.info(
+                    f"  #{trade['id']} {ticker} contract count updated: "
+                    f"{trade['contracts']} → {row[0]} (DCA)"
+                )
+                trade = {**trade, "contracts": row[0]}
+    except Exception as exc:
+        logger.warning(f"  #{trade['id']} contract count re-read failed: {exc}")
+
+    sell_result = await paper_trader.close_webull_position(trade, exit_premium)
+    webull_sold = bool(sell_result)
+
+    if not webull_sold and trade.get("webull_order_id"):
+        retry_count = trade.get("sell_retry_count") or 0
+        outcome = getattr(sell_result, "outcome", SellOutcome.TRANSIENT_ERROR)
+        is_position_gone = outcome is SellOutcome.POSITION_NOT_FOUND
+
+        async def _revert_and_reopen():
+            try:
+                await paper_trader.revert_close_effects(
+                    close_result["strategy"], close_result["proceeds"], close_result["pnl"],
+                )
+            except Exception as exc:
+                logger.error(
+                    f"  #{trade['id']} {ticker} failed to revert close effects on reopen: {exc}"
+                )
+            async with _connect_db(db_path) as conn:
+                await conn.execute(
+                    "UPDATE paper_trades SET status = 'open', exit_reason = NULL, "
+                    "closed_at = NULL, exit_premium = NULL, pnl_dollars = NULL, "
+                    "pnl_pct = NULL WHERE id = ?",
+                    (trade["id"],),
+                )
+                await conn.commit()
+
+        if not is_position_gone:
+            _transient_sell_failures[trade["id"]] = (
+                _transient_sell_failures.get(trade["id"], 0) + 1
+            )
+            transient_count = _transient_sell_failures[trade["id"]]
+            logger.warning(
+                f"  #{trade['id']} {ticker} WEBULL SELL TRANSIENT FAILURE "
+                f"({outcome.value}, #{transient_count}) — reopening for retry WITHOUT "
+                f"consuming abandonment budget. err={getattr(sell_result, 'error', None)}"
+            )
+            if transient_count in (5, 10, 20) and discord_client:
+                from options_owl.execution.alerts import alert_critical
+                await alert_critical(
+                    discord_client, paper_trader.settings,
+                    f"SELL TRANSIENT FAILURES: {ticker} ${trade['strike']} "
+                    f"{trade['option_type'].upper()} x{trade['contracts']} — "
+                    f"{transient_count} transient sell failures ({outcome.value}). "
+                    f"Position likely STILL OPEN on Webull. NOT force-closing. Investigate.",
+                )
+            await _revert_and_reopen()
+            return False
+
+        # POSITION_NOT_FOUND: genuinely gone from Webull (sold/expired/exercised).
+        _transient_sell_failures.pop(trade["id"], None)
+        MAX_SELL_RETRIES = 7
+        if retry_count >= MAX_SELL_RETRIES:
+            logger.error(
+                f"  #{trade['id']} {ticker} WEBULL SELL ABANDONED after {retry_count} "
+                f"attempts — force-closing in DB. Position may have been sold/expired."
+            )
+            async with _connect_db(db_path) as conn:
+                await conn.execute(
+                    "UPDATE paper_trades SET exit_source = 'manual' WHERE id = ?",
+                    (trade["id"],),
+                )
+                await conn.commit()
+            await log_trade_event(
+                db_path, ticker, "manual_close_detected",
+                f"trade#{trade['id']} — Webull sell abandoned after {retry_count} "
+                f"attempts. Position not found on Webull. exit_premium is approximate.",
+                trade_id=trade["id"],
+            )
+            if discord_client:
+                from options_owl.execution.alerts import alert_critical
+                await alert_critical(
+                    discord_client, paper_trader.settings,
+                    f"SELL ABANDONED: {ticker} ${trade['strike']} "
+                    f"{trade['option_type'].upper()} x{trade['contracts']} — "
+                    f"{retry_count} failed attempts. Force-closed (exit_source=manual). "
+                    f"CHECK WEBULL MANUALLY for actual fill price.",
+                )
+            _cleanup_trade_state(trade["id"])
+            return True
+
+        logger.warning(
+            f"  #{trade['id']} {ticker} WEBULL SELL FAILED (attempt #{retry_count}) — "
+            f"reopening trade for retry with adjusted price"
+        )
+        await _revert_and_reopen()
+        if retry_count >= 3 and discord_client:
+            from options_owl.execution.alerts import alert_critical
+            await alert_critical(
+                discord_client, paper_trader.settings,
+                f"SELL STUCK: {ticker} ${trade['strike']} {trade['option_type'].upper()} "
+                f"x{trade['contracts']} — {retry_count} failed sell attempts. "
+                f"Position still open on Webull, chasing bid.",
+            )
+        return False
+
+    _cleanup_trade_state(trade["id"])
+    return True
+
+
+async def _finalize_partial_close(
+    paper_trader, trade, current_price, exit_premium, reason, close_pct,
+    db_path, discord_client, pre_sell_updates=None,
+) -> bool:
+    """Scale out a fraction of a trade, orphan-safe.
+
+    partial_close_trade (DB split) → Webull sell of ONLY the scaled-out contracts. If
+    rounding collapses the partial to a full close, delegates to _finalize_full_close.
+    On a **transient** Webull sell failure, REVERTS the partial (restores parent
+    contracts, reverses proceeds, deletes the child row) so the scaled-out fraction can
+    never orphan. Returns True when done, False if a delegated full close was reopened
+    for retry (caller should ``continue``).
+    """
+    from options_owl.execution.paper_trader import SellOutcome
+
+    result = await paper_trader.partial_close_trade(
+        trade_id=trade["id"], exit_price=current_price,
+        exit_premium=exit_premium, reason=reason, close_pct=close_pct,
+    )
+    if not (result and "contracts_closed" in result):
+        # Rounding collapsed to a full close → guarded full close of ALL contracts.
+        return await _finalize_full_close(
+            paper_trader, trade, current_price, exit_premium, reason, db_path, discord_client,
+        )
+
+    # Optional DB update to apply after the split, before the sell (e.g. last_target_hit).
+    if pre_sell_updates:
+        async with _connect_db(db_path) as conn:
+            await conn.execute(pre_sell_updates[0], pre_sell_updates[1])
+            await conn.commit()
+
+    partial_trade = {**trade, "contracts": result["contracts_closed"]}
+    sell_result = await paper_trader.close_webull_position(
+        partial_trade, exit_premium, child_trade_id=result.get("child_trade_id"),
+    )
+    if bool(sell_result) or not trade.get("webull_order_id"):
+        return True  # sold (or paper) — parent stays open with the remainder
+
+    outcome = getattr(sell_result, "outcome", SellOutcome.TRANSIENT_ERROR)
+    if outcome is SellOutcome.POSITION_NOT_FOUND:
+        # The scaled-out qty is genuinely gone from Webull — DB partial reflects reality.
+        return True
+
+    # Transient failure — revert the partial so the fraction isn't orphaned.
+    try:
+        await paper_trader.revert_partial_close(result["child_trade_id"])
+    except Exception as exc:
+        logger.error(
+            f"  #{trade['id']} {trade['ticker']} failed to revert partial close: {exc}"
+        )
+    if discord_client:
+        from options_owl.execution.alerts import alert_critical
+        await alert_critical(
+            discord_client, paper_trader.settings,
+            f"PARTIAL SELL FAILED: {trade['ticker']} ${trade['strike']} "
+            f"{trade['option_type'].upper()} — scaled-out fraction didn't fill; "
+            f"reverted the partial, will retry the whole position. Investigate.",
+        )
+    return True  # parent restored to full size; monitor re-evaluates next cycle
+
+
+# ---------------------------------------------------------------------------
 # Main monitor loop
 # ---------------------------------------------------------------------------
 
@@ -1896,22 +2097,11 @@ async def run_position_monitor(
                             f"closing {close_qty}/{trade['contracts']} contracts "
                             f"at +{((exit_premium - trade['premium_per_contract']) / trade['premium_per_contract'] * 100):.1f}%"
                         )
-                        result = await paper_trader.partial_close_trade(
-                            trade_id=trade["id"],
-                            exit_price=current_price,
-                            exit_premium=exit_premium,
-                            reason=reason,
-                            close_pct=close_pct,
-                        )
-                        if result and "contracts_closed" in result:
-                            partial_trade = {**trade, "contracts": result["contracts_closed"]}
-                            await paper_trader.close_webull_position(
-                                partial_trade, exit_premium,
-                                child_trade_id=result.get("child_trade_id"),
-                            )
-                        else:
-                            await paper_trader.close_webull_position(trade, exit_premium)
-                            _cleanup_trade_state(trade["id"])
+                        if not await _finalize_partial_close(
+                            paper_trader, trade, current_price, exit_premium,
+                            reason, close_pct, db_path, discord_client,
+                        ):
+                            continue
 
                     elif milestone_match:
                         import re as _re
@@ -1923,23 +2113,11 @@ async def run_position_monitor(
                             f"closing {close_qty}/{trade['contracts']} contracts "
                             f"at +{((exit_premium - trade['premium_per_contract']) / trade['premium_per_contract'] * 100):.1f}%"
                         )
-                        result = await paper_trader.partial_close_trade(
-                            trade_id=trade["id"],
-                            exit_price=current_price,
-                            exit_premium=exit_premium,
-                            reason=reason,
-                            close_pct=close_pct,
-                        )
-                        if result and "contracts_closed" in result:
-                            partial_trade = {**trade, "contracts": result["contracts_closed"]}
-                            await paper_trader.close_webull_position(
-                                partial_trade, exit_premium,
-                                child_trade_id=result.get("child_trade_id"),
-                            )
-                        else:
-                            # Fell back to full close — clean up state
-                            await paper_trader.close_webull_position(trade, exit_premium)
-                            _cleanup_trade_state(trade["id"])
+                        if not await _finalize_partial_close(
+                            paper_trader, trade, current_price, exit_premium,
+                            reason, close_pct, db_path, discord_client,
+                        ):
+                            continue
 
                     elif tranche_match:
                         import re as _re
@@ -1951,23 +2129,11 @@ async def run_position_monitor(
                             f"closing {close_qty}/{trade['contracts']} contracts "
                             f"at +{((exit_premium - trade['premium_per_contract']) / trade['premium_per_contract'] * 100):.1f}%"
                         )
-                        result = await paper_trader.partial_close_trade(
-                            trade_id=trade["id"],
-                            exit_price=current_price,
-                            exit_premium=exit_premium,
-                            reason=reason,
-                            close_pct=close_pct,
-                        )
-                        if result and "contracts_closed" in result:
-                            partial_trade = {**trade, "contracts": result["contracts_closed"]}
-                            await paper_trader.close_webull_position(
-                                partial_trade, exit_premium,
-                                child_trade_id=result.get("child_trade_id"),
-                            )
-                        else:
-                            # Fell back to full close — sell ALL on Webull
-                            await paper_trader.close_webull_position(trade, exit_premium)
-                            _cleanup_trade_state(trade["id"])
+                        if not await _finalize_partial_close(
+                            paper_trader, trade, current_price, exit_premium,
+                            reason, close_pct, db_path, discord_client,
+                        ):
+                            continue
 
                     elif (
                         reason in _SCALE_OUT_TARGETS
@@ -1985,231 +2151,30 @@ async def run_position_monitor(
                                 break
 
                         if is_highest and not ml_holding:
-                            await paper_trader.close_trade(
-                                trade_id=trade["id"],
-                                exit_price=current_price,
-                                exit_premium=exit_premium,
-                                reason=reason,
-                            )
-                            await paper_trader.close_webull_position(trade, exit_premium)
-                            _cleanup_trade_state(trade["id"])
+                            if not await _finalize_full_close(
+                                paper_trader, trade, current_price, exit_premium,
+                                reason, db_path, discord_client,
+                            ):
+                                continue
                         else:
-                            result = await paper_trader.partial_close_trade(
-                                trade_id=trade["id"],
-                                exit_price=current_price,
-                                exit_premium=exit_premium,
-                                reason=reason,
-                                close_pct=close_pct,
-                            )
-                            async with _connect_db(db_path) as conn:
-                                await conn.execute(
+                            # last_target_hit is applied after the split, before the sell.
+                            if not await _finalize_partial_close(
+                                paper_trader, trade, current_price, exit_premium,
+                                reason, close_pct, db_path, discord_client,
+                                pre_sell_updates=(
                                     "UPDATE paper_trades SET last_target_hit = ? WHERE id = ?",
                                     (target_num, trade["id"]),
-                                )
-                                await conn.commit()
-                            # partial_close_trade may fall back to full close when
-                            # rounding gives 0 contracts. Detect via "contracts_closed"
-                            # key which only exists on real partials.
-                            if result and "contracts_closed" in result:
-                                webull_trade = {**trade, "contracts": result["contracts_closed"]}
-                                await paper_trader.close_webull_position(
-                                    webull_trade, exit_premium,
-                                    child_trade_id=result.get("child_trade_id"),
-                                )
-                            else:
-                                # Fell back to full close — sell ALL on Webull
-                                await paper_trader.close_webull_position(trade, exit_premium)
-                                _cleanup_trade_state(trade["id"])
+                                ),
+                            ):
+                                continue
                     else:
-                        # T5, stop, trailing_stop, phase_trail,
-                        # theta_bleed, time_decay_zone, time, EOD, theta → close all
-                        close_result = await paper_trader.close_trade(
-                            trade_id=trade["id"],
-                            exit_price=current_price,
-                            exit_premium=exit_premium,
-                            reason=reason,
-                        )
-                        # Re-read contract count from DB — DCA may have added
-                        # contracts since we loaded the trade dict this cycle
-                        try:
-                            async with _connect_db(db_path) as conn:
-                                cur = await conn.execute(
-                                    "SELECT contracts FROM paper_trades WHERE id = ?",
-                                    (trade["id"],),
-                                )
-                                row = await cur.fetchone()
-                                if row and row[0] != trade["contracts"]:
-                                    logger.info(
-                                        f"  #{trade['id']} {ticker} contract count updated: "
-                                        f"{trade['contracts']} → {row[0]} (DCA)"
-                                    )
-                                    trade = {**trade, "contracts": row[0]}
-                        except Exception as exc:
-                            logger.warning(f"  #{trade['id']} contract count re-read failed: {exc}")
-                        sell_result = await paper_trader.close_webull_position(trade, exit_premium)
-                        webull_sold = bool(sell_result)
-
-                        # If Webull sell failed, reopen trade so monitor retries
-                        # on next cycle with adjusted pricing
-                        if not webull_sold and trade.get("webull_order_id"):
-                            retry_count = (trade.get("sell_retry_count") or 0)
-
-                            # CRITICAL: only a POSITION_NOT_FOUND outcome means the
-                            # position is genuinely gone from Webull (user sold,
-                            # expired, exercised). Transient errors (API/network/
-                            # exception/no-fill) return TRANSIENT_ERROR/NOT_FILLED
-                            # and must NOT count toward the manual-close budget — a
-                            # transient outage force-closing a still-open live
-                            # position as 'manual' previously triggered orphan
-                            # recovery (entry $0.01 → FSM saw +5000% → garbage P&L).
-                            from options_owl.execution.paper_trader import (
-                                SellOutcome,
-                            )
-                            outcome = getattr(
-                                sell_result, "outcome", SellOutcome.TRANSIENT_ERROR,
-                            )
-                            is_position_gone = outcome is SellOutcome.POSITION_NOT_FOUND
-
-                            # Track transient failures separately for alerting only.
-                            if not is_position_gone:
-                                _transient_sell_failures[trade["id"]] = (
-                                    _transient_sell_failures.get(trade["id"], 0) + 1
-                                )
-                                transient_count = _transient_sell_failures[trade["id"]]
-                                logger.warning(
-                                    f"  #{trade['id']} {ticker} WEBULL SELL "
-                                    f"TRANSIENT FAILURE ({outcome.value}, "
-                                    f"#{transient_count}) — reopening for retry "
-                                    f"WITHOUT consuming abandonment budget. "
-                                    f"err={getattr(sell_result, 'error', None)}"
-                                )
-                                # Alert (but never force-close) after N transient failures.
-                                if transient_count in (5, 10, 20) and discord_client:
-                                    from options_owl.execution.alerts import alert_critical
-                                    await alert_critical(
-                                        discord_client, paper_trader.settings,
-                                        f"SELL TRANSIENT FAILURES: {ticker} ${trade['strike']} "
-                                        f"{trade['option_type'].upper()} x{trade['contracts']} "
-                                        f"— {transient_count} transient sell failures "
-                                        f"({outcome.value}). Position likely STILL OPEN on "
-                                        f"Webull. NOT force-closing. Investigate.",
-                                    )
-                                # Reverse close-effects + reopen, then retry next cycle.
-                                try:
-                                    await paper_trader.revert_close_effects(
-                                        close_result["strategy"],
-                                        close_result["proceeds"],
-                                        close_result["pnl"],
-                                    )
-                                except Exception as exc:
-                                    logger.error(
-                                        f"  #{trade['id']} {ticker} failed to revert "
-                                        f"close effects on transient reopen: {exc}"
-                                    )
-                                async with _connect_db(db_path) as conn:
-                                    await conn.execute(
-                                        "UPDATE paper_trades SET status = 'open', "
-                                        "exit_reason = NULL, closed_at = NULL, "
-                                        "exit_premium = NULL, pnl_dollars = NULL, "
-                                        "pnl_pct = NULL WHERE id = ?",
-                                        (trade["id"],),
-                                    )
-                                    await conn.commit()
-                                # Don't cleanup state — monitor will re-evaluate.
-                                continue
-
-                            # POSITION_NOT_FOUND path: the position is gone from
-                            # Webull. Reset the transient counter and proceed with
-                            # the (legitimate) abandonment budget below.
-                            _transient_sell_failures.pop(trade["id"], None)
-
-                            # After 7 confirmed POSITION_NOT_FOUND attempts, the
-                            # position is gone from Webull (already sold, expired,
-                            # or exercised). Force-close in DB to stop the loop.
-                            MAX_SELL_RETRIES = 7
-                            if retry_count >= MAX_SELL_RETRIES:
-                                logger.error(
-                                    f"  #{trade['id']} {ticker} WEBULL SELL ABANDONED "
-                                    f"after {retry_count} attempts — force-closing in DB. "
-                                    f"Position may have been sold/expired on Webull already."
-                                )
-                                # Mark as manual close — position was gone from Webull,
-                                # meaning user sold manually or it expired/exercised.
-                                # This separates manual exits from AI exits for backtesting.
-                                async with _connect_db(db_path) as conn:
-                                    await conn.execute(
-                                        "UPDATE paper_trades SET exit_source = 'manual' "
-                                        "WHERE id = ?",
-                                        (trade["id"],),
-                                    )
-                                    await conn.commit()
-                                await log_trade_event(
-                                    db_path, ticker, "manual_close_detected",
-                                    f"trade#{trade['id']} — Webull sell abandoned after "
-                                    f"{retry_count} attempts. Position not found on Webull. "
-                                    f"Likely sold manually by user. "
-                                    f"exit_premium in DB is approximate market price, "
-                                    f"not actual fill.",
-                                    trade_id=trade["id"],
-                                )
-                                if discord_client:
-                                    from options_owl.execution.alerts import alert_critical
-                                    await alert_critical(
-                                        discord_client, paper_trader.settings,
-                                        f"SELL ABANDONED: {ticker} ${trade['strike']} "
-                                        f"{trade['option_type'].upper()} x{trade['contracts']} "
-                                        f"— {retry_count} failed attempts. "
-                                        f"Force-closed in DB (exit_source=manual). "
-                                        f"CHECK WEBULL MANUALLY for actual fill price.",
-                                    )
-                                _cleanup_trade_state(trade["id"])
-                                continue
-
-                            logger.warning(
-                                f"  #{trade['id']} {ticker} WEBULL SELL FAILED "
-                                f"(attempt #{retry_count}) — "
-                                f"reopening trade for retry with adjusted price"
-                            )
-                            # Reverse the portfolio side-effects close_trade just
-                            # applied — otherwise proceeds get credited again next
-                            # cycle (up to 8× over MAX_SELL_RETRIES) and win/loss
-                            # double-counts, corrupting the balance that drives
-                            # sizing, the daily loss cap, and DCA spend caps.
-                            try:
-                                await paper_trader.revert_close_effects(
-                                    close_result["strategy"],
-                                    close_result["proceeds"],
-                                    close_result["pnl"],
-                                )
-                            except Exception as exc:
-                                logger.error(
-                                    f"  #{trade['id']} {ticker} failed to revert "
-                                    f"close effects on reopen: {exc}"
-                                )
-                            async with _connect_db(db_path) as conn:
-                                await conn.execute(
-                                    "UPDATE paper_trades SET status = 'open', "
-                                    "exit_reason = NULL, closed_at = NULL, "
-                                    "exit_premium = NULL, pnl_dollars = NULL, "
-                                    "pnl_pct = NULL WHERE id = ?",
-                                    (trade["id"],),
-                                )
-                                await conn.commit()
-
-                            # Alert on persistent sell failures
-                            if retry_count >= 3 and discord_client:
-                                from options_owl.execution.alerts import alert_critical
-                                await alert_critical(
-                                    discord_client, paper_trader.settings,
-                                    f"SELL STUCK: {ticker} ${trade['strike']} "
-                                    f"{trade['option_type'].upper()} x{trade['contracts']} "
-                                    f"— {retry_count} failed sell attempts. "
-                                    f"Position still open on Webull, chasing bid.",
-                                )
-                            # Don't cleanup state — monitor will re-evaluate
+                        # T5, stop, trailing_stop, phase_trail, theta_bleed,
+                        # time_decay_zone, time, EOD, theta → guarded full close.
+                        if not await _finalize_full_close(
+                            paper_trader, trade, current_price, exit_premium,
+                            reason, db_path, discord_client,
+                        ):
                             continue
-
-                        _cleanup_trade_state(trade["id"])
 
                 except Exception as exc:
                     logger.error(f"  #{trade['id']} {ticker} EXIT FAILED: {exc}")

@@ -3497,6 +3497,74 @@ class PaperTrader:
             )
             await self._commit_with_retry(conn, f"revert close effects ({strategy})")
 
+    async def revert_partial_close(self, child_trade_id: int) -> None:
+        """Undo a partial_close_trade() when its live Webull sell failed.
+
+        A partial close records a closed CHILD row for the scaled-out contracts,
+        reduces the parent's contract count, and credits proceeds. If the Webull
+        sell of that partial then fails transiently, the scaled-out fraction would
+        be orphaned (DB thinks it sold; Webull still holds it). This restores the
+        parent contracts, reverses the portfolio side-effects, and deletes the
+        child row so the monitor re-attempts the whole position next cycle.
+
+        Self-contained: reads everything it needs from the child row (contracts,
+        premium, exit fill, P&L, strategy, parent id), so callers only pass the id.
+        """
+        async with _connect_db(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            cur = await conn.execute(
+                "SELECT contracts, premium_per_contract, exit_premium, pnl_dollars, "
+                "strategy, parent_trade_id FROM paper_trades WHERE id = ?",
+                (child_trade_id,),
+            )
+            child = await cur.fetchone()
+            if not child or child["parent_trade_id"] is None:
+                logger.warning(
+                    f"revert_partial_close: child #{child_trade_id} missing or has no "
+                    f"parent — nothing to revert"
+                )
+                return
+            child = dict(child)
+            parent_id = child["parent_trade_id"]
+            qty = child["contracts"] or 0
+            cost_per_contract = (child["premium_per_contract"] or 0) * 100
+            # Proceeds credited by the partial = the actual exit fill × qty × 100.
+            proceeds = (child["exit_premium"] or 0) * qty * 100
+            pnl = child["pnl_dollars"] or 0
+            strategy = child["strategy"] or "B"
+
+            # 1) Restore the parent's contracts + total_cost.
+            prow = await (await conn.execute(
+                "SELECT contracts, total_cost FROM paper_trades WHERE id = ?",
+                (parent_id,),
+            )).fetchone()
+            if prow:
+                await conn.execute(
+                    "UPDATE paper_trades SET contracts = ?, total_cost = ? WHERE id = ?",
+                    (prow["contracts"] + qty,
+                     (prow["total_cost"] or 0) + qty * cost_per_contract,
+                     parent_id),
+                )
+
+            # 2) Reverse the portfolio side-effects (proceeds + win/loss + daily_pnl).
+            win_col = "wins" if pnl >= 0 else "losses"
+            await conn.execute(
+                f"UPDATE paper_portfolio SET current_balance = current_balance - ?, "
+                f"daily_pnl = daily_pnl - ?, {win_col} = MAX(0, {win_col} - 1) "
+                f"WHERE strategy = ?",
+                (proceeds, pnl, strategy),
+            )
+
+            # 3) Delete the child row — the partial never really happened.
+            await conn.execute("DELETE FROM paper_trades WHERE id = ?", (child_trade_id,))
+            await self._commit_with_retry(
+                conn, f"revert partial close (child #{child_trade_id} → parent #{parent_id})"
+            )
+        logger.warning(
+            f"REVERTED PARTIAL CLOSE: child #{child_trade_id} → restored {qty} contracts "
+            f"to parent #{parent_id} (Webull sell failed — avoiding orphaned fraction)"
+        )
+
     # ------------------------------------------------------------------
     # PostgreSQL dual-write helpers (Phase 1 — fire-and-forget)
     # ------------------------------------------------------------------

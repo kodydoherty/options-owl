@@ -252,7 +252,8 @@ class TestSourceCodeSafety:
         discord_client, paper_trader, _cleanup_trade_state."""
         from options_owl.execution import position_monitor
 
-        source = inspect.getsource(position_monitor.run_position_monitor)
+        # The guarded close path (incl. sell-abandoned) lives in _finalize_full_close.
+        source = inspect.getsource(position_monitor._finalize_full_close)
 
         # The sell-abandoned block should reference these existing variables
         # and NOT introduce new variables that could be uninitialized
@@ -276,7 +277,7 @@ class TestSourceCodeSafety:
         UnboundLocalError that broke all sells last time."""
         from options_owl.execution import position_monitor
 
-        source = inspect.getsource(position_monitor.run_position_monitor)
+        source = inspect.getsource(position_monitor._finalize_full_close)
 
         idx_abandoned = source.find("WEBULL SELL ABANDONED")
         idx_cleanup = source.find("_cleanup_trade_state(trade[\"id\"])", idx_abandoned)
