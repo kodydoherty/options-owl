@@ -66,6 +66,54 @@ async def get_trade_events(
         return [dict(r) for r in rows]
 
 
+async def get_recent_events(
+    pool: asyncpg.Pool, agent_id: str, limit: int = 100,
+    event_type: str | None = None,
+) -> list[dict]:
+    """This agent's most recent trade-lifecycle events (all trades), newest first.
+
+    Joined to ``trades`` for the ticker so the feed is readable. Scoped to agent_id — a
+    user only ever sees their own owlet's events.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT e.trade_id, e.event_type, e.details, e.created_at,
+                      t.ticker, t.direction, t.status
+               FROM trade_events e
+               LEFT JOIN trades t
+                 ON t.agent_id = e.agent_id AND t.sqlite_id = e.trade_id
+               WHERE e.agent_id = $1
+                 AND ($3::text IS NULL OR e.event_type = $3)
+               ORDER BY e.created_at DESC
+               LIMIT $2""",
+            agent_id, limit, event_type,
+        )
+        return [dict(r) for r in rows]
+
+
+async def get_recent_signals(
+    pool: asyncpg.Pool, agent_id: str, limit: int = 100
+) -> list[dict]:
+    """Recent ML signals from the shared fleet-wide pool, newest first.
+
+    ml_signals is NOT per-account (the harvester emits, every bot consumes the same market
+    observations) so there's nothing account-private to leak. ``consumed_by_me`` flags the ones
+    this agent actually picked up, for relevance.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT ticker, direction, score, ml_confidence, ml_threshold,
+                      ml_model_source, ml_runner_score, premium, strike, expiry_date,
+                      emitted_at, status,
+                      ($1 = ANY(consumed_by)) AS consumed_by_me
+               FROM ml_signals
+               ORDER BY emitted_at DESC
+               LIMIT $2""",
+            agent_id, limit,
+        )
+        return [dict(r) for r in rows]
+
+
 # ---------------------------------------------------------------------------
 # Portfolio / Agent State
 # ---------------------------------------------------------------------------

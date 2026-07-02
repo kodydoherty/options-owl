@@ -243,3 +243,84 @@ class TestTradeDetailRender:
         html = _render_detail(trade, ticks=[], events=[])  # must not raise
         assert "SPY" in html
         assert "LIVE" in html
+
+
+# ---------------------------------------------------------------------------
+# Item 2: event-stream + signals feeds
+# ---------------------------------------------------------------------------
+
+
+def _render_template(name, **ctx):
+    from pathlib import Path
+
+    from jinja2 import Environment, FileSystemLoader
+
+    from options_owl.dashboard import app as dash_app
+
+    base = Path(dash_app.__file__).parent / "templates"
+    env = Environment(loader=FileSystemLoader(str(base)), autoescape=True)
+    env.filters["money"] = dash_app._fmt_money
+    env.filters["pct"] = dash_app._fmt_pct
+    env.filters["ftime"] = dash_app._fmt_time
+    env.filters["fdate"] = dash_app._fmt_date
+    env.filters["pnl_class"] = dash_app._pnl_class
+    env.filters["etone"] = dash_app._event_tone
+    ctx.setdefault("user", {"sub": "kody", "agent_id": "owlet_kody"})
+    return env.get_template(name).render(**ctx)
+
+
+class TestActivityFeeds:
+    def test_routes_registered(self):
+        from options_owl.dashboard.app import app
+        routes = {r.path for r in app.routes if hasattr(r, "path")}
+        assert "/events" in routes
+        assert "/signals" in routes
+
+    def test_db_functions_exist_and_scope(self):
+        import inspect as _i
+
+        from options_owl.dashboard import db
+        assert callable(db.get_recent_events)
+        assert callable(db.get_recent_signals)
+        # events feed MUST scope to agent_id (isolation); signals pool is shared but the
+        # consumed-by flag is per-agent.
+        assert "e.agent_id = $1" in _i.getsource(db.get_recent_events)
+        assert "ANY(consumed_by)" in _i.getsource(db.get_recent_signals)
+
+    def test_events_render_with_tone(self):
+        events = [
+            {"trade_id": 12, "event_type": "webull_filled", "ticker": "MU",
+             "direction": "put", "status": "open", "created_at": datetime(2026, 7, 2, 10, 1),
+             "details": {"order_id": "WB12"}},
+            {"trade_id": 12, "event_type": "pipeline_rejected", "ticker": None,
+             "direction": None, "status": None, "created_at": datetime(2026, 7, 2, 10, 2),
+             "details": {"gate": "spread"}},
+        ]
+        html = _render_template("events.html", events=events, limit=150, event_type="")
+        assert "webull_filled" in html
+        assert "pipeline_rejected" in html
+        assert "bg-green-500" in html   # good tone dot
+        assert "bg-red-500" in html     # bad tone dot
+        assert "/trade/12" in html      # linked when ticker present
+
+    def test_events_empty(self):
+        html = _render_template("events.html", events=[], limit=150, event_type="foo")
+        assert "No events" in html
+
+    def test_signals_render_highlights_consumed(self):
+        signals = [
+            {"ticker": "META", "direction": "call", "score": 92, "ml_confidence": 0.81,
+             "ml_threshold": 0.62, "ml_model_source": "pattern_v1", "ml_runner_score": 0.7,
+             "premium": 3.2, "strike": 700.0, "expiry_date": "2026-07-02",
+             "emitted_at": datetime(2026, 7, 2, 10, 0), "status": "consumed",
+             "consumed_by_me": True},
+            {"ticker": "SPY", "direction": "put", "score": 80, "ml_confidence": None,
+             "ml_threshold": None, "ml_model_source": None, "ml_runner_score": None,
+             "premium": None, "strike": None, "expiry_date": None,
+             "emitted_at": datetime(2026, 7, 2, 10, 5), "status": "pending",
+             "consumed_by_me": False},
+        ]
+        html = _render_template("signals.html", signals=signals, limit=150)
+        assert "META" in html and "SPY" in html
+        assert "bg-indigo-950/40" in html   # consumed row highlight
+        assert "—" in html                   # None fields rendered as dash, no crash

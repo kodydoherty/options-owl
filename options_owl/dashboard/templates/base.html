@@ -40,6 +40,9 @@
         <div class="flex items-center gap-3">
             <span id="ws-status" class="w-2 h-2 rounded-full bg-gray-500" title="WebSocket disconnected"></span>
             <a href="/analytics" class="text-sm text-gray-400 hover:text-white">Analytics</a>
+            <a href="/events" class="text-sm text-gray-400 hover:text-white">Events</a>
+            <a href="/signals" class="text-sm text-gray-400 hover:text-white">Signals</a>
+            {% if user.is_admin %}<a href="/fleet" class="text-sm text-amber-400 hover:text-amber-300">Fleet</a>{% endif %}
             <a href="/settings" class="text-sm text-gray-400 hover:text-white">Settings</a>
             <a href="/logout" class="text-sm text-gray-400 hover:text-white">Logout</a>
         </div>

@@ -46,6 +46,8 @@ from options_owl.dashboard.db import (
     get_pnl_curve,
     get_portfolio_stats,
     get_premium_ticks,
+    get_recent_events,
+    get_recent_signals,
     get_ticker_performance,
     get_trade_by_id,
     get_trade_duration_stats,
@@ -134,11 +136,18 @@ def _pnl_class(value) -> str:
     return "text-green-400" if float(value) >= 0 else "text-red-400"
 
 
+def _event_tone(event_type) -> str:
+    """good/bad/warn/neutral bucket for an event type — drives feed colour coding."""
+    from options_owl.dashboard.analytics_util import _tone_for
+    return _tone_for(str(event_type or ""))
+
+
 templates.env.filters["money"] = _fmt_money
 templates.env.filters["pct"] = _fmt_pct
 templates.env.filters["ftime"] = _fmt_time
 templates.env.filters["fdate"] = _fmt_date
 templates.env.filters["pnl_class"] = _pnl_class
+templates.env.filters["etone"] = _event_tone
 
 
 def _render(name: str, context: dict, status_code: int = 200):
@@ -403,6 +412,36 @@ async def trade_detail(request: Request, trade_id: int):
         "ticks": ticks,
         "tick_stats": tick_stats,
         "timeline": timeline,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Activity feeds — event stream + ML signals
+# ---------------------------------------------------------------------------
+
+
+@app.get("/events", response_class=HTMLResponse)
+async def events_page(
+    request: Request,
+    limit: int = Query(default=150, ge=1, le=500),
+    event_type: str = Query(default=""),
+):
+    user = request.state.user
+    events = await get_recent_events(
+        _pool, user["agent_id"], limit=limit, event_type=event_type or None
+    )
+    return _render("events.html", {
+        "request": request, "user": user, "events": events,
+        "limit": limit, "event_type": event_type,
+    })
+
+
+@app.get("/signals", response_class=HTMLResponse)
+async def signals_page(request: Request, limit: int = Query(default=150, ge=1, le=500)):
+    user = request.state.user
+    signals = await get_recent_signals(_pool, user["agent_id"], limit=limit)
+    return _render("signals.html", {
+        "request": request, "user": user, "signals": signals, "limit": limit,
     })
 
 

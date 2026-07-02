@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}ML Signals — OptionsOwl{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+    <div>
+        <h1 class="text-xl font-bold text-white">ML Signals <span class="text-gray-500 text-sm">({{ signals|length }})</span></h1>
+        <p class="text-xs text-gray-500">Fleet-wide signal pool — the ML brain's observations. Highlighted rows were consumed by your owlet.</p>
+    </div>
+    <form method="get" class="flex items-center gap-2 text-sm">
+        <select name="limit" class="bg-owl-bg border border-owl-border rounded px-2 py-1 text-gray-200">
+            {% for n in [50, 150, 300, 500] %}
+            <option value="{{ n }}" {% if limit == n %}selected{% endif %}>{{ n }}</option>
+            {% endfor %}
+        </select>
+        <button class="bg-owl-accent hover:bg-indigo-500 text-white rounded px-3 py-1">Apply</button>
+    </form>
+</div>
+
+{% if signals %}
+<div class="bg-owl-card border border-owl-border rounded-lg overflow-x-auto">
+    <table class="w-full text-sm">
+        <thead class="text-xs text-gray-500 uppercase border-b border-owl-border">
+            <tr>
+                <th class="text-left px-3 py-2">Time</th>
+                <th class="text-left px-3 py-2">Ticker</th>
+                <th class="text-left px-3 py-2">Dir</th>
+                <th class="text-right px-3 py-2">Score</th>
+                <th class="text-right px-3 py-2">ML Conf</th>
+                <th class="text-right px-3 py-2">Runner</th>
+                <th class="text-right px-3 py-2">Strike</th>
+                <th class="text-right px-3 py-2">Prem</th>
+                <th class="text-left px-3 py-2">Model</th>
+                <th class="text-left px-3 py-2">Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in signals %}
+            <tr class="border-b border-owl-border/50 {% if s.consumed_by_me %}bg-indigo-950/40{% endif %}">
+                <td class="px-3 py-1.5 text-gray-400 whitespace-nowrap">{{ s.emitted_at | fdate }}</td>
+                <td class="px-3 py-1.5 text-white font-medium">
+                    {% if s.consumed_by_me %}<span class="text-indigo-400" title="consumed by your owlet">●</span> {% endif %}{{ s.ticker }}
+                </td>
+                <td class="px-3 py-1.5">
+                    <span class="{% if s.direction|lower in ('call','bullish','long') %}text-green-400{% else %}text-red-400{% endif %}">{{ s.direction|upper }}</span>
+                </td>
+                <td class="px-3 py-1.5 text-right text-gray-200">{{ s.score }}</td>
+                <td class="px-3 py-1.5 text-right text-gray-300">{{ "%.2f"|format(s.ml_confidence) if s.ml_confidence is not none else "—" }}</td>
+                <td class="px-3 py-1.5 text-right text-gray-400">{{ "%.2f"|format(s.ml_runner_score) if s.ml_runner_score is not none else "—" }}</td>
+                <td class="px-3 py-1.5 text-right text-gray-300">{{ "%.0f"|format(s.strike) if s.strike is not none else "—" }}</td>
+                <td class="px-3 py-1.5 text-right text-gray-300">{{ "$%.2f"|format(s.premium) if s.premium is not none else "—" }}</td>
+                <td class="px-3 py-1.5 text-gray-500 text-xs">{{ s.ml_model_source or "—" }}</td>
+                <td class="px-3 py-1.5">
+                    <span class="text-xs px-1.5 py-0.5 rounded
+                        {% if s.status == 'consumed' %}bg-green-900 text-green-300
+                        {% elif s.status == 'expired' %}bg-gray-700 text-gray-400
+                        {% else %}bg-blue-900 text-blue-300{% endif %}">{{ s.status }}</span>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="bg-owl-card border border-owl-border rounded-lg p-8 text-center text-gray-500">
+    No signals recorded yet.
+</div>
+{% endif %}
+{% endblock %}

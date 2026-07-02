@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Event Stream — OptionsOwl{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+    <h1 class="text-xl font-bold text-white">Event Stream <span class="text-gray-500 text-sm">({{ events|length }})</span></h1>
+    <form method="get" class="flex items-center gap-2 text-sm">
+        <input type="text" name="event_type" value="{{ event_type }}" placeholder="filter event_type…"
+               class="bg-owl-bg border border-owl-border rounded px-2 py-1 text-gray-200 placeholder-gray-600">
+        <select name="limit" class="bg-owl-bg border border-owl-border rounded px-2 py-1 text-gray-200">
+            {% for n in [50, 150, 300, 500] %}
+            <option value="{{ n }}" {% if limit == n %}selected{% endif %}>{{ n }}</option>
+            {% endfor %}
+        </select>
+        <button class="bg-owl-accent hover:bg-indigo-500 text-white rounded px-3 py-1">Apply</button>
+    </form>
+</div>
+
+{% if events %}
+<div class="space-y-1.5">
+    {% for ev in events %}
+    {% set tone = ev.event_type | etone %}
+    <div class="bg-owl-card border border-owl-border rounded-lg px-3 py-2 flex items-start gap-3">
+        <span class="mt-1 w-2 h-2 rounded-full flex-shrink-0
+            {% if tone == 'good' %}bg-green-500{% elif tone == 'bad' %}bg-red-500{% elif tone == 'warn' %}bg-amber-500{% else %}bg-gray-500{% endif %}"></span>
+        <div class="flex-1 min-w-0">
+            <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-sm font-medium
+                        {% if tone == 'good' %}text-green-400{% elif tone == 'bad' %}text-red-400{% elif tone == 'warn' %}text-amber-400{% else %}text-gray-300{% endif %}">
+                        {{ ev.event_type }}
+                    </span>
+                    {% if ev.ticker %}
+                    <a href="/trade/{{ ev.trade_id }}" class="text-xs text-indigo-300 hover:text-indigo-200">
+                        {{ ev.ticker }}{% if ev.direction %} {{ ev.direction|upper }}{% endif %} #{{ ev.trade_id }}
+                    </a>
+                    {% elif ev.trade_id %}
+                    <span class="text-xs text-gray-500">#{{ ev.trade_id }}</span>
+                    {% endif %}
+                </div>
+                <span class="text-xs text-gray-500 flex-shrink-0">{{ ev.created_at | fdate }}</span>
+            </div>
+            {% if ev.details %}
+            <pre class="text-xs text-gray-500 whitespace-pre-wrap break-all mt-1 max-h-32 overflow-y-auto scrollbar-thin">{{ ev.details | tojson(indent=2) }}</pre>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="bg-owl-card border border-owl-border rounded-lg p-8 text-center text-gray-500">
+    No events{% if event_type %} matching "{{ event_type }}"{% endif %}.
+</div>
+{% endif %}
+{% endblock %}
