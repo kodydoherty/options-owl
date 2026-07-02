@@ -1803,7 +1803,7 @@ async def run_position_monitor(
                     last_write = _premium_tick_last_write.get(trade_id, 0.0)
                     if now_ts - last_write >= _PREMIUM_TICK_INTERVAL:
                         _premium_tick_last_write[trade_id] = now_ts
-                        _premium_tick_buffer.append({
+                        _tick = {
                             "agent_id": getattr(paper_trader.settings, "AGENT_ID", "unknown"),
                             "trade_id": trade_id,
                             "ticker": ticker,
@@ -1812,7 +1812,21 @@ async def run_position_monitor(
                             "ask": exit_ask,
                             "underlying_price": current_price,
                             "source": _prem_source,
-                        })
+                        }
+                        # B1: attach the exit engine's last-cycle telemetry (why it held)
+                        # for the dashboard timeline. Read-only, wrapped — a miss just leaves
+                        # the fields NULL; it can NEVER affect this loop or the exit path.
+                        try:
+                            from options_owl.risk.exit_v5 import monitor_bridge as _mb
+                            _snap = _mb.get_fsm_snapshot(trade_id)
+                            if _snap:
+                                _tick["fsm_state"] = _snap.get("fsm_state")
+                                _tick["gain_pct"] = _snap.get("gain_pct")
+                                _tick["peak_gain_pct"] = _snap.get("peak_gain_pct")
+                                _tick["active_gate"] = _snap.get("active_gate")
+                        except Exception:
+                            pass
+                        _premium_tick_buffer.append(_tick)
 
                 # Track underlying price for volume-peak + underlying trail (v2.1)
                 if current_price and current_price > 0:

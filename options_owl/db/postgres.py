@@ -311,6 +311,13 @@ ALTER TABLE option_ticks ADD COLUMN IF NOT EXISTS ask_size INTEGER;
 -- second-order greeks for dealer-positioning (GEX) features. Old rows NULL.
 ALTER TABLE option_ticks ADD COLUMN IF NOT EXISTS charm REAL;
 ALTER TABLE option_ticks ADD COLUMN IF NOT EXISTS vanna REAL;
+-- B1 (2026-07-02): trade_premium_ticks gained the per-cycle FSM snapshot (what the exit
+-- engine saw when this tick was captured) so the dashboard timeline can show WHY a trade
+-- held/exited. Pure telemetry, all nullable — old rows stay NULL, no trading-path dependency.
+ALTER TABLE trade_premium_ticks ADD COLUMN IF NOT EXISTS fsm_state TEXT;
+ALTER TABLE trade_premium_ticks ADD COLUMN IF NOT EXISTS gain_pct REAL;
+ALTER TABLE trade_premium_ticks ADD COLUMN IF NOT EXISTS peak_gain_pct REAL;
+ALTER TABLE trade_premium_ticks ADD COLUMN IF NOT EXISTS active_gate TEXT;
 """
 
 
@@ -984,13 +991,16 @@ async def write_premium_ticks_batch(ticks: list[dict]) -> None:
                 """
                 INSERT INTO trade_premium_ticks (
                     agent_id, trade_id, ticker, premium,
-                    bid, ask, underlying_price, source
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                    bid, ask, underlying_price, source,
+                    fsm_state, gain_pct, peak_gain_pct, active_gate
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
                 """,
                 [
                     (t["agent_id"], t["trade_id"], t["ticker"], t["premium"],
                      t.get("bid"), t.get("ask"), t.get("underlying_price"),
-                     t["source"])
+                     t["source"],
+                     t.get("fsm_state"), t.get("gain_pct"),
+                     t.get("peak_gain_pct"), t.get("active_gate"))
                     for t in ticks
                 ],
             )

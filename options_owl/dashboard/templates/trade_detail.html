@@ -192,8 +192,13 @@
                     callbacks: {
                         afterBody: (items) => {
                             const i = items[0].dataIndex;
-                            return 'gain: ' + gain(premiums[i]) + '  |  spread: ' +
-                                ((asks[i]!=null&&bids[i]!=null) ? '$'+(asks[i]-bids[i]).toFixed(2) : '—');
+                            const lines = ['gain: ' + gain(premiums[i]) + '  |  spread: ' +
+                                ((asks[i]!=null&&bids[i]!=null) ? '$'+(asks[i]-bids[i]).toFixed(2) : '—')];
+                            // B1: FSM telemetry (why the engine held this tick), when captured
+                            const t = ticks[i] || {};
+                            if (t.fsm_state) lines.push('fsm: ' + t.fsm_state +
+                                (t.active_gate && t.active_gate !== 'hold' ? ' → ' + t.active_gate : ''));
+                            return lines;
                         }
                     }
                 }

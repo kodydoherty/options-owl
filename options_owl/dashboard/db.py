@@ -368,7 +368,8 @@ async def get_premium_ticks(
 ) -> list[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT captured_at, premium, bid, ask, underlying_price
+            """SELECT captured_at, premium, bid, ask, underlying_price,
+                      fsm_state, gain_pct, peak_gain_pct, active_gate
                FROM trade_premium_ticks
                WHERE agent_id = $1 AND trade_id = $2
                ORDER BY captured_at ASC""",

@@ -408,6 +408,23 @@ class V5MonitorBridge:
                 f"peak=${state.peak_premium:.2f}"
             )
 
+        # B1 (2026-07-02): stash a cheap per-cycle telemetry snapshot for the dashboard
+        # timeline. In-memory dict write only — NO I/O, NEVER awaited, and wrapped so a bug
+        # here can NEVER perturb the exit decision (the money path continues below untouched).
+        try:
+            _LAST_FSM_SNAPSHOT[state.trade_id] = {
+                "fsm_state": state.state.value,
+                "gain_pct": round(gain_pct, 2),
+                "peak_gain_pct": (
+                    round((state.peak_premium - state.entry_premium)
+                          / state.entry_premium * 100, 2)
+                    if state.entry_premium > 0 else None
+                ),
+                "active_gate": (action.reason.value if action.should_exit else "hold"),
+            }
+        except Exception:  # pragma: no cover - telemetry must never break the loop
+            pass
+
         if not action.should_exit:
             return None, ""
 
@@ -425,8 +442,23 @@ class V5MonitorBridge:
     def cleanup_trade(self, trade_id: int) -> None:
         """Remove state for a closed trade."""
         removed = self._states.pop(trade_id, None)
+        _LAST_FSM_SNAPSHOT.pop(trade_id, None)  # B1: bound telemetry memory with the trade
         if removed:
             logger.debug(f"EXIT_FSM: Cleaned up state for trade #{trade_id}")
+
+
+# ---------------------------------------------------------------------------
+# B1 telemetry — last-cycle FSM snapshot per trade (dashboard timeline capture)
+# ---------------------------------------------------------------------------
+# Written every evaluate() (see check()); read by position_monitor when it buffers a premium
+# tick. Pure telemetry — this is NEVER read back into an exit decision, and cleanup_trade pops
+# it so it can't leak memory. A missing entry (get returns None) is normal on the first cycle.
+_LAST_FSM_SNAPSHOT: dict[int, dict] = {}
+
+
+def get_fsm_snapshot(trade_id: int) -> dict | None:
+    """Latest per-cycle FSM telemetry for a trade, or None if not yet evaluated."""
+    return _LAST_FSM_SNAPSHOT.get(trade_id)
 
 
 # Backward compat alias
