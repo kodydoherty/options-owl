@@ -72,11 +72,15 @@
 
   <div class="note" style="border-color:rgba(57,217,138,.4);background:rgba(57,217,138,.08)">
     <strong>Status update (2026-07-02):</strong> The low-risk batch — <strong>B1, B4, B5, L1, L2, L3, L4, L5, L6</strong> —
-    is <strong>FIXED, tested, and DEPLOYED</strong> to the droplet via <code>rebuild.sh</code> (full suite 2735 passed;
-    <code>e2e_flow_test.py</code> PASS on all live bots; 0 post-restart errors). Remaining open items: B3, B6, B7, P1–P3
-    (behavior changes — backtest-then-ship) and R1–R3 (R1 fleet-stagger still off with 4 live bots; R2 resolved — vinny
-    authed on margin). A pre-existing follow-up surfaced during B1: V6 DCA blends the add at paper price even when the
-    Webull buy doesn't confirm — worth a conditional-blend guard (separate change).
+    plus <strong>B3</strong> are <strong>FIXED, tested, and DEPLOYED</strong> to the droplet via <code>rebuild.sh</code>
+    (full suite 2737 passed; <code>e2e_flow_test.py</code> PASS on all live bots; 0 post-restart errors). <strong>B3
+    (commit <code>ddd817b</code>)</strong> was found firing live — the exit engine ran the trail/profit-lock off a phantom
+    entry basis because <code>_reconcile_entry_to_fill</code> bailed on the always-true <code>dca_total_contracts</code>
+    guard (it's the initial contract count, not a DCA marker). Fixed to anchor to the real Webull fill + gate the
+    live-premium fallback so it can never override an authoritative basis; verified live (adam MU #399: phantom $3.82 →
+    stopgap $9.78 → real fill $11.54). Remaining open: B6, B7, P1–P3 (behavior changes — backtest-then-ship), R1
+    (fleet-stagger off with 4 live bots) and the fast-exit-chase (in progress). A pre-existing follow-up surfaced during
+    B1: V6 DCA blends the add at paper price even when the Webull buy doesn't confirm — worth a conditional-blend guard.
   </div>
 
   <div class="note">
@@ -104,7 +108,7 @@
     <tbody>
       <tr><td><a href="#b1">B1</a></td><td>V6 DCA Webull calls not wrapped in <code>asyncio.wait_for</code> → monitor-loop freeze <em>(droplet-confirmed; DCA fires in prod)</em></td><td><span class="pill t-bug">bug</span></td><td><span class="pill b-crit">critical</span></td><td>position_monitor.py:506,518</td><td>High</td></tr>
       <tr style="opacity:.55"><td><a href="#b2">B2</a></td><td><s>V6 DCA never sets <code>dca_total_contracts</code> → wrong P&amp;L</s> — <strong>REFUTED on droplet</strong> (field set at open; reconcile uses blended <code>premium_per_contract</code>)</td><td><span class="pill t-doc">refuted</span></td><td><span class="pill b-low">n/a</span></td><td>paper_trader.py:1607,2291</td><td>—</td></tr>
-      <tr><td><a href="#b3">B3</a></td><td>Entry re-anchor backstop can clobber a <em>correct</em> fill basis on a real ±70% 0DTE move</td><td><span class="pill t-bug">bug</span></td><td><span class="pill b-high">high</span></td><td>monitor_bridge.py:299–318</td><td>High/Med</td></tr>
+      <tr><td><a href="#b3">B3</a></td><td><strong>✅ FIXED+DEPLOYED (ddd817b)</strong> — Exit engine ran off a phantom entry basis (reconcile disabled by always-true <code>dca_total_contracts</code> guard); re-anchor could clobber a correct fill. Now anchors to real Webull fill + fallback gated.</td><td><span class="pill t-bug">bug</span></td><td><span class="pill b-high">high</span></td><td>monitor_bridge.py + fsm.py</td><td>Fixed</td></tr>
       <tr><td><a href="#b4">B4</a></td><td><code>_reconnect()</code> leaves stale <code>_data_client</code> → live-quote entry chase silently degraded</td><td><span class="pill t-bug">bug</span></td><td><span class="pill b-med">medium</span></td><td>webull_executor.py:112–117</td><td>High</td></tr>
       <tr><td><a href="#b5">B5</a></td><td><code>_fetch_ask</code> freshness guard bypassed when snapshot timestamp is missing (<code>ts&lt;=0</code>)</td><td><span class="pill t-bug">bug</span></td><td><span class="pill b-med">medium</span></td><td>webull_executor.py:1124</td><td>High</td></tr>
       <tr><td><a href="#b6">B6</a></td><td>Daily loss-cap uses raw <code>SUM(pnl_dollars)</code> → double-counts scaleout children</td><td><span class="pill t-bug">bug</span></td><td><span class="pill b-med">medium</span></td><td>position_monitor.py:1673</td><td>Med</td></tr>
@@ -144,8 +148,9 @@
     <p class="conf">Status: <strong>Refuted during droplet verification.</strong> Retained here for the audit trail.</p>
   </div>
 
-  <div class="card high" id="b3">
-    <div class="hdr"><span class="id">B3</span><span class="title">Entry re-anchor backstop can corrupt a correct fill basis on a real fast 0DTE move</span><span class="pill t-bug">bug</span><span class="pill b-high">high</span></div>
+  <div class="card high" id="b3" style="border-left-color:var(--profit)">
+    <div class="hdr"><span class="id">B3</span><span class="title">Entry re-anchor backstop can corrupt a correct fill basis on a real fast 0DTE move</span><span class="pill t-profit">✅ fixed + deployed</span></div>
+    <p style="background:rgba(57,217,138,.08);border:1px solid rgba(57,217,138,.3);border-radius:8px;padding:10px 13px"><span class="lab">Resolution (2026-07-02, commit ddd817b).</span> Found firing <em>live</em> — worse than the spec first described. The real culprit: <code>_reconcile_entry_to_fill</code> (which anchors the FSM to the real Webull fill) bailed on <code>dca_total_contracts &gt; 0</code>, which is true on <strong>every</strong> trade (it's the initial contract count, not a DCA marker), so the reconcile <strong>never ran</strong> — the FSM stayed on a phantom basis. Fixed by (1) detecting a real DCA the way <code>_build_state</code> does (add-marker or blended-vs-fill divergence), so reconcile anchors normal trades to the actual fill, and (2) a new <code>entry_from_real_fill</code> flag so the live-premium fallback can never override an authoritative basis. Verified live on adam MU #399 (phantom $3.82 → stopgap $9.78 → real fill $11.54). Full suite 2737 passed.</p>
     <div class="loc">options_owl/risk/exit_v5/monitor_bridge.py:299–318 (evaluate-time fallback)</div>
     <p><span class="lab">What’s wrong.</span> The one-shot fallback re-anchors <code>entry_premium = exit_premium</code> whenever <code>|(exit−entry)/entry| &ge; 0.70</code> within 60s of entry. It runs <em>independently</em> of the primary fill-reconcile (<code>_reconcile_entry_to_fill</code>), and its guard cannot distinguish a <em>phantom pre-fill quote</em> from a <em>real ±70% 0DTE move</em>. The comment’s claim that “&gt;70% never clobbers a real gamma move” is false for 0DTE.</p>
     <p><span class="lab">Failure scenario (loser hidden).</span> Live fill correctly recorded at $1.00; underlying gaps against; first monitored cycle sees $0.30 (−70%). Backstop re-anchors entry → $0.30, but <code>peak_premium</code> stays $1.00 → computed <code>peak_gain = +233%</code>, <code>gain = 0%</code>. The real −70% loss is hidden and the profit-lock/hard-stop math is corrupted for the rest of the trade.</p>
