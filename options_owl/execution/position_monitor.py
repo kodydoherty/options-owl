@@ -75,6 +75,9 @@ _thesis_cut_states: dict[int, dict] = {}
 # Track last date we synced portfolio from Webull (once per trading day)
 _last_portfolio_sync_date: str = ""
 
+# A1c: monotonic timestamp of the last Webull P&L reconcile (throttle to ~every 20 min)
+_last_pnl_reconcile_ts: float = 0.0
+
 
 def _cleanup_trade_state(trade_id: int) -> None:
     """Clean up all per-trade state dicts when a trade is fully closed."""
@@ -1409,6 +1412,26 @@ async def run_position_monitor(
                     logger.debug(
                         f"Skipping portfolio sync — {len(open_trades)} open trade(s)"
                     )
+
+            # A1c: periodically penny-match closed-trade P&L to real Webull fills (for closes
+            # whose fill lookup 429'd/timed out). ONE order-history call; corrects only P&L
+            # display columns. Fully isolated from the sell path — wrapped + swallowed so a
+            # failure can never block a monitor cycle.
+            if getattr(paper_trader.settings, "ENABLE_WEBULL_PNL_RECONCILE", False):
+                import time as _time
+                global _last_pnl_reconcile_ts
+                if _time.monotonic() - _last_pnl_reconcile_ts >= 1200:  # ~20 min
+                    try:
+                        n = await asyncio.wait_for(
+                            paper_trader.reconcile_closed_pnl_from_webull(), timeout=25,
+                        )
+                        if n:
+                            logger.info(f"A1c P&L reconcile: corrected {n} closed trade(s)")
+                    except asyncio.TimeoutError:
+                        logger.warning("A1c P&L reconcile timed out (25s) — retry next window")
+                    except Exception as exc:
+                        logger.warning(f"A1c P&L reconcile error (non-fatal): {exc}")
+                    _last_pnl_reconcile_ts = _time.monotonic()
 
             trades = await get_open_trades(db_path)
             if not trades:

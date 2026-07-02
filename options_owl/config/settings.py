@@ -757,6 +757,11 @@ class Settings(BaseSettings):
     # Daily portfolio sync from Webull (auto-update PORTFOLIO_SIZE from live balance)
     ENABLE_PORTFOLIO_SYNC: bool = True
 
+    # A1c: periodically reconcile closed-trade P&L against real Webull fills (for trades whose
+    # exit fill wasn't captured at close time). Read-only vs Webull + updates P&L display columns
+    # only — never touches the trading path. Makes the dashboard match Webull to the penny.
+    ENABLE_WEBULL_PNL_RECONCILE: bool = False
+
     # Category-aware exit strategy (backtested: +$13,809 / +173% on $8K, 8/11 days won)
     # Multi-day contract cap: expensive multi-day options cause outsized losses.
     # Cap at 2 contracts for multi-day, 1 for premiums > $5.

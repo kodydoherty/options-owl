@@ -1123,6 +1123,102 @@ class PaperTrader:
             logger.warning(f"Failed to sync portfolio from Webull: {exc}")
             return None
 
+    async def reconcile_closed_pnl_from_webull(self, days_back: int = 2) -> int:
+        """A1c: penny-match recorded P&L to real Webull fills for closed trades whose exit fill
+        was NOT captured at close time (a 429/timeout fell back to an approximate exit_premium).
+
+        Fetches Webull order history in ONE call, matches each pending trade by its stored
+        ``webull_exit_order_id``, and re-derives ``exit_premium`` + ``pnl_dollars`` + ``pnl_pct``
+        from the authoritative fill. This ONLY reads Webull order history and UPDATEs P&L display
+        columns — it never touches entry/exit trading logic, so a failure can at most leave a
+        number approximate (it can never affect a trade). Safe no-op when the flag is off, Webull
+        isn't connected, in paper mode, or nothing needs fixing. Returns #trades corrected.
+        """
+        if not getattr(self.settings, "ENABLE_WEBULL_PNL_RECONCILE", False):
+            return 0
+        if self.webull_executor is None or self.settings.PAPER_TRADE:
+            return 0
+
+        # 1. closed trades that have a sell order id but no captured exit fill (→ approximate P&L)
+        async with _connect_db(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            cur = await conn.execute(
+                "SELECT id, ticker, contracts, webull_order_id, webull_exit_order_id, "
+                "webull_entry_fill_price, premium_per_contract, dca_total_contracts "
+                "FROM paper_trades "
+                "WHERE status = 'closed' AND webull_exit_order_id IS NOT NULL "
+                "AND webull_exit_fill_price IS NULL "
+                "AND date(closed_at) >= date('now', ?)",
+                (f"-{days_back} days",),
+            )
+            pending = [dict(r) for r in await cur.fetchall()]
+        if not pending:
+            return 0
+
+        # 2. one order-history call covering the window (ET calendar dates)
+        from zoneinfo import ZoneInfo
+        et_today = datetime.now(tz=ZoneInfo("America/New_York")).date()
+        start = (et_today - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        end = et_today.strftime("%Y-%m-%d")
+        history = await self.webull_executor.get_order_history(start, end)
+        if not history:
+            return 0
+
+        # 3. build {order-id -> fill price}, matching either order_id or client_order_id, incl.
+        #    nested combo legs. Reuses the SAME price extractor the close path uses.
+        from options_owl.execution.webull_executor import WebullExecutor
+        fills: dict[str, float] = {}
+
+        def _index(entry: dict) -> None:
+            price = WebullExecutor._extract_fill_price(entry)
+            if price is None or price <= 0:
+                return
+            for k in ("order_id", "orderId", "id", "client_order_id", "clientOrderId"):
+                v = entry.get(k)
+                if v:
+                    fills[str(v)] = price
+
+        for o in history:
+            if not isinstance(o, dict):
+                continue
+            _index(o)
+            for sub in (o.get("orders") or []):
+                if isinstance(sub, dict):
+                    _index(sub)
+
+        # 4. correct each pending trade from its REAL exit fill (mirror the close-path P&L math)
+        ops: list = []
+        corrected = 0
+        for t in pending:
+            exit_fill = fills.get(str(t["webull_exit_order_id"]))
+            if not exit_fill or exit_fill <= 0:
+                continue  # fill not in history yet — try again next window
+            raw = t["webull_entry_fill_price"] or 0
+            blended = t["premium_per_contract"] or 0
+            dca = t["dca_total_contracts"] or 0
+            entry_fill = blended if (dca and dca > 0 and blended > 0) else raw
+            if not entry_fill or entry_fill <= 0:
+                continue  # no entry basis — leave as-is
+            contracts = t["contracts"] or 0
+            pnl = (exit_fill - entry_fill) * contracts * 100
+            pnl_pct = ((exit_fill - entry_fill) / entry_fill * 100) if entry_fill > 0 else 0
+            ops.append((
+                "UPDATE paper_trades SET webull_exit_fill_price = ?, exit_premium = ?, "
+                "pnl_dollars = ?, pnl_pct = ? WHERE id = ?",
+                (exit_fill, exit_fill, pnl, pnl_pct, t["id"]),
+            ))
+            logger.info(
+                f"A1c RECONCILE: trade#{t['id']} {t['ticker']} exit_fill=${exit_fill:.2f} "
+                f"entry=${entry_fill:.2f} pnl=${pnl:.2f} ({pnl_pct:+.1f}%)"
+            )
+            corrected += 1
+
+        if ops:
+            await _db_execute_with_retry(
+                self.db_path, ops, context="A1c webull pnl reconcile",
+            )
+        return corrected
+
     async def init(self) -> None:
         await init_paper_db(self.db_path)
         # Replay any queued DB writes from previous crashes
