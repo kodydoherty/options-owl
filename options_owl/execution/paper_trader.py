@@ -2306,11 +2306,16 @@ class PaperTrader:
                             f"entry_fill=${entry_fill:.2f}{dca_note} exit_fill=${exit_fill_price:.2f} "
                             f"real_pnl=${real_pnl:.2f} ({real_pnl_pct:+.1f}%)"
                         )
+                        # A1 (2026-07-02): align exit_premium to the REAL Webull exit fill. It was
+                        # left at the close_trade market-approximation while pnl_dollars used the real
+                        # fill — the two disagreed by construction (the adam +$538-vs-real gap). Same
+                        # authoritative value, no new API call.
                         ops = [(
                             "UPDATE paper_trades SET webull_exit_fill_price = ?, "
-                            "webull_exit_order_id = ?, pnl_dollars = ?, pnl_pct = ? "
+                            "webull_exit_order_id = ?, exit_premium = ?, pnl_dollars = ?, pnl_pct = ? "
                             "WHERE id = ?",
-                            (exit_fill_price, result.order_id, real_pnl, real_pnl_pct, trade_id),
+                            (exit_fill_price, result.order_id, exit_fill_price, real_pnl,
+                             real_pnl_pct, trade_id),
                         )]
                         # Also update scaleout child row with real exit fill
                         if child_trade_id:
@@ -2318,11 +2323,11 @@ class PaperTrader:
                             child_pct = real_pnl_pct  # same % gain
                             ops.append((
                                 "UPDATE paper_trades SET webull_exit_fill_price = ?, "
-                                "webull_exit_order_id = ?, pnl_dollars = ?, pnl_pct = ?, "
+                                "webull_exit_order_id = ?, exit_premium = ?, pnl_dollars = ?, pnl_pct = ?, "
                                 "webull_entry_fill_price = ? "
                                 "WHERE id = ?",
-                                (exit_fill_price, result.order_id, child_pnl, child_pct,
-                                 entry_fill, child_trade_id),
+                                (exit_fill_price, result.order_id, exit_fill_price, child_pnl,
+                                 child_pct, entry_fill, child_trade_id),
                             ))
                             logger.info(
                                 f"WEBULL P&L RECONCILE (child): trade#{child_trade_id} "
@@ -2337,8 +2342,8 @@ class PaperTrader:
                             self.db_path,
                             [(
                                 "UPDATE paper_trades SET webull_exit_fill_price = ?, "
-                                "webull_exit_order_id = ? WHERE id = ?",
-                                (exit_fill_price, result.order_id, trade_id),
+                                "webull_exit_order_id = ?, exit_premium = ? WHERE id = ?",
+                                (exit_fill_price, result.order_id, exit_fill_price, trade_id),
                             )],
                             context=f"webull exit fill for trade #{trade_id}",
                         )
