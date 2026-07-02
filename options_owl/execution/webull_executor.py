@@ -1495,7 +1495,24 @@ class WebullExecutor:
 
             price = self._extract_fill_price(detail)
             if price is not None:
-                logger.debug(f"get_fill_price: {client_order_id} → ${price:.2f}")
+                # A1b (2026-07-02): surface the payload shape + any commission/fee field so we can
+                # wire real-fee subtraction against the VERIFIED structure (never guess the field
+                # name — a wrong guess would over-subtract and create a NEW inaccuracy). Pure
+                # diagnostic logging; remove once the fee field is confirmed from a live close.
+                try:
+                    fee_like = {}
+                    _scan = [detail, *detail.get("orders", []), *detail.get("legs", [])]
+                    for _d in _scan:
+                        if isinstance(_d, dict):
+                            for _k, _v in _d.items():
+                                if isinstance(_k, str) and ("fee" in _k.lower() or "comm" in _k.lower()):
+                                    fee_like[_k] = _v
+                    logger.info(
+                        "get_fill_price: %s → $%.2f | keys=%s | fee-like=%s",
+                        client_order_id, price, list(detail.keys())[:20], fee_like,
+                    )
+                except Exception:
+                    logger.debug(f"get_fill_price: {client_order_id} → ${price:.2f}")
                 return price
 
             # Log the full response so we can see what format Webull returns
