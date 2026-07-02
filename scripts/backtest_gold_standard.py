@@ -3623,10 +3623,15 @@ def _discount_reentry_report():
         return float(c) if (not np.isnan(c) and c > 0) else 0.0
 
     def run(t, discount_pct, profit_only):
-        """(total_pnl, n_rebuys, rebuy_pnl) for one trade under the given re-entry policy."""
-        total, n_re, re_pnl = 0.0, 0, 0.0
+        """(total_pnl, n_rebuys, rebuy_pnl, capital_deployed) under the given re-entry policy.
+
+        capital_deployed sums every leg's entry cost (contracts * entry_premium * 100), so
+        return-on-capital = total_pnl / capital_deployed is apples-to-apples across variants
+        (discount re-buys bought cheaper deploy less capital per contract — this captures that)."""
+        total, n_re, re_pnl, deployed = 0.0, 0, 0.0, 0.0
         sidx, eprem = t["entry_idx"], t["entry_premium"]
         for hop in range(MAX_RE + 1):
+            deployed += eprem * t["contracts"] * 100
             r = leg(t, sidx, eprem)
             total += r["pnl"]
             if hop > 0:
@@ -3653,44 +3658,45 @@ def _discount_reentry_report():
             if rebuy is None:
                 break
             sidx, eprem = rebuy
-        return total, n_re, re_pnl
+        return total, n_re, re_pnl, deployed
 
     base = [(run(t, 0, False), t["is_put"]) for t in _LR_TRADES]
     base_tot = sum(r[0] for r, _ in base)
-    base_c = sum(r[0] for r, ip in base if not ip)
-    base_p = sum(r[0] for r, ip in base if ip)
+    base_cap = sum(r[3] for r, _ in base)
+    base_roi = base_tot / base_cap * 100 if base_cap else 0.0
 
-    print("\n" + "=" * 78)
+    print("\n" + "=" * 92)
     print(f"DISCOUNT-GATED RE-ENTRY — 'sell high / re-buy the dip' vs let-it-run ({len(_LR_TRADES)} trades)")
     print("Exit = deployed lock (keep 80/arm 25/puts-lock) + multi-day CALL -25% cut. Buy=ask, sell=bid.")
-    print("=" * 78)
-    print(f"  {'variant':<28}{'TOTAL':>11}{'CALLS':>11}{'PUTS':>11}{'vs base':>10}{'re-buys':>9}")
-    print("  " + "-" * 80)
-    print(f"  {'let-it-run (no re-entry)':<28}{('$'+format(base_tot,'+,.0f')):>11}"
-          f"{('$'+format(base_c,'+,.0f')):>11}{('$'+format(base_p,'+,.0f')):>11}{'—':>10}{0:>9}")
+    print("ROI% = P&L / capital-deployed — the apples-to-apples number (re-entry deploys MORE capital).")
+    print("=" * 92)
+    print(f"  {'variant':<28}{'TOTAL':>10}{'vs base':>9}{'re-buys':>8}{'capital':>12}{'ROI%':>8}")
+    print("  " + "-" * 84)
+    print(f"  {'let-it-run (no re-entry)':<28}{('$'+format(base_tot,'+,.0f')):>10}{'—':>9}{0:>8}"
+          f"{('$'+format(base_cap,',.0f')):>12}{base_roi:>7.1f}%   <- baseline efficiency")
 
-    best = ("let-it-run (no re-entry)", base_tot, 0.0)
+    best_roi = ("let-it-run", base_roi, base_tot)
     for profit_only in (False, True):
         mode = "prof-exit" if profit_only else "any-exit"
         for disc in (5, 10, 15, 20):
             res = [(run(t, disc, profit_only), t["is_put"]) for t in _LR_TRADES]
             tot = sum(r[0] for r, _ in res)
-            cc = sum(r[0] for r, ip in res if not ip)
-            pp = sum(r[0] for r, ip in res if ip)
             nre = sum(r[1] for r, _ in res)
-            repnl = sum(r[2] for r, _ in res)
+            cap = sum(r[3] for r, _ in res)
+            roi = tot / cap * 100 if cap else 0.0
+            flag = "  <- beats baseline ROI" if roi > base_roi + 0.05 else ""
             lbl = f"-{disc}% dip, {mode}"
-            print(f"  {lbl:<28}{('$'+format(tot,'+,.0f')):>11}{('$'+format(cc,'+,.0f')):>11}"
-                  f"{('$'+format(pp,'+,.0f')):>11}{('$'+format(tot-base_tot,'+,.0f')):>10}{nre:>9}"
-                  f"   (re-buy P&L ${repnl:+,.0f})")
-            if tot > best[1]:
-                best = (lbl, tot, repnl)
-    delta = best[1] - base_tot
-    print(f"\n  → BEST: {best[0]} (${best[1]:+,.0f}, {delta:+,.0f} vs let-it-run)")
-    if best[0] == "let-it-run (no re-entry)":
-        print("  → Discount re-entry did NOT beat letting it run — the dip re-buys don't pay for the spread/knife risk.")
+            print(f"  {lbl:<28}{('$'+format(tot,'+,.0f')):>10}{('$'+format(tot-base_tot,'+,.0f')):>9}"
+                  f"{nre:>8}{('$'+format(cap,',.0f')):>12}{roi:>7.1f}%{flag}")
+            if roi > best_roi[1]:
+                best_roi = (lbl, roi, tot)
+    print(f"\n  -> BEST ROI: {best_roi[0]} ({best_roi[1]:.1f}% vs baseline {base_roi:.1f}%)")
+    if best_roi[0] == "let-it-run":
+        print("  -> VERDICT: no re-entry variant beats let-it-run PER DOLLAR. The raw +P&L is capital")
+        print("     leverage (2x+ deployed), not edge — those dollars earn more as base trades.")
     else:
-        print(f"  → Discount re-entry ADDS ${delta:+,.0f} (re-buy legs contributed ${best[2]:+,.0f}).")
+        print(f"  -> VERDICT: {best_roi[0]} beats let-it-run per dollar ({best_roi[1]:.1f}% vs {base_roi:.1f}%) —")
+        print("     a REAL edge, not just leverage. Worth a capital-constrained prod test.")
 
 
 # ── Main ───────────────────────────────────────────────────────────────────
