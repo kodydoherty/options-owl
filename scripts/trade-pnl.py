@@ -31,12 +31,15 @@ import sys
 from pathlib import Path
 
 
-DB_PATH = Path(__file__).parent.parent / "journal" / "owlet-kody" / "raw_messages.db"
+_BOT = "kody"  # overridden by --bot
 
-DROPLET_CMD = (
-    "ssh -i ~/.ssh/id_ed25519_do root@129.212.138.145 "
-    "sqlite3 -json /root/options-owl/journal/owlet-kody/raw_messages.db"
-)
+
+def _db_path() -> Path:
+    return Path(__file__).parent.parent / "journal" / f"owlet-{_BOT}" / "raw_messages.db"
+
+
+def _remote_db() -> str:
+    return f"/root/options-owl/journal/owlet-{_BOT}/raw_messages.db"
 
 
 def query_db(sql: str, droplet: bool = False) -> list[dict]:
@@ -50,7 +53,7 @@ def query_db(sql: str, droplet: bool = False) -> list[dict]:
         b64 = base64.b64encode(flat_sql.encode()).decode()
         remote_cmd = (
             f"echo {b64} | base64 -d | "
-            f"sqlite3 -json /root/options-owl/journal/owlet-kody/raw_messages.db"
+            f"sqlite3 -json {_remote_db()}"
         )
         cmd = [
             "ssh", "-i", str(Path.home() / ".ssh" / "id_ed25519_do"),
@@ -65,11 +68,11 @@ def query_db(sql: str, droplet: bool = False) -> list[dict]:
             return []
         return json.loads(result.stdout)
     else:
-        if not DB_PATH.exists():
-            print(f"Local DB not found: {DB_PATH}", file=sys.stderr)
+        if not _db_path().exists():
+            print(f"Local DB not found: {_db_path()}", file=sys.stderr)
             print("Use --droplet to query the droplet instead.", file=sys.stderr)
             sys.exit(1)
-        conn = sqlite3.connect(str(DB_PATH))
+        conn = sqlite3.connect(str(_db_path()))
         conn.row_factory = sqlite3.Row
         rows = conn.execute(sql).fetchall()
         conn.close()
@@ -341,7 +344,12 @@ def main():
     parser.add_argument("--droplet", action="store_true", help="Query droplet via SSH")
     parser.add_argument("--detail", action="store_true", help="Show detailed per-trade breakdown")
     parser.add_argument("--no-summary", action="store_true", help="Skip summary stats")
+    parser.add_argument("--bot", default="kody",
+                        help="Which owlet bot's DB (kody/adam/dennis/vinny/yank). Default: kody")
     args = parser.parse_args()
+
+    global _BOT
+    _BOT = args.bot
 
     if not args.recent and not args.id and not args.ticker and not args.date and not args.webull_only:
         args.recent = 20  # default to last 20
