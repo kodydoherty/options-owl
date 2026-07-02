@@ -3585,6 +3585,114 @@ def _lock_reenter_report():
         print(f"    multi-day: {len(md):>4} trades  ${sum(md):+,.0f}  ({sum(1 for p in md if p>0)/len(md)*100:.0f}% win)")
 
 
+def _discount_reentry_report():
+    """Discount-gated re-entry: 'sell high / re-buy the dip', head-to-head vs let-it-run.
+
+    Each trade exits via the DEPLOYED config (V7 profit-lock keep 80% / arm +25% / puts-lock ON,
+    plus the shipped multi-day CALL -25% hardstop). Then — instead of being done — we RE-BUY the
+    same contract only if its premium later dips >= X% BELOW the exit fill, chaining up to 3 times.
+    Buys pay the ASK, sells hit the BID, so every round-trip pays the spread, and the re-bought leg
+    runs the full FSM (so a knife that keeps falling stops out — falling-knife risk is captured, not
+    assumed away). This isolates the RE-ENTRY: baseline and every variant share the identical exit,
+    differing only in whether/when they re-buy.
+
+    Two gates tested: 'any exit' (re-buy on the dip regardless of how the prior leg ended) and
+    'profit-exit only' (re-buy only after a profitable exit — the literal 'sell high' case).
+    """
+    if not _LR_TRADES:
+        print("no trades captured (need --discount-reentry with a run)")
+        return
+
+    KEEP, ARM, PUTS = 0.8, 25.0, True   # deployed prod profit-lock
+    MAX_RE = 3                          # cap the re-entry chain per trade
+
+    def leg(t, sidx, eprem):
+        # calls carry the shipped multi-day -25% hardstop; puts have no multi-day cut (deployed)
+        hc = 25.0 if not t["is_put"] else 0.0
+        return _sim_leg(t["closes"], t["bids"], t["asks"], t["underlyings"], sidx, eprem,
+                        t["contracts"], t["ticker"], t["dte"], t["expiry"],
+                        keep_frac=KEEP, activate_pct=ARM, puts_lock=PUTS, is_put=t["is_put"],
+                        hard_loss_pct=hc)
+
+    def _bid_at(t, eidx):
+        """The bid _sim_leg sold at (its xp) — our exit reference price."""
+        b = t["bids"][eidx] if eidx < len(t["bids"]) else np.nan
+        if not np.isnan(b) and b > 0:
+            return float(b)
+        c = t["closes"][eidx] if eidx < len(t["closes"]) else np.nan
+        return float(c) if (not np.isnan(c) and c > 0) else 0.0
+
+    def run(t, discount_pct, profit_only):
+        """(total_pnl, n_rebuys, rebuy_pnl) for one trade under the given re-entry policy."""
+        total, n_re, re_pnl = 0.0, 0, 0.0
+        sidx, eprem = t["entry_idx"], t["entry_premium"]
+        for hop in range(MAX_RE + 1):
+            r = leg(t, sidx, eprem)
+            total += r["pnl"]
+            if hop > 0:
+                n_re += 1
+                re_pnl += r["pnl"]
+            if discount_pct <= 0:                       # baseline: never re-buy
+                break
+            if profit_only and r["pnl"] <= 0:           # only re-buy after selling high
+                break
+            eidx = r["exit_idx"]
+            xref = _bid_at(t, eidx)
+            if xref <= 0 or eidx >= len(t["closes"]) - 2:
+                break
+            target = xref * (1 - discount_pct / 100.0)
+            rebuy = None
+            for j in range(eidx + 1, len(t["closes"])):
+                pj = t["closes"][j]
+                if np.isnan(pj) or pj <= 0:
+                    continue
+                if pj <= target:                        # dipped >= discount below our exit
+                    aj = t["asks"][j] if j < len(t["asks"]) and not np.isnan(t["asks"][j]) else pj
+                    rebuy = (j, float(aj) if aj > 0 else float(pj))
+                    break
+            if rebuy is None:
+                break
+            sidx, eprem = rebuy
+        return total, n_re, re_pnl
+
+    base = [(run(t, 0, False), t["is_put"]) for t in _LR_TRADES]
+    base_tot = sum(r[0] for r, _ in base)
+    base_c = sum(r[0] for r, ip in base if not ip)
+    base_p = sum(r[0] for r, ip in base if ip)
+
+    print("\n" + "=" * 78)
+    print(f"DISCOUNT-GATED RE-ENTRY — 'sell high / re-buy the dip' vs let-it-run ({len(_LR_TRADES)} trades)")
+    print("Exit = deployed lock (keep 80/arm 25/puts-lock) + multi-day CALL -25% cut. Buy=ask, sell=bid.")
+    print("=" * 78)
+    print(f"  {'variant':<28}{'TOTAL':>11}{'CALLS':>11}{'PUTS':>11}{'vs base':>10}{'re-buys':>9}")
+    print("  " + "-" * 80)
+    print(f"  {'let-it-run (no re-entry)':<28}{('$'+format(base_tot,'+,.0f')):>11}"
+          f"{('$'+format(base_c,'+,.0f')):>11}{('$'+format(base_p,'+,.0f')):>11}{'—':>10}{0:>9}")
+
+    best = ("let-it-run (no re-entry)", base_tot, 0.0)
+    for profit_only in (False, True):
+        mode = "prof-exit" if profit_only else "any-exit"
+        for disc in (5, 10, 15, 20):
+            res = [(run(t, disc, profit_only), t["is_put"]) for t in _LR_TRADES]
+            tot = sum(r[0] for r, _ in res)
+            cc = sum(r[0] for r, ip in res if not ip)
+            pp = sum(r[0] for r, ip in res if ip)
+            nre = sum(r[1] for r, _ in res)
+            repnl = sum(r[2] for r, _ in res)
+            lbl = f"-{disc}% dip, {mode}"
+            print(f"  {lbl:<28}{('$'+format(tot,'+,.0f')):>11}{('$'+format(cc,'+,.0f')):>11}"
+                  f"{('$'+format(pp,'+,.0f')):>11}{('$'+format(tot-base_tot,'+,.0f')):>10}{nre:>9}"
+                  f"   (re-buy P&L ${repnl:+,.0f})")
+            if tot > best[1]:
+                best = (lbl, tot, repnl)
+    delta = best[1] - base_tot
+    print(f"\n  → BEST: {best[0]} (${best[1]:+,.0f}, {delta:+,.0f} vs let-it-run)")
+    if best[0] == "let-it-run (no re-entry)":
+        print("  → Discount re-entry did NOT beat letting it run — the dip re-buys don't pay for the spread/knife risk.")
+    else:
+        print(f"  → Discount re-entry ADDS ${delta:+,.0f} (re-buy legs contributed ${best[2]:+,.0f}).")
+
+
 # ── Main ───────────────────────────────────────────────────────────────────
 
 
@@ -3623,6 +3731,8 @@ def main():
     parser.add_argument("--grace-sweep", action="store_true", help="Sweep grace periods: 0, 1, 2, 3, 5 min")
     parser.add_argument("--no-reentries", action="store_true",
                         help="Restore the restricted one-entry-per-ticker-per-day rule (re-entries are ON by default to match prod)")
+    parser.add_argument("--discount-reentry", action="store_true",
+                        help="Test discount-gated re-entry (sell high / re-buy the dip) vs let-it-run")
     parser.add_argument("--lock-reenter", action="store_true",
                         help="Lock-and-re-enter experiment: HOLD vs LOCK(80%%) vs LOCK+re-enter on signal re-fire (#1)")
     parser.add_argument("--puts", action="store_true", help="Enable PUT trading alongside CALLs (SPY direction gate)")
@@ -3818,7 +3928,7 @@ def main():
     ADAPTIVE_MULT_OVERRIDE = args.adaptive_mult
     THETA_MIN_OVERRIDE = args.theta_min
     V7_EXITS_OVERRIDE = not args.no_v7_exits
-    LOCK_REENTER = args.lock_reenter
+    LOCK_REENTER = args.lock_reenter or args.discount_reentry
     ALLOW_REENTRIES = not args.no_reentries
     BREAKEVEN_TRIGGER_OVERRIDE = args.breakeven_trigger
     SCALEOUT_TRIGGER_OVERRIDE = args.scaleout_trigger
@@ -4101,6 +4211,17 @@ def main():
                      put_pattern_model, put_pattern_meta,
                      put_entry_model, put_entry_features, put_entry_threshold)
         _lock_reenter_report()
+        sys.exit(0)
+
+    if args.discount_reentry:
+        _LR_TRADES.clear()
+        run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
+                     args.pattern_threshold, args.entry_threshold,
+                     tickers, start_date, end_date, stop_model,
+                     regime_model, args.regime_threshold, signal_model,
+                     put_pattern_model, put_pattern_meta,
+                     put_entry_model, put_entry_features, put_entry_threshold)
+        _discount_reentry_report()
         sys.exit(0)
 
     if args.sweep:
