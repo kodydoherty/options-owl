@@ -38,7 +38,7 @@
 <!-- Range + ticker filter -->
 <div class="flex items-center gap-3 mb-3 flex-wrap">
     <span class="text-xs text-gray-500 uppercase">Range:</span>
-    {% for label, n in [('Today', 1), ('7D', 7), ('30D', 30), ('90D', 90)] %}
+    {% for label, n in [('Today', 1), ('7D', 7), ('30D', 30)] %}
     <a href="/?days={{ n }}{% if ticker %}&ticker={{ ticker }}{% endif %}"
        class="px-3 py-1 rounded text-xs font-medium transition
               {% if days == n %}bg-owl-accent text-white{% else %}bg-owl-card border border-owl-border text-gray-400 hover:text-white{% endif %}">
