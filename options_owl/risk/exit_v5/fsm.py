@@ -306,6 +306,21 @@ class ExitFSM:
                     f"multi-day CALL hard-stop: {gain:.0f}% <= -{mhs:.0f}% from entry (underlying-independent)",
                     debug=debug)
 
+        # Gate 2.56: MULTI-DAY PUT premium HARD-STOP (opt-in, risk-control) — a tighter floor on
+        # multi-day PUTs (halves max loss vs the -50% flat stop). EV-NEGATIVE by backtest
+        # (-$690/3mo, ~35% of put P&L): multi-day puts ride slow-building crashes, so a -25% cut
+        # clips recoveries. 0DTE puts are ALREADY cut at -25% by the 0DTE gate above; this only
+        # binds multi-day puts. OFF by default; canary on paper before live. 2026-07-02.
+        if (not is_0dte and self._settings
+                and state.option_type.lower() in ("put", "bearish", "short")
+                and getattr(self._settings, "ENABLE_MULTIDAY_PUT_HARDSTOP", False)):
+            phs = getattr(self._settings, "MULTIDAY_PUT_HARDSTOP_PCT", 25.0)
+            if phs > 0 and gain <= -phs:
+                return _exit(
+                    ExitReason.MULTIDAY_PUT_HARDSTOP,
+                    f"multi-day PUT hard-stop: {gain:.0f}% <= -{phs:.0f}% from entry (underlying-independent)",
+                    debug=debug)
+
         # Gate 2.6: DEAD-ON-ARRIVAL stall cut (MULTI-DAY) — cut a leg that NEVER WORKED: held long
         # enough, down big, and its peak gain never cleared the threshold. Fixes the 1-DTE put/call
         # that bleeds an hour to the wide 50% graduated backstop (adam META 2026-07-01: peaked +1%,

@@ -267,6 +267,12 @@ class Settings(BaseSettings):
     # 3-month prod-match sweep +$3,730 (+8%) at -25% (best; -20% clips winners, -30% still +).
     ENABLE_MULTIDAY_CALL_HARDSTOP: bool = False
     MULTIDAY_CALL_HARDSTOP_PCT: float = 25.0
+    # Multi-day PUT hard-stop (opt-in risk control, NOT a P&L win). Halves max multi-day-put loss
+    # (-25% floor vs the -50% flat stop) but is EV-NEGATIVE by backtest (-$690/3mo, ~35% of put
+    # P&L) — multi-day puts ride slow crashes, so the cut clips recoveries. 0DTE puts already cut
+    # at -25% by the 0DTE gate. OFF by default; canary on paper (yank) before any live bot.
+    ENABLE_MULTIDAY_PUT_HARDSTOP: bool = False
+    MULTIDAY_PUT_HARDSTOP_PCT: float = 25.0
     # Dead-on-arrival STALL CUT (multi-day) — cut a leg that NEVER WORKED: held >= N min, down >= X%,
     # and its peak gain never cleared Y%. Fixes the 1-DTE put/call that bleeds an hour to the wide 50%
     # graduated backstop (adam META 2026-07-01: peaked +1%, -47%, held ~1hr). Validated 2026-07-01 on

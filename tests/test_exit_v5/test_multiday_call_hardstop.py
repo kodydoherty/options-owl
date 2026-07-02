@@ -24,6 +24,7 @@ def _cfg(is_put=False):
 
 def _settings(**ov):
     d = dict(ENABLE_MULTIDAY_CALL_HARDSTOP=True, MULTIDAY_CALL_HARDSTOP_PCT=25.0,
+             ENABLE_MULTIDAY_PUT_HARDSTOP=False, MULTIDAY_PUT_HARDSTOP_PCT=25.0,
              ENABLE_0DTE_PREMIUM_HARDSTOP=True, PREMIUM_HARDSTOP_0DTE_PCT=25.0,
              ENABLE_STALL_CUT=False, ENABLE_EOD_CLOSE_ALL=False,
              ENABLE_V6_PER_TICKER_CONFIG=False)
@@ -57,13 +58,13 @@ class TestMultidayCallHardstop:
                          current_underlying=555.0, minutes_to_close=180)
         assert a.should_exit and a.reason == ExitReason.MULTIDAY_CALL_HARDSTOP
 
-    def test_puts_excluded(self):
-        """PUTs must NOT hit this gate — they ride slow crashes (best cap = none)."""
-        fsm = ExitFSM(_cfg(is_put=True), settings=_settings())
+    def test_puts_excluded_from_call_gate(self):
+        """PUTs must NOT hit the CALL gate — and with the PUT gate OFF they aren't cut here at all."""
+        fsm = ExitFSM(_cfg(is_put=True), settings=_settings())  # PUT gate OFF by default
         st = _state("put", entry=5.0, dte=1)
         a = fsm.evaluate(st, 3.50, 3.45, 3.55, datetime(2026, 7, 1, 12, 59, tzinfo=ET),
                          current_underlying=560.0, minutes_to_close=180)
-        assert a.reason != ExitReason.MULTIDAY_CALL_HARDSTOP
+        assert a.reason not in (ExitReason.MULTIDAY_CALL_HARDSTOP, ExitReason.MULTIDAY_PUT_HARDSTOP)
 
     def test_above_threshold_holds(self):
         """Down only -20% → below the -25% cut, must NOT fire."""
@@ -101,3 +102,37 @@ class TestMultidayCallHardstop:
                          datetime(2026, 7, 1, 12, 59, tzinfo=ET),
                          current_underlying=555.0, minutes_to_close=180)
         assert b.should_exit and b.reason == ExitReason.MULTIDAY_CALL_HARDSTOP
+
+
+class TestMultidayPutHardstop:
+    """Opt-in multi-day PUT hardstop (canary — OFF by default, EV-negative risk control)."""
+
+    def test_multiday_put_cut_when_enabled(self):
+        fsm = ExitFSM(_cfg(is_put=True), settings=_settings(ENABLE_MULTIDAY_PUT_HARDSTOP=True))
+        st = _state("put", entry=5.0, dte=1)
+        a = fsm.evaluate(st, 3.75, 3.70, 3.80, datetime(2026, 7, 1, 12, 59, tzinfo=ET),
+                         current_underlying=560.0, minutes_to_close=180)
+        assert a.should_exit and a.reason == ExitReason.MULTIDAY_PUT_HARDSTOP
+
+    def test_off_by_default(self):
+        fsm = ExitFSM(_cfg(is_put=True), settings=_settings())  # PUT gate OFF
+        st = _state("put", entry=5.0, dte=1)
+        a = fsm.evaluate(st, 3.75, 3.70, 3.80, datetime(2026, 7, 1, 12, 59, tzinfo=ET),
+                         current_underlying=560.0, minutes_to_close=180)
+        assert a.reason != ExitReason.MULTIDAY_PUT_HARDSTOP
+
+    def test_calls_untouched_by_put_gate(self):
+        """Enabling the PUT gate must not change how CALLs exit."""
+        fsm = ExitFSM(_cfg(), settings=_settings(ENABLE_MULTIDAY_PUT_HARDSTOP=True))
+        st = _state("call", entry=5.0, dte=1)
+        a = fsm.evaluate(st, 3.75, 3.70, 3.80, datetime(2026, 7, 1, 12, 59, tzinfo=ET),
+                         current_underlying=555.0, minutes_to_close=180)
+        assert a.should_exit and a.reason == ExitReason.MULTIDAY_CALL_HARDSTOP
+
+    def test_0dte_put_uses_the_0dte_gate(self):
+        """0DTE puts are already cut at -25% by the 0DTE gate, not this multi-day one."""
+        fsm = ExitFSM(_cfg(is_put=True), settings=_settings(ENABLE_MULTIDAY_PUT_HARDSTOP=True))
+        st = _state("put", entry=5.0, dte=0, expiry="2026-07-01")
+        a = fsm.evaluate(st, 3.75, 3.70, 3.80, datetime(2026, 7, 1, 12, 59, tzinfo=ET),
+                         current_underlying=560.0, minutes_to_close=180)
+        assert a.should_exit and a.reason == ExitReason.PREMIUM_HARDSTOP
