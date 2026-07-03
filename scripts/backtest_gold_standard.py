@@ -3171,6 +3171,8 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
         "pattern_threshold": pattern_threshold,
         "entry_threshold": entry_threshold if entry_model else None,
         "trades": n_trades,
+        # Per-trade log (for the full-stack combiner: merge ML + flow onto one shared account)
+        "trade_log": trades,
         "wins": wins,
         "losses": losses,
         "win_rate": round(win_rate, 1),
