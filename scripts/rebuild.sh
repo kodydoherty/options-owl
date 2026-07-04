@@ -120,6 +120,19 @@ if [ "$VINNY_PAPER" = "true" ] || [ "$VINNY_KILL" = "true" ]; then
 fi
 echo "owlet-vinny: PAPER_TRADE=$VINNY_PAPER WEBULL_KILL_SWITCH=$VINNY_KILL — OK (live, margin)"
 
+# alan → LIVE on MARGIN 2026-07-04 (Kody's call — 5th live bot, $10k). Guard the live
+# direction — block if alan is accidentally flipped back to paper. (-A20: alan's
+# PAPER_TRADE sits near the top of its block.)
+ALAN_PAPER=$(grep -A20 'owlet-alan:' "$LOCAL_DIR/docker-compose.yml" | grep 'PAPER_TRADE=' | head -1 | sed 's/.*PAPER_TRADE=//')
+ALAN_KILL=$(grep -A20 'owlet-alan:' "$LOCAL_DIR/docker-compose.yml" | grep 'WEBULL_KILL_SWITCH=' | head -1 | sed 's/.*WEBULL_KILL_SWITCH=//')
+if [ "$ALAN_PAPER" = "true" ] || [ "$ALAN_KILL" = "true" ]; then
+  echo ""
+  echo "DEPLOY BLOCKED: owlet-alan has PAPER_TRADE=$ALAN_PAPER WEBULL_KILL_SWITCH=$ALAN_KILL"
+  echo "alan is a LIVE bot (margin). This would switch it to paper. If intentional, edit then re-run."
+  exit 1
+fi
+echo "owlet-alan: PAPER_TRADE=$ALAN_PAPER WEBULL_KILL_SWITCH=$ALAN_KILL — OK (live, margin)"
+
 # ---------------------------------------------------------------------------
 # Step 2: Sync code to droplet
 # ---------------------------------------------------------------------------

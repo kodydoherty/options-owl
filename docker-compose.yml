@@ -373,6 +373,94 @@ services:
       - ./journal/owlet-dennis:/app/journal
       - ./journal/models:/app/journal/models:ro
 
+  owlet-alan:
+    <<: *bot-common
+    container_name: owlet-alan
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PORTFOLIO_SIZE=10000
+      - FLEET_RANK=5
+      # alan → LIVE 2026-07-04 (Kody's call — new live-money bot, $10k Individual MARGIN, 5th live bot).
+      - PAPER_TRADE=false
+      - WEBULL_KILL_SWITCH=false
+      - EXIT_ENGINE=v5
+      # Individual MARGIN: auto-detects the margin account (WEBULL_ACCOUNT_ID unpinned) + skips GFV so
+      # sale proceeds reinvest intraday. Sizes off net-liq (no extra leverage). PDT not a constraint.
+      - MARGIN_ACCOUNT=true
+      - ENABLE_DATA_FRESHNESS_GUARD=true
+      - FLOW_CALL_MAX_PREMIUM=9.0
+      - FLOW_PUT_MAX_PREMIUM=9.0
+      - ENABLE_FLOW_PUT_MKT_DIR=true
+      - FLOW_PUT_MKT_DIR_MAX_CHG=0.5
+      - ENABLE_DELTA_SIZED_BUDGET=true
+      - ENABLE_FOMC_PAUSE=true
+      - MAX_CONCURRENT=8
+      - MAX_POSITION_PCT=15
+      - MAX_DCA_POSITION_PCT=10
+      - MAX_TRADE_LOSS_EXIT_PCT=8
+      - MAX_PORTFOLIO_RISK_PCT=75
+      - ENABLE_WEBULL_PAPER=true
+      - WEBULL_APP_KEY=${ALAN_WEBULL_APP_KEY}
+      - WEBULL_APP_SECRET=${ALAN_WEBULL_APP_SECRET}
+      - ENABLE_DISCORD_SIGNALS=false
+      - ENABLE_V6_PER_TICKER_CONFIG=true
+      - ENABLE_V7_WIDE_TRAIL=true
+      - ML_PATTERN_THRESHOLD=0.62
+      - ENABLE_UW_FLOW_SIGNAL=true
+      - ENABLE_FLOW_OTM_STRIKE=true
+      - ENABLE_ANTIMARTINGALE_ADD=false
+      - ANTIMG_CALL_LEVELS=30,80,150
+      - ENABLE_V7_PROFIT_LOCK=true
+      - ENABLE_0DTE_PREMIUM_HARDSTOP=true
+      - ENABLE_MULTIDAY_CALL_HARDSTOP=true
+      - ENABLE_MULTIDAY_PUT_HARDSTOP=true
+      - ENABLE_STALL_CUT=true
+      - ENABLE_EOD_CLOSE_ALL=true
+      - ENABLE_LATE_ENTRY_CUTOFF=true
+      - PREMIUM_HARDSTOP_0DTE_PCT=25
+      - MAX_SIZING_BALANCE=50000
+      - ENABLE_FLEET_STAGGER=false
+      - FLEET_SIZE=5
+      - FLEET_OVERLAP=2
+      - ENABLE_V7_TIDE_GATE=true
+      - ENABLE_V6_BREAKEVEN_RATCHET=true
+      - ENABLE_V6_2PM_TIGHTEN=true
+      - ENABLE_V6_PREMIUM_CAP=false
+      - ENABLE_OTM_DISTANCE_GATE=false
+      - ENABLE_DELTA_GATE=true
+      - ENABLE_V6_SPREAD_GATE=true
+      - ENABLE_V6_SCALEOUT=true
+      - ENABLE_V6_DCA=true
+      - ENABLE_V6_EARLY_POP_GATE=true
+      - ENABLE_DIP_CONFIRM=true
+      - ENABLE_POLYGON_WS=false
+      - ENABLE_V7_CONVICTION_SIZING=true
+      - ENABLE_RUNNER_V1_SIZING=true
+      - RUNNER_V1_Q1=0.39
+      - RUNNER_V1_Q2=0.69
+      - RUNNER_V1_Q3=0.85
+      - RUNNER_V1_MULT_Q1=0.7
+      - RUNNER_V1_MULT_Q2=0.9
+      - RUNNER_V1_MULT_Q3=1.1
+      - RUNNER_V1_MULT_Q4=1.3
+      - ENABLE_CONF_LINEAR_SIZING=true
+      - CONF_LINEAR_BUDGET_MIN=0.4
+      - CONF_LINEAR_BUDGET_MAX=1.8
+      - AGENT_ID=owlet_alan
+      - ENABLE_POSTGRES=true
+      - DATABASE_URL=postgresql://owl:${POSTGRES_PASSWORD:-owl_dev_2026}@postgres:5432/options_owl
+      - ENABLE_REDIS=true
+      - REDIS_URL=redis://redis:6379/0
+
+    volumes:
+      - ./journal/owlet-alan:/app/journal
+      - ./journal/models:/app/journal/models:ro
+
   owlet-adam:
     <<: *bot-common
     container_name: owlet-adam
