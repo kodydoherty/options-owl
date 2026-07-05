@@ -385,9 +385,10 @@ services:
       - PYTHONUNBUFFERED=1
       - PORTFOLIO_SIZE=10000
       - FLEET_RANK=5
-      # alan → LIVE 2026-07-04 (Kody's call — new live-money bot, $10k Individual MARGIN, 5th live bot).
-      - PAPER_TRADE=false
-      - WEBULL_KILL_SWITCH=false
+      # alan → PAPER 2026-07-05 (Kody's call — flipped to paper shadow; margin account funded only $100).
+      # Was briefly LIVE on deploy 2026-07-04; run as paper until funded, then flip both flags back.
+      - PAPER_TRADE=true
+      - WEBULL_KILL_SWITCH=true
       - EXIT_ENGINE=v5
       # Individual MARGIN: auto-detects the margin account (WEBULL_ACCOUNT_ID unpinned) + skips GFV so
       # sale proceeds reinvest intraday. Sizes off net-liq (no extra leverage). PDT not a constraint.
