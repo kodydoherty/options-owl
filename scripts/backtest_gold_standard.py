@@ -188,6 +188,13 @@ _LR_TRADES: list = []
 # understated prod ~155% (flat-sized). Default ON to match prod; --no-reentries = old restricted.
 ALLOW_REENTRIES = True
 
+# Post-loss same-ticker re-entry cooldown (minutes). 0 = off (prod today: re-enter freely).
+# When > 0, after a LOSING exit on ticker X at session-minute L, block NEW entries on X until
+# L + cooldown. Models a "stop churning a name that just burned us" rule. Only bites when
+# ALLOW_REENTRIES is on (margin-style free re-entry); with re-entries off (cash-style one-per-day)
+# it's a no-op. Set via --reentry-cooldown-min; swept by --reentry-cooldown-sweep.
+REENTRY_COOLDOWN_MIN = 0
+
 
 # ---------------------------------------------------------------------------
 # Sizing-scheme dispatcher (position-sizing experiment)
@@ -1904,6 +1911,8 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
         last_loss_minute = -999         # When last consecutive loser pause started
         # Track tickers that have entered today (for one-per-ticker-per-day limit)
         day_entered_tickers: set[str] = set()
+        # Post-loss re-entry cooldown: ticker -> session-minute of its most recent LOSING exit today.
+        last_loss_exit_min: dict[str, int] = {}
         # Per-day RTH stock bar cache: ticker -> {session_minute: row}
         stock_by_minute_cache: dict[str, dict] = {}
 
@@ -2281,6 +2290,10 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                 is_win = trade_pnl > 0
                 tk = pos["ticker"]
 
+                # Post-loss re-entry cooldown: remember when a loser on this ticker exited.
+                if not is_win:
+                    last_loss_exit_min[tk] = minute
+
                 per_ticker[tk]["trades"] += 1
                 if is_win:
                     per_ticker[tk]["wins"] += 1
@@ -2379,6 +2392,13 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                     continue
                 # Skip if already entered this ticker today (one entry per ticker per day)
                 if ticker in day_entered_tickers and not ALLOW_REENTRIES:
+                    continue
+                # Post-loss re-entry cooldown: don't re-buy a name that just burned us.
+                if (
+                    REENTRY_COOLDOWN_MIN > 0
+                    and ticker in last_loss_exit_min
+                    and minute < last_loss_exit_min[ticker] + REENTRY_COOLDOWN_MIN
+                ):
                     continue
                 if ticker not in ticker_data:
                     continue
@@ -2720,6 +2740,13 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                         # Allow re-entry as PUT if entered as CALL today, but not if entered as PUT
                         put_day_key = f"{ticker}_put"
                         if put_day_key in day_entered_tickers and not ALLOW_REENTRIES:
+                            continue
+                        # Post-loss re-entry cooldown (per-ticker, both directions).
+                        if (
+                            REENTRY_COOLDOWN_MIN > 0
+                            and ticker in last_loss_exit_min
+                            and minute < last_loss_exit_min[ticker] + REENTRY_COOLDOWN_MIN
+                        ):
                             continue
 
                         ptd = put_ticker_data[ticker]
@@ -3714,7 +3741,7 @@ def main():
     global MIN_PREMIUM_FLOOR, MIN_SCORE, OPENING_BUFFER_MIN, TOD_EARLY_MIN_SCORE
     global SCALP_THRESH_OVERRIDE, SOFT_KEEP_OVERRIDE, ADAPTIVE_MULT_OVERRIDE
     global THETA_MIN_OVERRIDE, BREAKEVEN_TRIGGER_OVERRIDE, SCALEOUT_TRIGGER_OVERRIDE, V7_EXITS_OVERRIDE
-    global LOCK_REENTER, ALLOW_REENTRIES
+    global LOCK_REENTER, ALLOW_REENTRIES, REENTRY_COOLDOWN_MIN
     global SIZING_MODE, CONF_BUDGET_MIN, CONF_BUDGET_MAX, CONF_REF_MIN, CONF_REF_MAX
     global MULTI_DAY_CAP, LATE_0DTE_CAP
 
@@ -3739,6 +3766,10 @@ def main():
     parser.add_argument("--grace-sweep", action="store_true", help="Sweep grace periods: 0, 1, 2, 3, 5 min")
     parser.add_argument("--no-reentries", action="store_true",
                         help="Restore the restricted one-entry-per-ticker-per-day rule (re-entries are ON by default to match prod)")
+    parser.add_argument("--reentry-cooldown-min", type=int, default=0,
+                        help="Block same-ticker re-entry for N minutes after a LOSING exit on that ticker (0=off)")
+    parser.add_argument("--reentry-cooldown-sweep", action="store_true",
+                        help="Sweep the post-loss re-entry cooldown under MARGIN (free re-entry) and CASH (one-per-day) regimes")
     parser.add_argument("--discount-reentry", action="store_true",
                         help="Test discount-gated re-entry (sell high / re-buy the dip) vs let-it-run")
     parser.add_argument("--lock-reenter", action="store_true",
@@ -3938,6 +3969,7 @@ def main():
     V7_EXITS_OVERRIDE = not args.no_v7_exits
     LOCK_REENTER = args.lock_reenter or args.discount_reentry
     ALLOW_REENTRIES = not args.no_reentries
+    REENTRY_COOLDOWN_MIN = args.reentry_cooldown_min
     BREAKEVEN_TRIGGER_OVERRIDE = args.breakeven_trigger
     SCALEOUT_TRIGGER_OVERRIDE = args.scaleout_trigger
 
@@ -4181,6 +4213,44 @@ def main():
 
         PUT_CONFIG_OVERRIDES.clear()
         PUTS_ONLY = False
+        sys.exit(0)
+
+    if args.reentry_cooldown_sweep:
+        print("\n" + "=" * 78)
+        print("POST-LOSS SAME-TICKER RE-ENTRY COOLDOWN SWEEP  (margin vs cash)")
+        print("=" * 78)
+        print("Question: does blocking re-entry on a name for N min after it loses reduce the")
+        print("margin-bot chop churn (vinny) without killing the winning re-entries (kody)?")
+        print(f"\n{'regime / cooldown':<28} {'Trades':>7} {'WR%':>6} {'P&L':>11} {'PF':>6} {'MaxDD':>7} {'AvgWin':>9} {'AvgLoss':>9}")
+        print("-" * 90)
+
+        def _cd_run(label, allow_re, cooldown):
+            global ALLOW_REENTRIES, REENTRY_COOLDOWN_MIN
+            ALLOW_REENTRIES = allow_re
+            REENTRY_COOLDOWN_MIN = cooldown
+            r = run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
+                             args.pattern_threshold, args.entry_threshold,
+                             tickers, start_date, end_date, stop_model,
+                             regime_model, args.regime_threshold, signal_model,
+                             put_pattern_model, put_pattern_meta,
+                             put_entry_model, put_entry_features, put_entry_threshold)
+            print(f"{label:<28} {r['trades']:>7} {r['win_rate']:>6.1f} "
+                  f"${r['total_pnl']:>+10,.0f} {r['profit_factor']:>6.2f} "
+                  f"{r['max_drawdown_pct']:>6.1f}% {r['avg_win']:>+9,.0f} {r['avg_loss']:>+9,.0f}")
+            return r
+
+        # CASH regime: one-entry-per-ticker-per-day (settlement can't recycle 0DTE proceeds same day)
+        _cd_run("CASH (one-per-day)", False, 0)
+        print("-" * 90)
+        # MARGIN regime: free re-entry (current prod), then progressively longer post-loss cooldowns
+        _cd_run("MARGIN base (no cooldown)", True, 0)
+        for cd in [30, 45, 60, 90, 999]:
+            lbl = "MARGIN + EOD (loss=done)" if cd == 999 else f"MARGIN + {cd}min cooldown"
+            _cd_run(lbl, True, cd)
+        print("-" * 90)
+        print("EOD = after ANY loss on a ticker, no more entries on it that day.")
+        print("Read: if a MARGIN+cooldown row beats MARGIN base at similar/better PF+DD, the churn")
+        print("      cut is real. If it just cuts trades and P&L falls, the re-entries were +EV.")
         sys.exit(0)
 
     if args.grace_sweep:
