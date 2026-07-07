@@ -2247,9 +2247,14 @@ class PaperTrader:
             context=f"sell retry tracking for trade #{trade_id}",
         )
 
-        # Cancel any pending orders on the same contract before selling.
-        # This prevents REVERSE_OPTION errors when the entry order is still
-        # in SUBMITTED state or a prior sell attempt is pending.
+        # Cancel any pending orders on the same contract before selling, then CONFIRM
+        # they are dead. A prior sell attempt left SUBMITTED ties up the position's
+        # available quantity → the sell-to-close position lookup returns nothing and the
+        # sell is blocked ("MUST_BE_CLOSE_THAN_SELL_SHORT" / "Position lookup failed"),
+        # and the position bleeds until a manual close. cancel_order + a 1s sleep was NOT
+        # enough (the cancel had not propagated). Use _confirm_cancelled so the holding is
+        # provably freed before we submit the next sell. (Fixes the META #467/#424/#376
+        # blocked-exit chain 2026-07-07.)
         if retry_count > 0:
             try:
                 open_orders = await asyncio.wait_for(
@@ -2258,6 +2263,7 @@ class PaperTrader:
                 strike_str = str(trade["strike"])
                 exp_str = trade.get("expiry_date") or ""
                 ot_str = trade["option_type"].upper()
+                cancelled_any = False
                 for order in open_orders:
                     # Match by ticker + strike + expiry + option_type
                     legs = order.get("legs") or []
@@ -2267,15 +2273,29 @@ class PaperTrader:
                                 and leg.get("option_expire_date") == exp_str
                                 and leg.get("option_type") == ot_str):
                             coid = order.get("client_order_id", "")
+                            if not coid:
+                                break
                             logger.warning(
                                 f"CANCELLING PENDING ORDER before sell: "
                                 f"trade#{trade_id} {ticker} client_id={coid}"
                             )
-                            await asyncio.wait_for(
-                                self.webull_executor.cancel_order(coid), timeout=15,
+                            # Cancel AND confirm terminal — frees the holding for the
+                            # sell-to-close lookup. If it FILLED in the cancel race, the
+                            # position is already (partly) closed; the sell below will
+                            # size against whatever remains (or find nothing → handled).
+                            status = await asyncio.wait_for(
+                                self.webull_executor._confirm_cancelled(coid, timeout_seconds=6.0),
+                                timeout=15,
                             )
-                            await asyncio.sleep(1)  # let Webull settle
+                            cancelled_any = True
+                            if status in ("FILLED", "PARTIAL_FILLED", "PARTIAL"):
+                                logger.warning(
+                                    f"Pending order {coid} FILLED during cancel for "
+                                    f"{ticker} #{trade_id} — position may already be closing"
+                                )
                             break
+                if cancelled_any:
+                    await asyncio.sleep(1)  # brief settle after confirmed cancels
             except asyncio.TimeoutError:
                 logger.warning(
                     f"Cancel-pending lookup timed out (15s) for {ticker} #{trade_id} "

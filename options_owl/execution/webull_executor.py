@@ -659,11 +659,14 @@ class WebullExecutor:
                 f"${strike} {option_type} — order_id={order_id}, verifying fill..."
             )
 
-            # SELL orders get 10s — 0DTE premiums crash fast, so we want to
-            # retry quickly with a fresh price if the first attempt doesn't fill.
-            timeout = 10.0
+            # SELL orders get a SHORT wait — 0DTE premiums crash fast, so we retry
+            # quickly with a fresh (lower) price if the first attempt doesn't fill.
+            # 10s/attempt let a tanking option run away across 4 retries (~50s) while
+            # the limit sat above the falling market; matched to the fast-exit cadence.
+            timeout = float(getattr(self.settings, "WEBULL_EXIT_PER_ATTEMPT_SEC", 2.5) or 2.5) * 2
+            poll = float(getattr(self.settings, "WEBULL_EXIT_POLL_SEC", 1.0) or 1.0)
             fill_status = await self._wait_for_fill(
-                client_order_id, timeout_seconds=timeout, poll_interval=3.0,
+                client_order_id, timeout_seconds=timeout, poll_interval=poll,
             )
 
             if fill_status == "FILLED":

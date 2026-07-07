@@ -32,7 +32,11 @@ class Settings(BaseSettings):
     # FRESH bid — so if one price doesn't fill fast we cross harder immediately. SAME double-fill safety
     # as the entry chase: cancel-AND-CONFIRM before every re-price; abort rather than leave two live
     # sell orders (a stray 2nd sell = naked short). Default OFF → canary on a paper bot first.
-    ENABLE_FAST_EXIT_CHASE: bool = False
+    # GRADUATED TO FLEET-WIDE DEFAULT 2026-07-07: the legacy single-submit SELL path priced at a
+    # STALE bid and waited 10s/attempt, so a tanking 0DTE ran away (limit sat ~10% above the falling
+    # market, never filled, position bled far past the -25% stop → forced manual dumps). The fast
+    # chase crosses BELOW the FRESH bid in tight rungs and is the correct exit. Canaried live on vinny.
+    ENABLE_FAST_EXIT_CHASE: bool = True
     WEBULL_EXIT_FILL_ATTEMPTS: int = 4        # in-line sell rungs per exit order
     WEBULL_EXIT_PER_ATTEMPT_SEC: float = 2.5  # per-rung fill wait (exits are urgent — faster than entry)
     WEBULL_EXIT_POLL_SEC: float = 1.0         # fill-status poll cadence within a rung

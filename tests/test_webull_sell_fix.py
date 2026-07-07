@@ -34,6 +34,10 @@ def _make_settings(**overrides):
         "PORTFOLIO_SIZE": 5000,
         "ENABLE_PUT_TRADING": True,
         "ENABLE_FAST_EXIT_CHASE": False,  # these tests exercise the legacy single-submit SELL path
+        # Legacy SELL fill-wait is now derived from these (was hardcoded 10s) — pin so
+        # float(getattr(...)) doesn't choke on a MagicMock child attr.
+        "WEBULL_EXIT_PER_ATTEMPT_SEC": 2.5,
+        "WEBULL_EXIT_POLL_SEC": 1.0,
     }
     defaults.update(overrides)
     for k, v in defaults.items():
@@ -472,3 +476,41 @@ class TestMaxOrderContractsEnforcement:
         executor = WebullExecutor(_make_settings())
         # 20 contracts * $10 * 100 = $20,000 — way over $5k cap, but SELL should pass
         executor._check_safety_limits(20, 10.00, "SELL")  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-07 exit-path hotfix: stale-price + slow-cadence + cancel race
+# ---------------------------------------------------------------------------
+
+
+class TestExitPathHotfix2026_07_07:
+    """Three compounding exit bugs that let tanking 0DTEs bleed far past the -25% stop:
+      1. sell priced at a STALE bid (limit sat ~10% above the falling market → no fill)
+      2. legacy path waited 10s/attempt (option ran away across retries)
+      3. cancel/re-submit race → pending order tied up the position → sell BLOCKED
+    Fixes: fast-exit chase default ON (crosses below the FRESH bid), faster legacy wait,
+    and cancel-AND-CONFIRM before the sell."""
+
+    def test_fast_exit_chase_default_now_on(self):
+        """The fast exit chase (cross below the fresh bid, tight rungs) is the fleet default."""
+        from options_owl.config.settings import Settings
+        assert Settings.model_fields["ENABLE_FAST_EXIT_CHASE"].default is True
+
+    def test_legacy_sell_wait_not_hardcoded_10s(self):
+        """The legacy SELL fill-wait must derive from WEBULL_EXIT_PER_ATTEMPT_SEC, not sit at 10s."""
+        import inspect
+        from options_owl.execution.webull_executor import WebullExecutor
+        src = inspect.getsource(WebullExecutor.place_option_order)
+        assert "timeout = 10.0" not in src, "legacy SELL still hardcodes the slow 10s wait"
+        assert "WEBULL_EXIT_PER_ATTEMPT_SEC" in src
+
+    def test_close_position_cancels_and_confirms_before_sell(self):
+        """close_webull_position must CANCEL-AND-CONFIRM pending orders (free the holding)
+        before re-selling — a bare cancel_order + 1s sleep left the order tying up the
+        position, so the sell-to-close lookup found nothing and the sell was blocked."""
+        import inspect
+        from options_owl.execution.paper_trader import PaperTrader
+        src = inspect.getsource(PaperTrader.close_webull_position)
+        assert "_confirm_cancelled" in src, (
+            "cancel-pending must confirm the cancel is terminal so the holding is freed"
+        )
