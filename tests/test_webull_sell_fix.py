@@ -514,3 +514,81 @@ class TestExitPathHotfix2026_07_07:
         assert "_confirm_cancelled" in src, (
             "cancel-pending must confirm the cancel is terminal so the holding is freed"
         )
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-07 residual exit bug: position-lookup 429 storm blocked sells
+# ---------------------------------------------------------------------------
+
+
+class TestPositionLookupCaching:
+    """`_find_position_id` hit /assets/positions FRESH on every chase rung + close
+    retry → tripped Webull's 429 → read as 'position gone' → BLOCKED the sell (6
+    abandoned vinny sells on 2026-07-07). Fix: cache the snapshot (dedupe rapid
+    lookups) and, on a persistent 429, fall back to the stale snapshot instead of
+    '[]' (an empty list abandons a live sell at an approximate price)."""
+
+    def _executor_with_positions(self, positions):
+        executor = WebullExecutor(_make_settings())
+        executor._api_client = MagicMock()
+        executor._trade_client = MagicMock()
+        executor._account_id = "TEST_ACCT_001"
+        resp = MagicMock()
+        resp.json.return_value = positions
+        executor._trade_client.account_v2.get_account_position = MagicMock(return_value=resp)
+        return executor
+
+    @pytest.mark.asyncio
+    async def test_positions_cached_within_ttl(self):
+        """Two lookups inside the TTL must hit the API only once (kills the 429 storm)."""
+        ex = self._executor_with_positions([{"ticker": "SPY"}])
+        a = await ex._get_account_positions()
+        b = await ex._get_account_positions()
+        assert a == b == [{"ticker": "SPY"}]
+        assert ex._trade_client.account_v2.get_account_position.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_rehits_api(self):
+        """force=True (later _find_position_id attempts) must bypass the cache."""
+        ex = self._executor_with_positions([{"ticker": "SPY"}])
+        await ex._get_account_positions()
+        await ex._get_account_positions(force=True)
+        assert ex._trade_client.account_v2.get_account_position.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_429_falls_back_to_stale_cache(self, monkeypatch):
+        """A persistent 429 must return the last snapshot, NOT [] — else a live
+        position looks gone and the sell is abandoned at a wrong price."""
+        import options_owl.execution.webull_executor as we
+        monkeypatch.setattr(we.asyncio, "sleep", AsyncMock())
+        ex = self._executor_with_positions([{"ticker": "AAPL"}])
+        assert await ex._get_account_positions() == [{"ticker": "AAPL"}]
+        ex._trade_client.account_v2.get_account_position = MagicMock(
+            side_effect=Exception("HTTP Status: 429, Code: TOO_MANY_REQUESTS")
+        )
+        got = await ex._get_account_positions(force=True)
+        assert got == [{"ticker": "AAPL"}], "must return stale cache, not [] on a 429"
+
+    @pytest.mark.asyncio
+    async def test_no_cache_and_429_returns_empty(self, monkeypatch):
+        """With no prior snapshot, a total-failure returns [] (blocked sell — the safe
+        default; can't invent a position_id)."""
+        import options_owl.execution.webull_executor as we
+        monkeypatch.setattr(we.asyncio, "sleep", AsyncMock())
+        ex = self._executor_with_positions([])
+        ex._trade_client.account_v2.get_account_position = MagicMock(
+            side_effect=Exception("HTTP Status: 429, Code: TOO_MANY_REQUESTS")
+        )
+        assert await ex._get_account_positions() == []
+
+    @pytest.mark.asyncio
+    async def test_find_position_id_single_fetch(self, monkeypatch):
+        """A clean lookup resolves from one fetch — no per-rung storm."""
+        import options_owl.execution.webull_executor as we
+        monkeypatch.setattr(we.asyncio, "sleep", AsyncMock())
+        pos = [{"ticker": "SPY", "option_type": "CALL", "option_expire_date": "2026-04-14",
+                "option_exercise_price": "691.00", "position_id": "POS_1"}]
+        ex = self._executor_with_positions(pos)
+        pid = await ex._find_position_id("SPY", 691.0, "2026-04-14", "CALL")
+        assert pid == "POS_1"
+        assert ex._trade_client.account_v2.get_account_position.call_count == 1

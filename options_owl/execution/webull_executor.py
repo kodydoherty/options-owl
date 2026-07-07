@@ -388,6 +388,87 @@ class WebullExecutor:
                 "PAPER_TRADE=true — set PAPER_TRADE=false in .env to place real orders"
             )
 
+    async def _get_account_positions(
+        self, *, max_age_s: float = 2.5, force: bool = False
+    ) -> list:
+        """Return open positions with a short-TTL cache + 429-aware backoff.
+
+        The exit path calls ``_find_position_id`` repeatedly (every chase rung, every
+        close retry).  Hitting Webull's ``/assets/positions`` endpoint fresh on each
+        call trips a 429 (TOO_MANY_REQUESTS), which then reads as 'position not found'
+        and BLOCKS the sell (bug 2026-07-07: 6 abandoned vinny sells).  Caching the
+        snapshot for a couple of seconds collapses those rapid successive fetches into
+        one, and on a 429 we back off and retry rather than surfacing an empty list.
+        A recent-but-stale snapshot is preferred over '[]' so a throttle can't make a
+        live position look gone (an empty list = abandon = force-close at a wrong price).
+        """
+        import time as _time
+
+        now = _time.monotonic()
+        cached = getattr(self, "_positions_cache", None)
+        cached_ts = getattr(self, "_positions_cache_ts", 0.0)
+        if not force and cached is not None and (now - cached_ts) < max_age_s:
+            return cached
+
+        last_exc: Exception | None = None
+        for attempt in range(4):
+            try:
+                response = await asyncio.to_thread(
+                    self._trade_client.account_v2.get_account_position,
+                    self._account_id,
+                )
+                if hasattr(response, "json"):
+                    try:
+                        positions = response.json()
+                    except Exception:
+                        positions = response
+                else:
+                    positions = response
+
+                # Unwrap nested response — try multiple known wrapper keys
+                if isinstance(positions, dict):
+                    for key in ("positions", "holdings", "data", "option_positions"):
+                        if key in positions:
+                            positions = positions[key]
+                            break
+                    else:
+                        positions = (
+                            [positions]
+                            if ("ticker" in positions or "symbol" in positions)
+                            else []
+                        )
+                if not isinstance(positions, list):
+                    logger.warning(
+                        f"_get_account_positions: unexpected type {type(positions)}: "
+                        f"{str(positions)[:300]}"
+                    )
+                    positions = []
+
+                self._positions_cache = positions
+                self._positions_cache_ts = _time.monotonic()
+                return positions
+            except Exception as exc:
+                last_exc = exc
+                is_429 = "429" in str(exc) or "TOO_MANY_REQUESTS" in str(exc)
+                wait = (1.5 ** attempt) if is_429 else 0.5 * (attempt + 1)
+                logger.warning(
+                    f"_get_account_positions attempt {attempt + 1}/4 failed "
+                    f"({'429 rate-limit' if is_429 else 'error'}): {exc} "
+                    f"— backing off {wait:.1f}s"
+                )
+                await asyncio.sleep(wait)
+
+        # Every fetch failed.  A recent cached snapshot is safer than '[]' — the latter
+        # would read as 'position gone' and abandon a live sell at an approximate price.
+        if cached is not None:
+            logger.warning(
+                f"_get_account_positions: all 4 fetches failed (last: {last_exc}); "
+                f"returning last cached snapshot ({now - cached_ts:.1f}s old)"
+            )
+            return cached
+        logger.error(f"_get_account_positions: all fetches failed and no cache ({last_exc})")
+        return []
+
     async def _find_position_id(
         self,
         ticker: str,
@@ -402,99 +483,67 @@ class WebullExecutor:
         list on the first call after a buy (timing) or after an auth refresh.
         """
         for attempt in range(retries):
-            if attempt > 0:
-                await asyncio.sleep(2 * attempt)  # 2s, 4s backoff
-
+            # attempt 0 may reuse a very recent cached snapshot — this dedupes the
+            # rapid per-rung / per-retry lookups that were tripping Webull's 429 on
+            # /assets/positions (read as 'position gone' → BLOCKED sell, 2026-07-07).
+            # Later attempts force a fresh read to cover the post-buy timing gap.
             try:
-                response = await asyncio.to_thread(
-                    self._trade_client.account_v2.get_account_position,
-                    self._account_id,
-                )
-                # Handle various response shapes from the SDK
-                if hasattr(response, "json"):
-                    try:
-                        positions = response.json()
-                    except Exception:
-                        positions = response
-                else:
-                    positions = response
-
-                # Log raw response on first attempt to diagnose format issues
-                if attempt == 0:
-                    logger.debug(
-                        f"_find_position_id: raw response type={type(positions).__name__}, "
-                        f"keys={list(positions.keys()) if isinstance(positions, dict) else 'N/A'}, "
-                        f"preview={str(positions)[:500]}"
-                    )
-
-                # Unwrap nested response — try multiple known wrapper keys
-                if isinstance(positions, dict):
-                    for key in ("positions", "holdings", "data", "option_positions"):
-                        if key in positions:
-                            positions = positions[key]
-                            break
-                    else:
-                        # If dict has no known wrapper, it might be a single position
-                        if "ticker" in positions or "symbol" in positions:
-                            positions = [positions]
-                        else:
-                            positions = []
-                if not isinstance(positions, list):
-                    logger.warning(f"_find_position_id: unexpected response type {type(positions)}: {str(positions)[:300]}")
-                    continue
-
-                logger.debug(
-                    f"_find_position_id: searching {len(positions)} positions "
-                    f"for {ticker} ${strike} {option_type} exp={expiry_date}"
-                    f" (attempt {attempt + 1}/{retries})"
-                )
-
-                # If API returned 0 positions and we have retries left, retry
-                if len(positions) == 0 and attempt < retries - 1:
-                    logger.warning(
-                        f"_find_position_id: Webull returned 0 positions "
-                        f"(attempt {attempt + 1}/{retries}), retrying..."
-                    )
-                    continue
-
-                for pos in positions:
-                    # Try top-level fields first (flat response), then nested legs
-                    pos_ticker = pos.get("ticker", pos.get("symbol", "")).upper()
-                    pos_type = pos.get("option_type", "").upper()
-                    pos_expiry = pos.get("option_expire_date", pos.get("expiry_date", ""))
-                    pos_strike = float(pos.get("option_exercise_price", pos.get("strike_price", pos.get("strike", 0))))
-                    pid = pos.get("position_id", pos.get("id", ""))
-
-                    if (
-                        pos_ticker == ticker.upper()
-                        and pos_type == option_type.upper()
-                        and pos_expiry == expiry_date
-                        and abs(pos_strike - strike) < 0.01
-                        and pid
-                    ):
-                        return str(pid)
-
-                    # Also check nested legs (multi-leg positions)
-                    legs = pos.get("legs", [])
-                    for leg in legs:
-                        if (
-                            leg.get("symbol", "").upper() == ticker.upper()
-                            and leg.get("option_type", "").upper() == option_type.upper()
-                            and leg.get("option_expire_date", "") == expiry_date
-                            and abs(float(leg.get("option_exercise_price", 0)) - strike) < 0.01
-                        ):
-                            return str(pos.get("position_id", ""))
-
-                # Positions returned but no match — don't retry, it's genuinely not there
-                if len(positions) > 0:
-                    logger.warning(
-                        f"_find_position_id: {len(positions)} positions found but none match "
-                        f"{ticker} ${strike} {option_type} exp={expiry_date}"
-                    )
-                    return None
-
+                positions = await self._get_account_positions(force=(attempt > 0))
             except Exception as exc:
-                logger.warning(f"_find_position_id attempt {attempt + 1} failed: {exc}")
+                logger.warning(f"_find_position_id attempt {attempt + 1} fetch failed: {exc}")
+                await asyncio.sleep(2 * (attempt + 1))
+                continue
+
+            logger.debug(
+                f"_find_position_id: searching {len(positions)} positions "
+                f"for {ticker} ${strike} {option_type} exp={expiry_date}"
+                f" (attempt {attempt + 1}/{retries})"
+            )
+
+            # If API returned 0 positions and we have retries left, wait + retry fresh
+            if len(positions) == 0 and attempt < retries - 1:
+                logger.warning(
+                    f"_find_position_id: 0 positions (attempt {attempt + 1}/{retries}), "
+                    f"retrying fresh..."
+                )
+                await asyncio.sleep(2 * (attempt + 1))
+                continue
+
+            for pos in positions:
+                # Try top-level fields first (flat response), then nested legs
+                pos_ticker = pos.get("ticker", pos.get("symbol", "")).upper()
+                pos_type = pos.get("option_type", "").upper()
+                pos_expiry = pos.get("option_expire_date", pos.get("expiry_date", ""))
+                pos_strike = float(pos.get("option_exercise_price", pos.get("strike_price", pos.get("strike", 0))))
+                pid = pos.get("position_id", pos.get("id", ""))
+
+                if (
+                    pos_ticker == ticker.upper()
+                    and pos_type == option_type.upper()
+                    and pos_expiry == expiry_date
+                    and abs(pos_strike - strike) < 0.01
+                    and pid
+                ):
+                    return str(pid)
+
+                # Also check nested legs (multi-leg positions)
+                legs = pos.get("legs", [])
+                for leg in legs:
+                    if (
+                        leg.get("symbol", "").upper() == ticker.upper()
+                        and leg.get("option_type", "").upper() == option_type.upper()
+                        and leg.get("option_expire_date", "") == expiry_date
+                        and abs(float(leg.get("option_exercise_price", 0)) - strike) < 0.01
+                    ):
+                        return str(pos.get("position_id", ""))
+
+            # Positions returned but no match — genuinely not there
+            if len(positions) > 0:
+                logger.warning(
+                    f"_find_position_id: {len(positions)} positions found but none match "
+                    f"{ticker} ${strike} {option_type} exp={expiry_date}"
+                )
+                return None
 
         logger.warning(
             f"_find_position_id: gave up after {retries} attempts for "
