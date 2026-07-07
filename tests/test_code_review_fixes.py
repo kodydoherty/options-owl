@@ -391,23 +391,23 @@ class TestDiscordSignalsDisabled:
         """All trading bots in docker-compose should have ENABLE_DISCORD_SIGNALS=false."""
         from pathlib import Path
         dc = Path("/Users/kody/dev/options-owl/docker-compose.yml").read_text()
-        # Count occurrences: should be 5 (one per trading bot: kody, dennis, adam, vinny, yank)
+        # One per trading bot: kody, dennis, adam, vinny, yank, alan (alan added 2026-07-04).
         count = dc.count("ENABLE_DISCORD_SIGNALS=false")
-        assert count == 5, f"Expected 5 bots with ENABLE_DISCORD_SIGNALS=false, got {count}"
+        assert count == 6, f"Expected 6 bots with ENABLE_DISCORD_SIGNALS=false, got {count}"
 
     def test_docker_compose_paper_bots_paper_trade(self):
-        """Fleet 2026-07-01: kody+adam+dennis+vinny are LIVE; only yank is paper."""
+        """Fleet 2026-07-07: kody+adam+dennis+vinny are LIVE; yank+alan are paper (alan unfunded)."""
         from pathlib import Path
         dc = Path("/Users/kody/dev/options-owl/docker-compose.yml").read_text()
         count = dc.count("PAPER_TRADE=true")
-        assert count == 1, f"Expected 1 paper bot (yank) with PAPER_TRADE=true, got {count}"
+        assert count == 2, f"Expected 2 paper bots (yank, alan) with PAPER_TRADE=true, got {count}"
 
     def test_docker_compose_paper_bots_kill_switch(self):
-        """Fleet 2026-07-01: kody+adam+dennis+vinny are LIVE; only yank has the kill switch."""
+        """Fleet 2026-07-07: kody+adam+dennis+vinny are LIVE; yank+alan have the kill switch."""
         from pathlib import Path
         dc = Path("/Users/kody/dev/options-owl/docker-compose.yml").read_text()
         count = dc.count("WEBULL_KILL_SWITCH=true")
-        assert count == 1, f"Expected 1 paper bot (yank) with WEBULL_KILL_SWITCH=true, got {count}"
+        assert count == 2, f"Expected 2 paper bots (yank, alan) with WEBULL_KILL_SWITCH=true, got {count}"
 
 
 # ---------------------------------------------------------------------------
