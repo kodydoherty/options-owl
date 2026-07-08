@@ -454,6 +454,17 @@ class Settings(BaseSettings):
     ENABLE_FLOW_PUT_MKT_DIR: bool = False
     FLOW_PUT_MKT_DIR_MAX_CHG: float = 0.5
 
+    # Flow-CALL MARKET-DIRECTION filter (2026-07-08) — the symmetric twin of the put filter above.
+    # Flow normally BYPASSES directional_regime (own whitelist), but flow CALLs bought into a FALLING
+    # tape are counter-trend losers (the 2026-07-08 TSLA/NVDA-call-into-a-red-SPY case). Light
+    # re-application: block a flow CALL when SPY is DOWN more than FLOW_CALL_MKT_DIR_MAX_DROP% from the
+    # open. Validated on 848 flow calls (2026-04-23→07-01): SPY-broad -0.5% = +$3,386 / +21% at higher
+    # PF (1.23→1.32); the skipped 59 calls averaged -8% (a pure counter-trend pocket). Unlike the put
+    # twin the edge is NOT index-only — single-name calls benefit too (+$2,030), so this applies to ALL
+    # flow calls. -0.5% is the non-monotonic optimum: tighter (-0.3%/0%) over-skips winners and LOSES.
+    ENABLE_FLOW_CALL_MKT_DIR: bool = False
+    FLOW_CALL_MKT_DIR_MAX_DROP: float = 0.5
+
     # Spread-cost gate: reject entries where bid-ask spread > threshold % of premium
     ENABLE_V6_SPREAD_GATE: bool = False
     V6_MAX_SPREAD_PCT: float = 15.0

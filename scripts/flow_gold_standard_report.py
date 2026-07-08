@@ -98,6 +98,11 @@ def collect(is_put, wl):
     otype = "put" if is_put else "call"
     right = "PUT" if is_put else "CALL"
     raw = fetch(is_put, wl)
+    # Broad-market proxy for the flow-CALL market-direction filter (2026-07-08): SPY's %
+    # change from its own day-open at each trade's entry minute. A flow call bought while
+    # SPY is red (spy_chg < 0) is counter-trend to the tape (the TSLA-flow-call-into-a-
+    # bearish-SPY case). Loaded once; falls back to neutral (0) when SPY data is missing.
+    spy_stock = D._stock("SPY")
     out = []
     for tk in sorted(raw["ticker"].unique()):
         stock, opts = D._stock(tk), D._opts(tk, right)
@@ -143,10 +148,18 @@ def collect(is_put, wl):
                 # (the today SPY-put -54% case). Stored so a filter can be swept in-memory.
                 day_open = stock[d].get(min(stock[d]), spot)
                 mkt_chg = round((spot - day_open) / day_open * 100, 2) if day_open else 0.0
+                # SPY-broad direction at this trade's entry minute (see spy_stock note above)
+                spy_chg = 0.0
+                if d in spy_stock and mb in spy_stock[d]:
+                    spy_open = spy_stock[d].get(min(spy_stock[d]))
+                    spy_now = spy_stock[d][mb]
+                    if spy_open:
+                        spy_chg = round((spy_now - spy_open) / spy_open * 100, 2)
                 out.append({"date": d, "ticker": tk, "side": otype, "cluster": csize,
+                            "mi": int(ev["mi"]),
                             "premium": ev["prem"], "ask_frac": round(ev["ask_frac"], 2),
                             "conv_mult": round(mult, 2), "ret_pct": round(ret, 1),
-                            "exit_reason": reason, "mkt_chg": mkt_chg})
+                            "exit_reason": reason, "mkt_chg": mkt_chg, "spy_chg": spy_chg})
     return out
 
 

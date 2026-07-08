@@ -418,13 +418,27 @@ class DirectionalRegimeGate(EntryGate):
             return GateOutcome(self.name, GateResult.SKIP, "Directional regime disabled")
 
         signal = ctx["signal"]
+        from options_owl.models.signals import Direction
         if _is_flow_sourced(signal):
+            # Flow normally bypasses this gate (own whitelist). But flow CALLs bought into a FALLING
+            # tape are counter-trend losers (2026-07-08 TSLA/NVDA-call-into-a-red-SPY). Light
+            # re-application (mirror of the flow-PUT market-direction filter): block a flow CALL when
+            # SPY is DOWN more than FLOW_CALL_MKT_DIR_MAX_DROP% from the open. Validated on 848 flow
+            # calls: SPY-broad -0.5% = +$3,386/+21%, PF 1.23→1.32; the skipped 59 averaged -8%.
+            if getattr(settings, "ENABLE_FLOW_CALL_MKT_DIR", False) \
+                    and getattr(signal, "direction", None) == Direction.CALL:
+                spy_change = ctx.get("spy_change_from_open")
+                max_drop = getattr(settings, "FLOW_CALL_MKT_DIR_MAX_DROP", 0.5)
+                if spy_change is not None and spy_change < -max_drop:
+                    return GateOutcome(
+                        self.name, GateResult.FAIL,
+                        f"Flow CALL blocked: SPY {spy_change:+.2f}% < -{max_drop}% "
+                        f"(falling tape — counter-trend, validated -8% pocket)")
             return GateOutcome(self.name, GateResult.SKIP, "UW flow source — bypassed")
         direction = getattr(signal, "direction", None)
         if direction is None:
             return GateOutcome(self.name, GateResult.SKIP, "No direction on signal")
 
-        from options_owl.models.signals import Direction
         is_put = direction == Direction.PUT
 
         # Try candle data for direction confirmation
