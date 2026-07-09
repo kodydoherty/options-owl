@@ -499,10 +499,10 @@ services:
       - ENABLE_POLYGON_WS=false
       - WEBULL_APP_KEY=${ADAM_WEBULL_APP_KEY}
       - WEBULL_APP_SECRET=${ADAM_WEBULL_APP_SECRET}
-      # adam → LIVE on MARGIN 2026-06-23 (2nd live bot alongside kody). WEBULL_ACCOUNT_ID is unpinned, so
+      # adam → back to PAPER 2026-07-09 (Kody's call — reverted from the 06-23 live-margin run).
       # MARGIN_ACCOUNT=true auto-detects adam's Individual MARGIN account; skips GFV → reinvest intraday.
-      - PAPER_TRADE=false
-      - WEBULL_KILL_SWITCH=false
+      - PAPER_TRADE=true
+      - WEBULL_KILL_SWITCH=true
       - EXIT_ENGINE=v5
       # Account-type toggle. false = Individual CASH; true = Individual MARGIN (auto-detect unless
       # WEBULL_ACCOUNT_ID pinned) + skips GFV so sale proceeds reinvest intraday. Sizes off net-liq (no
