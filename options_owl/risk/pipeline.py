@@ -250,6 +250,28 @@ class PutTickerExclusionGate(EntryGate):
             return GateOutcome(self.name, GateResult.PASS,
                                f"Bear mode (SPY {spy_change:+.2f}%) — {ticker} PUT allowed")
 
+        # Conditional down-day relaxation (2026-07-09). Prod already allows every banned name in
+        # bear mode (above). This adds the EARLY-selloff window we currently miss: SPY just turning
+        # red (still > -0.5%, not yet bear mode) while a high-beta name is already down hard. A
+        # NARROW subset only — PLTR/MSTR/GOOGL, whose big dips SUSTAIN. AMD stays banned (serial
+        # dip-then-rip whipsaw: dipped on ~6 of the last 7 down-ish days and closed GREEN nearly
+        # every time) and AMZN stays banned (net put loser). Two guards prevent re-introducing the
+        # whipsaw losses the ban prevents: (1) name down >= PUT_DOWNDAY_NAME_DROP% from its open,
+        # (2) SPY also red (<= 0) — broad-tape confirmation that kills green-tape single-name
+        # bounces. Backtest: the banned-put slice prod blocks is +$729/6mo; this conservative cut
+        # (AMD/AMZN removed, both guards) is smaller and safer. See down-day review 2026-07-09.
+        if getattr(settings, "ENABLE_PUT_DOWNDAY_RELAX", False):
+            relax_str = getattr(settings, "PUT_DOWNDAY_RELAX_TICKERS", "PLTR,MSTR,GOOGL")
+            relax = {t.strip().upper() for t in relax_str.split(",") if t.strip()}
+            if ticker in relax and spy_change is not None and spy_change <= 0:
+                name_drop = getattr(settings, "PUT_DOWNDAY_NAME_DROP", 2.0)
+                name_change = await _ticker_change_from_open(ctx, ticker)
+                if name_change is not None and name_change <= -name_drop:
+                    return GateOutcome(
+                        self.name, GateResult.PASS,
+                        f"Down-day relax: {ticker} {name_change:+.1f}% from open "
+                        f"(SPY {spy_change:+.2f}%) — PUT allowed")
+
         return GateOutcome(self.name, GateResult.FAIL,
                            f"{ticker} excluded from PUTs (backtest loser)")
 

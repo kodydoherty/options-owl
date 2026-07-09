@@ -127,6 +127,7 @@ services:
       # from the open (counter-trend — the SPY-put -54% case). Validated: SPY puts +$6,326/PF 1.32→1.59.
       - ENABLE_FLOW_PUT_MKT_DIR=true
       - ENABLE_FLOW_CALL_MKT_DIR=true
+      - ENABLE_PUT_DOWNDAY_RELAX=true
       - FLOW_PUT_MKT_DIR_MAX_CHG=0.5
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
@@ -274,6 +275,7 @@ services:
       # from the open (counter-trend — the SPY-put -54% case). Validated: SPY puts +$6,326/PF 1.32→1.59.
       - ENABLE_FLOW_PUT_MKT_DIR=true
       - ENABLE_FLOW_CALL_MKT_DIR=true
+      - ENABLE_PUT_DOWNDAY_RELAX=true
       - FLOW_PUT_MKT_DIR_MAX_CHG=0.5
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
@@ -400,6 +402,7 @@ services:
       - FLOW_PUT_MAX_PREMIUM=9.0
       - ENABLE_FLOW_PUT_MKT_DIR=true
       - ENABLE_FLOW_CALL_MKT_DIR=true
+      - ENABLE_PUT_DOWNDAY_RELAX=true
       - FLOW_PUT_MKT_DIR_MAX_CHG=0.5
       - ENABLE_DELTA_SIZED_BUDGET=true
       - ENABLE_FOMC_PAUSE=true
@@ -519,6 +522,7 @@ services:
       # from the open (counter-trend — the SPY-put -54% case). Validated: SPY puts +$6,326/PF 1.32→1.59.
       - ENABLE_FLOW_PUT_MKT_DIR=true
       - ENABLE_FLOW_CALL_MKT_DIR=true
+      - ENABLE_PUT_DOWNDAY_RELAX=true
       - FLOW_PUT_MKT_DIR_MAX_CHG=0.5
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
@@ -662,6 +666,7 @@ services:
       # from the open (counter-trend — the SPY-put -54% case). Validated: SPY puts +$6,326/PF 1.32→1.59.
       - ENABLE_FLOW_PUT_MKT_DIR=true
       - ENABLE_FLOW_CALL_MKT_DIR=true
+      - ENABLE_PUT_DOWNDAY_RELAX=true
       - FLOW_PUT_MKT_DIR_MAX_CHG=0.5
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true
@@ -783,6 +788,7 @@ services:
       # from the open (counter-trend — the SPY-put -54% case). Validated: SPY puts +$6,326/PF 1.32→1.59.
       - ENABLE_FLOW_PUT_MKT_DIR=true
       - ENABLE_FLOW_CALL_MKT_DIR=true
+      - ENABLE_PUT_DOWNDAY_RELAX=true
       - FLOW_PUT_MKT_DIR_MAX_CHG=0.5
       # Delta-sized budget (cheap-OTM-call tail brake, calls-only, ref 0.45) — pure risk-reduction, all bots.
       - ENABLE_DELTA_SIZED_BUDGET=true

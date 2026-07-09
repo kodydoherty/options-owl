@@ -2321,6 +2321,7 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                     "is_bear_mode": pos.get("is_bear_mode", False),
                     "u_chg_5m": pos.get("u_chg_5m", 0.0), "u_chg_15m": pos.get("u_chg_15m", 0.0),
                     "uvol_pct": pos.get("uvol_pct", 0.0),
+                    "put_und_move": pos.get("put_und_move", 0.0),
                     "ret_pct": round(trade_pnl / max(1e-9, pos["effective_entry"] * pos["effective_contracts"] * 100) * 100, 2),
                 })
 
@@ -3092,6 +3093,10 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                             "dip_confirm": dip_outcome,
                             "dip_savings": dip_savings,
                             "is_bear_mode": is_bear,
+                            # PUT down-day telemetry: the name's % change from OPEN at entry
+                            # (sustained-down measure) — with is_bear (SPY bearish) this is the
+                            # conditional-exclusion test for the banned high-beta names.
+                            "put_und_move": round(und_move_pct, 3),
                         })
 
                         day_entered_tickers.add(put_day_key)
@@ -3146,6 +3151,7 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                 "is_bear_mode": pos.get("is_bear_mode", False),
                 "u_chg_5m": pos.get("u_chg_5m", 0.0), "u_chg_15m": pos.get("u_chg_15m", 0.0),
                 "uvol_pct": pos.get("uvol_pct", 0.0),
+                "put_und_move": pos.get("put_und_move", 0.0),
                 "ret_pct": round(trade_pnl / max(1e-9, pos["effective_entry"] * pos["effective_contracts"] * 100) * 100, 2),
             })
 

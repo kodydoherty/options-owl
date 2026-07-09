@@ -585,6 +585,16 @@ class Settings(BaseSettings):
     PUT_BEAR_MODE_THRESHOLD: float = -0.5  # SPY down this % = bear mode (expand PUT tickers)
     PUT_BEAR_EXPANDED_TICKERS: str = "SPY,QQQ,NVDA,TSLA,META,AAPL,AMZN,GOOGL,AMD,MSTR,PLTR,AVGO,IWM"
 
+    # Conditional down-day relaxation of the PUT ticker ban (2026-07-09). Prod already lets every
+    # banned name trade puts in bear mode (SPY <= PUT_BEAR_MODE_THRESHOLD). This narrowly extends
+    # that to the EARLY-selloff window (SPY red but not yet bear mode) for the subset of banned
+    # names whose big dips SUSTAIN — PLTR/MSTR/GOOGL. AMD is deliberately excluded (serial
+    # dip-then-rip whipsaw) and so is AMZN (net put loser). Gate in PutTickerExclusionGate requires
+    # BOTH the name down >= PUT_DOWNDAY_NAME_DROP% from its open AND SPY <= 0 (broad-tape confirm).
+    ENABLE_PUT_DOWNDAY_RELAX: bool = False
+    PUT_DOWNDAY_RELAX_TICKERS: str = "PLTR,MSTR,GOOGL"
+    PUT_DOWNDAY_NAME_DROP: float = 2.0  # name must be down >= this % from open to relax the ban
+
     # PUT bearish confirmation gate — requires candle confirmation before PUT entry
     # Checks VWAP breakdown + bearish candle trend + RSI to confirm downtrend
     ENABLE_PUT_BEARISH_CONFIRM: bool = True
