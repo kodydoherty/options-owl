@@ -464,6 +464,14 @@ class Settings(BaseSettings):
     # flow calls. -0.5% is the non-monotonic optimum: tighter (-0.3%/0%) over-skips winners and LOSES.
     ENABLE_FLOW_CALL_MKT_DIR: bool = False
     FLOW_CALL_MKT_DIR_MAX_DROP: float = 0.5
+    # OWN-STOCK falling-knife add-on (2026-07-09): the SPY-broad gate above misses INDIVIDUAL-stock
+    # crashes (the 07-09 case — NVDA -2.4%/GOOGL -2.9%/PLTR -5.4% cratering while SPY held up, and we
+    # bought their flow calls; the SPY gate fired 0x). Also block a flow CALL when the call's OWN
+    # underlying is down more than FLOW_CALL_OWN_MAX_DROP% from its day-open at entry. Tuned to -1.5%
+    # (a genuine falling knife, NOT a dip): validated on 848 flow calls over 48 days — recovers +$4,522
+    # on losing days while keeping 101% of WINNING-day P&L (0 winning days broken). Tighter (-0.8%)
+    # breaks 4 winning days (the refuted-trend-gate trap — it skips dips that recover). 0 = disable.
+    FLOW_CALL_OWN_MAX_DROP: float = 1.5
 
     # Spread-cost gate: reject entries where bid-ask spread > threshold % of premium
     ENABLE_V6_SPREAD_GATE: bool = False

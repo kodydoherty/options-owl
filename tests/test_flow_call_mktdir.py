@@ -39,8 +39,9 @@ def _settings(**ov):
     return Settings(**d)
 
 
-def _run(sig, spy_change, **s):
-    ctx = {"signal": sig, "settings": _settings(**s), "spy_change_from_open": spy_change}
+def _run(sig, spy_change, own_change=None, **s):
+    ctx = {"signal": sig, "settings": _settings(**s), "spy_change_from_open": spy_change,
+           "ticker_change_from_open": own_change}
     return asyncio.run(DirectionalRegimeGate().evaluate(ctx))
 
 
@@ -89,4 +90,31 @@ class TestFlowCallMarketDirection:
     def test_flow_put_not_touched_by_call_filter(self):
         """A flow PUT on a falling tape is not blocked by the CALL filter (bypasses normally)."""
         r = _run(_flow_put("SPY"), -0.9)
+        assert r.result == GateResult.SKIP
+
+    # --- own-stock falling-knife gate (2026-07-09) ---
+    def test_own_stock_crash_blocks_call_even_when_spy_ok(self):
+        """The 07-09 case: SPY flat/green but NVDA down -2.4% -> block (SPY gate would miss it)."""
+        r = _run(_flow_call("NVDA"), spy_change=0.1, own_change=-2.4)
+        assert r.result == GateResult.FAIL
+        assert "falling knife" in r.reason.lower() or "from open" in r.reason.lower()
+
+    def test_own_stock_mild_dip_not_blocked(self):
+        """Stock down only -1.0% (a dip, within -1.5) -> allowed (don't skip recoverable dips)."""
+        r = _run(_flow_call("NVDA"), spy_change=0.1, own_change=-1.0)
+        assert r.result == GateResult.SKIP
+
+    def test_own_stock_boundary_not_blocked_at_threshold(self):
+        """Stock exactly -1.5% is NOT < -1.5 -> allowed."""
+        r = _run(_flow_call("NVDA"), spy_change=0.1, own_change=-1.5)
+        assert r.result == GateResult.SKIP
+
+    def test_own_stock_gate_disabled_via_zero(self):
+        """FLOW_CALL_OWN_MAX_DROP=0 disables just the own-stock leg (SPY gate still applies)."""
+        r = _run(_flow_call("NVDA"), spy_change=0.1, own_change=-5.0, FLOW_CALL_OWN_MAX_DROP=0)
+        assert r.result == GateResult.SKIP
+
+    def test_own_stock_missing_data_does_not_block(self):
+        """No own-stock change data -> fail-open (keep the bypass, don't block on a data gap)."""
+        r = _run(_flow_call("NVDA"), spy_change=0.1, own_change=None)
         assert r.result == GateResult.SKIP

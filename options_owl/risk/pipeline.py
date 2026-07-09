@@ -398,6 +398,33 @@ class PutBearishConfirmGate(EntryGate):
         )
 
 
+async def _ticker_change_from_open(ctx: dict[str, Any], ticker: str) -> float | None:
+    """The signal's own underlying % change from its day-open at entry (falling-knife proxy).
+
+    Prefers an upstream-computed value in ctx (test hook / cheaper), else derives it from the
+    candle cache's 5m bars. Fail-open: returns None on any miss so a data gap never blocks a trade.
+    """
+    ov = ctx.get("ticker_change_from_open")
+    if ov is not None:
+        return ov
+    candle_cache = ctx.get("candle_cache")
+    if candle_cache is None or not ticker:
+        return None
+    try:
+        data = await asyncio.wait_for(candle_cache.get_candle_data(ticker), timeout=10)
+    except (asyncio.TimeoutError, Exception):
+        return None
+    bars = (data or {}).get("5m", [])
+    if len(bars) < 2:
+        return None
+    b0, bl = bars[0], bars[-1]
+    o = getattr(b0, "open", None) or (b0.get("open", 0) if isinstance(b0, dict) else 0)
+    c = getattr(bl, "close", None) or (bl.get("close", 0) if isinstance(bl, dict) else 0)
+    if o and o > 0:
+        return (c / o - 1) * 100
+    return None
+
+
 class DirectionalRegimeGate(EntryGate):
     """Gate 0b: Confirm signal direction matches market regime using candle data.
 
@@ -427,6 +454,7 @@ class DirectionalRegimeGate(EntryGate):
             # calls: SPY-broad -0.5% = +$3,386/+21%, PF 1.23→1.32; the skipped 59 averaged -8%.
             if getattr(settings, "ENABLE_FLOW_CALL_MKT_DIR", False) \
                     and getattr(signal, "direction", None) == Direction.CALL:
+                # (a) SPY-broad tape gate — block a flow call when the whole market is falling.
                 spy_change = ctx.get("spy_change_from_open")
                 max_drop = getattr(settings, "FLOW_CALL_MKT_DIR_MAX_DROP", 0.5)
                 if spy_change is not None and spy_change < -max_drop:
@@ -434,6 +462,18 @@ class DirectionalRegimeGate(EntryGate):
                         self.name, GateResult.FAIL,
                         f"Flow CALL blocked: SPY {spy_change:+.2f}% < -{max_drop}% "
                         f"(falling tape — counter-trend, validated -8% pocket)")
+                # (b) OWN-STOCK falling-knife gate — the SPY gate misses single-name crashes
+                # (07-09: NVDA/GOOGL/PLTR cratering while SPY held). Block if the call's own
+                # underlying is down hard from its open at entry. -1.5% keeps 101% of winning-day P&L.
+                own_drop = getattr(settings, "FLOW_CALL_OWN_MAX_DROP", 1.5)
+                if own_drop and own_drop > 0:
+                    own_change = await _ticker_change_from_open(ctx, getattr(signal, "ticker", ""))
+                    if own_change is not None and own_change < -own_drop:
+                        return GateOutcome(
+                            self.name, GateResult.FAIL,
+                            f"Flow CALL blocked: {getattr(signal, 'ticker', '')} "
+                            f"{own_change:+.2f}% < -{own_drop}% from open "
+                            f"(falling knife — don't buy a call into a hard dive)")
             return GateOutcome(self.name, GateResult.SKIP, "UW flow source — bypassed")
         direction = getattr(signal, "direction", None)
         if direction is None:
