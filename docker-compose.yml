@@ -638,10 +638,10 @@ services:
       - ENABLE_POLYGON_WS=false
       - WEBULL_APP_KEY=${VINNY_WEBULL_APP_KEY}
       - WEBULL_APP_SECRET=${VINNY_WEBULL_APP_SECRET}
-      # vinny → LIVE on MARGIN 2026-07-01 (Kody's call — 4th live bot: kody+adam+dennis+vinny).
+      # vinny → back to PAPER 2026-07-09 (Kody's call — reverted from the 07-01 live-margin run).
       # WEBULL_ACCOUNT_ID unpinned, so MARGIN_ACCOUNT=true auto-detects vinny's Individual MARGIN account.
-      - PAPER_TRADE=false
-      - WEBULL_KILL_SWITCH=false
+      - PAPER_TRADE=true
+      - WEBULL_KILL_SWITCH=true
       - EXIT_ENGINE=v5
       # Account-type toggle. false = Individual CASH (GFV-limited intraday reinvest).
       # true = Individual MARGIN: auto-detects the margin account (UNLESS WEBULL_ACCOUNT_ID is pinned)
