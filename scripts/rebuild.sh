@@ -84,16 +84,17 @@ if [ "$KODY_PAPER" = "true" ] || [ "$KODY_KILL" = "true" ]; then
 fi
 echo "owlet-kody: PAPER_TRADE=$KODY_PAPER WEBULL_KILL_SWITCH=$KODY_KILL — OK"
 
-# adam is now a LIVE bot (margin) too — guard it the same way (wider -A: adam's PAPER_TRADE sits deeper).
+# adam → PAPER 2026-07-09 (Kody's call — reverted from live). Guard the PAPER direction —
+# block if adam is accidentally flipped back to LIVE. (-A40: adam's PAPER_TRADE sits deeper.)
 ADAM_PAPER=$(grep -A40 'owlet-adam:' "$LOCAL_DIR/docker-compose.yml" | grep 'PAPER_TRADE=' | head -1 | sed 's/.*PAPER_TRADE=//')
 ADAM_KILL=$(grep -A40 'owlet-adam:' "$LOCAL_DIR/docker-compose.yml" | grep 'WEBULL_KILL_SWITCH=' | head -1 | sed 's/.*WEBULL_KILL_SWITCH=//')
-if [ "$ADAM_PAPER" = "true" ] || [ "$ADAM_KILL" = "true" ]; then
+if [ "$ADAM_PAPER" != "true" ] || [ "$ADAM_KILL" != "true" ]; then
   echo ""
   echo "DEPLOY BLOCKED: owlet-adam has PAPER_TRADE=$ADAM_PAPER WEBULL_KILL_SWITCH=$ADAM_KILL"
-  echo "adam is a LIVE bot (margin). This would switch it to paper. If intentional, edit then re-run."
+  echo "adam is a PAPER bot. This would switch it to live. If intentional, edit then re-run."
   exit 1
 fi
-echo "owlet-adam: PAPER_TRADE=$ADAM_PAPER WEBULL_KILL_SWITCH=$ADAM_KILL — OK (live, margin)"
+echo "owlet-adam: PAPER_TRADE=$ADAM_PAPER WEBULL_KILL_SWITCH=$ADAM_KILL — OK (paper)"
 
 # dennis → LIVE 2026-06-30 (Kody's call — 3rd live bot after kody+adam). Guard the
 # live direction — block if dennis is accidentally flipped back to paper.
@@ -107,18 +108,17 @@ if [ "$DENNIS_PAPER" = "true" ] || [ "$DENNIS_KILL" = "true" ]; then
 fi
 echo "owlet-dennis: PAPER_TRADE=$DENNIS_PAPER WEBULL_KILL_SWITCH=$DENNIS_KILL — OK (live)"
 
-# vinny → LIVE on MARGIN 2026-07-01 (Kody's call — 4th live bot). Guard the live
-# direction — block if vinny is accidentally flipped back to paper. (-A40: vinny's
-# PAPER_TRADE sits deeper in its block, like adam's.)
+# vinny → PAPER 2026-07-09 (Kody's call — reverted from live). Guard the PAPER direction —
+# block if vinny is accidentally flipped back to LIVE. (-A40: vinny's PAPER_TRADE sits deeper.)
 VINNY_PAPER=$(grep -A40 'owlet-vinny:' "$LOCAL_DIR/docker-compose.yml" | grep 'PAPER_TRADE=' | head -1 | sed 's/.*PAPER_TRADE=//')
 VINNY_KILL=$(grep -A40 'owlet-vinny:' "$LOCAL_DIR/docker-compose.yml" | grep 'WEBULL_KILL_SWITCH=' | head -1 | sed 's/.*WEBULL_KILL_SWITCH=//')
-if [ "$VINNY_PAPER" = "true" ] || [ "$VINNY_KILL" = "true" ]; then
+if [ "$VINNY_PAPER" != "true" ] || [ "$VINNY_KILL" != "true" ]; then
   echo ""
   echo "DEPLOY BLOCKED: owlet-vinny has PAPER_TRADE=$VINNY_PAPER WEBULL_KILL_SWITCH=$VINNY_KILL"
-  echo "vinny is a LIVE bot (margin). This would switch it to paper. If intentional, edit then re-run."
+  echo "vinny is a PAPER bot. This would switch it to live. If intentional, edit then re-run."
   exit 1
 fi
-echo "owlet-vinny: PAPER_TRADE=$VINNY_PAPER WEBULL_KILL_SWITCH=$VINNY_KILL — OK (live, margin)"
+echo "owlet-vinny: PAPER_TRADE=$VINNY_PAPER WEBULL_KILL_SWITCH=$VINNY_KILL — OK (paper)"
 
 # alan → PAPER 2026-07-05 (funded only $100; running as a paper shadow until funded). No live
 # guard needed while paper. When alan is funded and flipped back to live, restore its guard here.
