@@ -2319,6 +2319,9 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                     "dip_confirm": pos.get("dip_confirm", "off"),
                     "dip_savings": round(pos.get("dip_savings", 0), 2),
                     "is_bear_mode": pos.get("is_bear_mode", False),
+                    "u_chg_5m": pos.get("u_chg_5m", 0.0), "u_chg_15m": pos.get("u_chg_15m", 0.0),
+                    "uvol_pct": pos.get("uvol_pct", 0.0),
+                    "ret_pct": round(trade_pnl / max(1e-9, pos["effective_entry"] * pos["effective_contracts"] * 100) * 100, 2),
                 })
 
                 if LOCK_REENTER:
@@ -2692,11 +2695,35 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                     dte=td["dte"], expiry_date=td["expiry_date"] or "",
                 )
 
+                # Falling-knife telemetry: the underlying's velocity + ATR at the DECISION minute
+                # (signal `minute`, before any dip delay). Stamped on the position so it flows to
+                # every trade row (parent + scaleout children) for the in-memory knife sweep.
+                _uarr = td["underlyings"]
+                _u5 = _u15 = 0.0
+                if minute >= 5 and len(_uarr) > minute and not np.isnan(_uarr[minute]) \
+                        and not np.isnan(_uarr[minute - 5]) and _uarr[minute - 5] > 0:
+                    _u5 = float((_uarr[minute] / _uarr[minute - 5] - 1) * 100)
+                if minute >= 15 and len(_uarr) > minute and not np.isnan(_uarr[minute]) \
+                        and not np.isnan(_uarr[minute - 15]) and _uarr[minute - 15] > 0:
+                    _u15 = float((_uarr[minute] / _uarr[minute - 15] - 1) * 100)
+                # Realized-vol normalizer (robust): std of 1-min underlying returns over the last
+                # ~15 min, in % — the ATR-equivalent "how steep is this move vs the stock's own
+                # normal wobble" (the stock-OHLC ATR arrays are unreliable/short in this harness).
+                _uvol = 0.0
+                if minute >= 15 and len(_uarr) > minute:
+                    _seg = _uarr[minute - 15:minute + 1]
+                    _seg = _seg[~np.isnan(_seg) & (_seg > 0)]
+                    if len(_seg) > 3:
+                        _rets = np.diff(_seg) / _seg[:-1]
+                        _uvol = float(np.std(_rets) * 100)
+
                 open_positions.append({
                     "ticker": ticker, "direction": direction,
                     "fsm": fsm, "state": state,
                     "entry_minute": dip_entry_minute, "signal_minute": minute,
                     "entry_ts": entry_ts,
+                    "u_chg_5m": round(_u5, 3), "u_chg_15m": round(_u15, 3),
+                    "uvol_pct": round(_uvol, 4),
                     "entry_premium": entry_premium,
                     "effective_entry": effective_entry,
                     "contracts": contracts, "dca_contracts": dca_contracts,
@@ -3117,6 +3144,9 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                 "dip_confirm": pos.get("dip_confirm", "off"),
                 "dip_savings": round(pos.get("dip_savings", 0), 2),
                 "is_bear_mode": pos.get("is_bear_mode", False),
+                "u_chg_5m": pos.get("u_chg_5m", 0.0), "u_chg_15m": pos.get("u_chg_15m", 0.0),
+                "uvol_pct": pos.get("uvol_pct", 0.0),
+                "ret_pct": round(trade_pnl / max(1e-9, pos["effective_entry"] * pos["effective_contracts"] * 100) * 100, 2),
             })
 
             if date_str not in daily_pnls:
@@ -3761,6 +3791,8 @@ def main():
     parser.add_argument("--sweep", action="store_true", help="Sweep entry thresholds")
     parser.add_argument("--start", type=str, help="Override start date")
     parser.add_argument("--end", type=str, help="Override end date")
+    parser.add_argument("--dump-trades", type=str, default=None,
+                        help="Write the full trade_log (incl. u_chg_5m/atr_pct_entry/ret_pct) to this JSON path")
     parser.add_argument("--no-dip-confirm", action="store_true", help="Disable DipConfirm simulation")
     parser.add_argument("--grace", type=float, default=None, help="Override grace period (minutes) for all tickers")
     parser.add_argument("--grace-sweep", action="store_true", help="Sweep grace periods: 0, 1, 2, 3, 5 min")
@@ -4343,6 +4375,12 @@ def main():
                          put_pattern_model, put_pattern_meta,
                          put_entry_model, put_entry_features, put_entry_threshold)
         elapsed = time.time() - t0
+
+        if args.dump_trades:
+            import json as _json
+            with open(args.dump_trades, "w") as _f:
+                _json.dump(r["trade_log"], _f)
+            print(f"  [dumped {len(r['trade_log'])} trades → {args.dump_trades}]")
 
         # Print summary
         print(f"\n{'=' * 70}")
