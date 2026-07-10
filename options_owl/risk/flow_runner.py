@@ -19,6 +19,19 @@ from loguru import logger
 
 ET = ZoneInfo("America/New_York")
 
+# UW's REST API now requires a client-id header + a browser-like User-Agent (Cloudflare blocks bare
+# bot signatures; the API 401s without UW-CLIENT-API-ID). Without these, every UW REST call returns
+# non-200 and the feature silently no-ops (the market-tide gate was enabled but DEAD, 2026-07-10).
+# The flow WebSocket is a separate path and is unaffected.
+def _uw_rest_headers(api_key: str) -> dict:
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+        "UW-CLIENT-API-ID": "100001",
+        "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+    }
+
 
 async def get_market_tide_bias(settings) -> float | None:
     """B2: live market-wide whale tide bias = net_call_premium - net_put_premium AS OF now (intraday
@@ -31,7 +44,7 @@ async def get_market_tide_bias(settings) -> float | None:
         today = datetime.now(ET).strftime("%Y-%m-%d")
         url = "https://api.unusualwhales.com/api/market/market-tide"
         async with httpx.AsyncClient(timeout=12) as client:
-            r = await client.get(url, headers={"Authorization": f"Bearer {api_key}"}, params={"date": today})
+            r = await client.get(url, headers=_uw_rest_headers(api_key), params={"date": today})
         if r.status_code != 200:
             return None
         ticks = r.json().get("data", []) or []

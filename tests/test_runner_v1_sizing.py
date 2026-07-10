@@ -76,3 +76,27 @@ class TestScorerFidelity:
         _, meta = _load_runner_v1()
         assert set(meta["features"]) <= set(self._feat().keys())
         assert set(meta["cat_features"]) == {"ticker", "day_of_week"}
+
+
+# ---------------------------------------------------------------------------
+# UW REST header helper (2026-07-10) — UW now requires UW-CLIENT-API-ID + UA,
+# without which every REST call 401s and the feature silently dies (the enabled
+# market-tide gate went dead in prod until this fix).
+# ---------------------------------------------------------------------------
+class TestUwRestHeaders:
+    def test_required_headers_present(self):
+        from options_owl.risk.flow_runner import _uw_rest_headers
+        h = _uw_rest_headers("some-token")
+        assert h["Authorization"] == "Bearer some-token"
+        # The two headers UW added that we were missing:
+        assert h["UW-CLIENT-API-ID"] == "100001"
+        assert "Mozilla" in h.get("User-Agent", "")  # browser-like UA to pass Cloudflare
+
+    def test_live_callers_use_the_helper(self):
+        import inspect
+
+        from options_owl.risk import flow_runner
+        from options_owl.sourcing.data import capitol_trades
+        # Both live UW REST callers must route through the helper, not a bare Bearer dict.
+        assert "_uw_rest_headers(api_key)" in inspect.getsource(flow_runner.get_market_tide_bias)
+        assert "_uw_rest_headers(api_key)" in inspect.getsource(capitol_trades._fetch_from_unusual_whales)

@@ -24,9 +24,31 @@ from datetime import datetime, timedelta
 
 import requests
 
-UW_KEY = "0294df1c-4517-4c0a-bae9-f037a39aa5ef"
+import os as _os
+from pathlib import Path as _Path
+
+UW_KEY = _os.environ.get("UNUSUAL_WHALES_API_KEY", "").strip()
+if not UW_KEY:
+    # fall back to the repo-root .env (script lives in <repo>/scripts/)
+    _envp = _Path(__file__).resolve().parent.parent / ".env"
+    try:
+        for _line in _envp.read_text().splitlines():
+            if _line.strip().startswith("UNUSUAL_WHALES_API_KEY"):
+                UW_KEY = _line.split("=", 1)[1].strip().strip('"').strip("'")
+                break
+    except Exception:
+        pass
+assert UW_KEY and len(UW_KEY) >= 30, f"UW key not resolved (got {UW_KEY!r})"
 BASE_URL = "https://api.unusualwhales.com/api"
-HEADERS = {"Authorization": f"Bearer {UW_KEY}", "Accept": "application/json"}
+# UW's REST API now requires the client-id header + a browser-like UA (Cloudflare blocks
+# bare bot signatures with a 1010, and the API 401s without UW-CLIENT-API-ID). See skill.md.
+HEADERS = {
+    "Authorization": f"Bearer {UW_KEY}",
+    "Accept": "application/json",
+    "UW-CLIENT-API-ID": "100001",
+    "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+}
 
 TICKERS = [
     "SPY", "QQQ", "TSLA", "NVDA", "META", "AAPL", "AMZN",

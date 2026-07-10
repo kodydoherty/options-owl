@@ -61,10 +61,11 @@ async def fetch_congress_activity(ticker: str) -> CongressActivity | None:
 async def _fetch_from_unusual_whales(ticker: str, api_key: str) -> CongressActivity | None:
     """Fetch Congress trades from Unusual Whales API."""
     try:
+        from options_owl.risk.flow_runner import _uw_rest_headers
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
                 f"https://api.unusualwhales.com/api/congress/{ticker.upper()}/trades",
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers=_uw_rest_headers(api_key),  # UW REST now needs the client-id header
             )
             if resp.status_code != 200:
                 return None
