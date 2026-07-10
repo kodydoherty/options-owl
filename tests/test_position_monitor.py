@@ -368,3 +368,31 @@ class TestResolveExpiryForLookup:
         trade = {"expiry_date": "", "opened_at": "2020-01-01T10:00:00"}
         # Empty string is falsy, falls through to legacy check
         assert _resolve_expiry_for_lookup(trade) is None
+
+
+# ---------------------------------------------------------------------------
+# Exit-monitor Redis snapshot freshness (2026-07-10 stale-quote fix)
+# ---------------------------------------------------------------------------
+class TestExitSnapshotFreshness:
+    """The monitor must not trust a STALE Redis snapshot for exit decisions — a frozen
+    thin-0DTE quote made the FSM blind while the premium fell through the -25% stop
+    (AMD 2026-07-10: -14.9% frozen 21s, then -30%). It now falls through to a fresh quote."""
+
+    def test_setting_exists_and_is_tight(self):
+        from options_owl.config.settings import Settings
+        s = Settings(DISCORD_TOKEN="t", DISCORD_CHANNEL_ID=1)
+        # Default tightened from the old hardcoded 30s to <=10s so a frozen snapshot
+        # is rejected fast enough to catch a fast-diving 0DTE.
+        assert hasattr(s, "EXIT_SNAPSHOT_MAX_AGE_SEC")
+        assert s.EXIT_SNAPSHOT_MAX_AGE_SEC <= 10.0
+
+    def test_monitor_uses_configurable_freshness_not_hardcoded_30(self):
+        import inspect
+
+        from options_owl.execution.position_monitor import run_position_monitor
+        src = inspect.getsource(run_position_monitor)
+        # The exit read must gate on the setting, not the old hardcoded 30s window.
+        assert "EXIT_SNAPSHOT_MAX_AGE_SEC" in src
+        assert "if age < 30:" not in src
+        # And it must fall through (leave exit_premium unset) on a stale snapshot.
+        assert "falling through to a fresh quote" in src

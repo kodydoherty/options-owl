@@ -1523,7 +1523,13 @@ async def run_position_monitor(
                             if snap and snap.get("mid") and snap["mid"] > 0:
                                 import time as _t
                                 age = _t.time() - snap.get("t", 0) if "t" in snap else 999
-                                if age < 30:  # only use if < 30s old
+                                # A thin 0DTE snapshot can FREEZE for 20-30s during a fast move; a
+                                # stale read makes the FSM blind and the -25% stop fires late (AMD
+                                # 2026-07-10). Only trust a FRESH snapshot; otherwise leave
+                                # exit_premium None so we fall through to a live Webull/Polygon quote.
+                                max_age = float(getattr(
+                                    paper_trader.settings, "EXIT_SNAPSHOT_MAX_AGE_SEC", 10.0))
+                                if age < max_age:
                                     exit_premium = snap["mid"]
                                     _prem_source = "redis_snapshot"
                                     exit_bid = snap.get("bid")
@@ -1531,6 +1537,11 @@ async def run_position_monitor(
                                     logger.debug(
                                         f"  {ticker} — Redis snapshot ${exit_premium:.2f} "
                                         f"(age={age:.0f}s, bid={snap.get('bid')}, ask={snap.get('ask')})"
+                                    )
+                                else:
+                                    logger.debug(
+                                        f"  {ticker} — Redis snapshot STALE (age={age:.0f}s > "
+                                        f"{max_age:.0f}s) — falling through to a fresh quote"
                                     )
                     except asyncio.TimeoutError:
                         pass

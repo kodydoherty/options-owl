@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     WEBULL_ENTRY_POLL_SEC: float = 1.0  # fill-status poll cadence within a rung (was 3s)
     WEBULL_ENTRY_USE_LIVE_QUOTE: bool = True  # price the chase off the harvester's live Redis ask (HTTP fallback) so the limit isn't stale by rest-time
     WEBULL_ENTRY_QUOTE_MAX_AGE_SEC: float = 20.0  # reject a Redis snapshot older than this (falls back to HTTP) — a stale quote can never make the limit worse
+    # Exit-MONITOR Redis snapshot freshness (2026-07-10): the FSM reads the premium from the
+    # harvester's Redis snapshot to decide exits. A thin 0DTE contract's snapshot can FREEZE for
+    # 20-30s during a fast move (few quotes), and the old 30s trust window let the monitor read a
+    # stale premium — it went BLIND while the real price fell through the -25% stop (AMD 2026-07-10:
+    # frozen at -14.9% for 21s, then a fresh quote showed -30% → stop fired 5-8% late, an extra
+    # ~$130 loss). Tightened to 10s: when the snapshot is older, exit_premium stays None and the loop
+    # falls through to a FRESH quote (Webull/Polygon) so a fast-diving premium is seen in real time.
+    EXIT_SNAPSHOT_MAX_AGE_SEC: float = 10.0
     # Fast-EXIT chase (2026-07-02): the sell side is a single submit + slow cross-cycle retry, so a
     # fast-diving 0DTE gives back profit before the price tier advances. When ON, a SELL runs a tight
     # in-line tiered chase — a few progressively-more-marketable prices, ~2.5s apart, priced off the
