@@ -584,6 +584,19 @@ class WebullExecutor:
         """
         self._ensure_clients()
         await self._check_kill_switch()
+        # Webull rejects any single option order over MAX_ORDER_CONTRACTS (100). Cheap
+        # high-conviction names (e.g. SMCI: sizing produced 120 on 2026-07-10) used to blow
+        # past it and get HARD-REJECTED → the whole entry orphaned to $0 (a MISSED trade, not a
+        # loss). Clamp the BUY to the per-order cap instead: capture 100 contracts rather than
+        # nothing. SELL is never clamped (must be able to close any size). The dollar/value cap
+        # in _check_safety_limits still applies to the clamped count.
+        if side.upper() == "BUY" and contracts > MAX_ORDER_CONTRACTS:
+            logger.warning(
+                f"WEBULL ORDER CLAMP: {ticker} entry sized {contracts} contracts > per-order "
+                f"cap {MAX_ORDER_CONTRACTS} — clamping to {MAX_ORDER_CONTRACTS} (Webull rejects "
+                f"larger single orders; capturing the cap instead of orphaning the entry)"
+            )
+            contracts = MAX_ORDER_CONTRACTS
         logger.debug(
             f"WEBULL safety check: side={side} contracts={contracts} "
             f"limit=${limit_price:.2f} paper_trade={self.settings.PAPER_TRADE} "

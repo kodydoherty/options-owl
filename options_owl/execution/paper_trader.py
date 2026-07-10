@@ -1718,6 +1718,20 @@ class PaperTrader:
             else:
                 contracts = total_contracts
 
+            # Webull rejects any single option order over 100 contracts. Cheap high-conviction
+            # names (SMCI on 2026-07-10 sized 120) used to blow past it → the entry HARD-REJECTED
+            # and orphaned to $0 (missed trade). Clamp the order here so the DB row, total_cost,
+            # and the Webull order all agree at <= the per-order cap (webull_executor also clamps
+            # as a backstop). 100 contracts is already a large 0DTE position; the $ caps bound risk.
+            from options_owl.execution.webull_executor import MAX_ORDER_CONTRACTS
+            if contracts > MAX_ORDER_CONTRACTS:
+                logger.info(
+                    f"SIZING: per-order cap: {contracts} → {MAX_ORDER_CONTRACTS} contracts "
+                    f"(Webull rejects single orders > {MAX_ORDER_CONTRACTS})"
+                )
+                contracts = MAX_ORDER_CONTRACTS
+                dca_tranches_remaining = 0
+
             total_cost = contracts * cost_per_contract
 
             # Hard cap: never exceed PORTFOLIO_SIZE regardless of DB balance

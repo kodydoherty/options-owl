@@ -68,6 +68,53 @@ class TestSafetyRails:
         await executor._check_kill_switch()  # should not raise
 
 
+class TestBuyOrderClamp:
+    """A BUY over the per-order cap must be CLAMPED to the cap (capture the position),
+    not hard-rejected (which orphaned cheap high-conviction entries to $0 — SMCI 2026-07-10)."""
+
+    @pytest.mark.asyncio
+    async def test_oversized_buy_is_clamped_not_rejected(self):
+        executor = WebullExecutor(_make_settings(PAPER_TRADE=False))
+        executor._ensure_clients = MagicMock()
+        executor._check_kill_switch = AsyncMock()
+        captured = {}
+
+        async def _fake_escalation(*, contracts, **kw):
+            captured["contracts"] = contracts
+            return OrderResult(success=True, order_id="x")
+
+        executor._place_buy_with_escalation = _fake_escalation
+        await executor.place_option_order(
+            ticker="SMCI", strike=50.0, expiry_date="2026-07-10", option_type="CALL",
+            side="BUY", contracts=MAX_ORDER_CONTRACTS + 20, limit_price=0.25,
+        )
+        assert captured["contracts"] == MAX_ORDER_CONTRACTS
+
+    @pytest.mark.asyncio
+    async def test_within_cap_buy_unchanged(self):
+        executor = WebullExecutor(_make_settings(PAPER_TRADE=False))
+        executor._ensure_clients = MagicMock()
+        executor._check_kill_switch = AsyncMock()
+        captured = {}
+
+        async def _fake_escalation(*, contracts, **kw):
+            captured["contracts"] = contracts
+            return OrderResult(success=True, order_id="x")
+
+        executor._place_buy_with_escalation = _fake_escalation
+        await executor.place_option_order(
+            ticker="SPY", strike=500.0, expiry_date="2026-07-10", option_type="CALL",
+            side="BUY", contracts=10, limit_price=1.00,
+        )
+        assert captured["contracts"] == 10
+
+    def test_safety_backstop_still_rejects_oversized(self):
+        """The _check_safety_limits backstop still raises if an unclamped size ever reaches it."""
+        executor = WebullExecutor(_make_settings(PAPER_TRADE=False))
+        with pytest.raises(ValueError, match="hard cap"):
+            executor._check_safety_limits(MAX_ORDER_CONTRACTS + 1, 0.25, "BUY")
+
+
 class TestMissingCredentials:
     def test_no_app_key_raises(self):
         executor = WebullExecutor(_make_settings(WEBULL_APP_KEY="", WEBULL_APP_SECRET="secret"))
