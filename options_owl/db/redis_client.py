@@ -287,6 +287,15 @@ _PFX_SNAPSHOT = "owl:snapshot:"
 _PFX_SIGNAL_DATA = "owl:ml_signal:"
 _PFX_CANDLE = "owl:candle:"
 _FLOW_CHANNEL = "owl:flow:bars"
+# Event-driven monitor (2026-07-23): the harvester PUBLISHES held-contract premium ticks here so the monitor
+# can evaluate the FSM per-tick (~1s) instead of on a 3-5s poll. Additive to the existing owl:option:/snapshot:
+# SETs. See specs/active/2026-07-23_event-driven-monitor.md.
+_PREMIUM_TICK_CHANNEL = "owl:premium:ticks"
+# Held-contract options-WS feed (2026-07-22): per-tick NBBO for the small set of currently-held
+# contracts, published by the harvester's /options WS. Distinct from the 15s REST snapshot so the
+# monitor can prefer the real-time premium. Held-contract registry = each bot's open contracts.
+_PFX_OPTQUOTE = "owl:optquote:"
+_PFX_HELD = "owl:held:"
 _SIGNAL_CHANNEL = "owl:signals"
 
 
@@ -539,6 +548,101 @@ async def get_option_premium(contract_key: str) -> dict | None:
         return json.loads(val) if val else None
     except Exception:
         return None
+
+
+async def publish_optquote(contract_key: str, bid: float, ask: float, mid: float) -> None:
+    """Publish a per-tick option NBBO (held-contract options-WS feed). Short TTL — real-time only.
+
+    contract_key = ticker:type:strike:expiry. Read by the monitor ahead of the 15s REST snapshot.
+    """
+    if _redis is None:
+        return
+    try:
+        contract_key = _normalize_contract_key(contract_key)
+        key = f"{_PFX_OPTQUOTE}{contract_key}"
+        await _redis.set(
+            key,
+            json.dumps({"bid": bid, "ask": ask, "mid": mid, "t": time.time()}),
+            ex=30,  # real-time feed — a value older than this is stale; fall through to the snapshot
+        )
+    except Exception as exc:
+        logger.debug(f"Redis publish_optquote failed: {exc}")
+
+
+async def get_optquote(contract_key: str) -> dict | None:
+    """Read the latest per-tick option NBBO from the held-contract WS feed, or None."""
+    if _redis is None:
+        return None
+    try:
+        contract_key = _normalize_contract_key(contract_key)
+        key = f"{_PFX_OPTQUOTE}{contract_key}"
+        val = await _redis.get(key)
+        return json.loads(val) if val else None
+    except Exception:
+        return None
+
+
+async def publish_premium_tick(contract_key: str, mid: float, bid: float, ask: float) -> None:
+    """Publish a per-tick premium update for a held contract (event-driven monitor). Fire-and-forget."""
+    if _redis is None:
+        return
+    try:
+        contract_key = _normalize_contract_key(contract_key)
+        await _redis.publish(
+            _PREMIUM_TICK_CHANNEL,
+            json.dumps({"c": contract_key, "mid": mid, "bid": bid, "ask": ask, "t": time.time()}),
+        )
+    except Exception as exc:
+        logger.debug(f"Redis publish_premium_tick failed: {exc}")
+
+
+def premium_tick_pubsub():
+    """Return a Redis pubsub subscribed to the premium-tick channel, or None. The monitor's event task
+    reads messages off this to evaluate the FSM per-tick. Caller owns the pubsub lifecycle.
+    """
+    if _redis is None:
+        return None
+    try:
+        pubsub = _redis.pubsub()
+        return pubsub  # caller does: await pubsub.subscribe(_PREMIUM_TICK_CHANNEL)
+    except Exception as exc:
+        logger.debug(f"Redis premium_tick_pubsub failed: {exc}")
+        return None
+
+
+PREMIUM_TICK_CHANNEL = _PREMIUM_TICK_CHANNEL  # public alias for subscribers
+
+
+async def register_held_contracts(bot: str, contract_keys: list[str], ttl: int = 90) -> None:
+    """Each bot publishes its currently-open contract keys so the harvester can subscribe the WS to
+    exactly the union of held contracts. TTL'd so a dead bot's set naturally expires.
+    """
+    if _redis is None:
+        return
+    try:
+        key = f"{_PFX_HELD}{bot}"
+        await _redis.set(key, json.dumps(list(contract_keys)), ex=ttl)
+    except Exception as exc:
+        logger.debug(f"Redis register_held_contracts failed: {exc}")
+
+
+async def get_all_held_contracts() -> set[str]:
+    """Union of every bot's currently-held contract keys (for the harvester WS subscription set)."""
+    if _redis is None:
+        return set()
+    try:
+        out: set[str] = set()
+        async for key in _redis.scan_iter(match=f"{_PFX_HELD}*"):
+            val = await _redis.get(key)
+            if val:
+                try:
+                    out.update(json.loads(val))
+                except Exception:
+                    continue
+        return out
+    except Exception as exc:
+        logger.debug(f"Redis get_all_held_contracts failed: {exc}")
+        return set()
 
 
 async def publish_flow_bar(bar_dict: dict) -> None:

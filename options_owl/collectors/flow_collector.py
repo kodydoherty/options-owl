@@ -267,6 +267,12 @@ class FlowCollector:
         self._ws_connected = False
         self._last_msg_time: float = 0.0  # monotonic time of last WS message
 
+        # Event-driven monitor (2026-07-23): when enabled, also PUBLISH held-contract premium ticks to a
+        # pub/sub channel so the monitor can react per-tick. Set by the harvester from ENABLE_PREMIUM_TICK_PUBLISH.
+        self._publish_ticks: bool = False
+        self._held_contracts: set[str] = set()  # union of bots' held contract keys (refreshed periodically)
+        self._held_refresh_ts: float = 0.0
+
     @property
     def ws_connected(self) -> bool:
         return self._ws_connected
@@ -342,6 +348,25 @@ class FlowCollector:
                                 )
                     except Exception:
                         pass
+
+                    # Event-driven monitor: PUBLISH per-tick premiums for HELD contracts only (bounds pub/sub
+                    # traffic). Additive + flag-gated; a failure here never disturbs the SETs above.
+                    if self._publish_ticks:
+                        try:
+                            from options_owl.db import redis_client
+                            now_m = time.monotonic()
+                            if now_m - self._held_refresh_ts > 5.0:  # refresh held set every ~5s
+                                self._held_contracts = await redis_client.get_all_held_contracts()
+                                self._held_refresh_ts = now_m
+                            if self._held_contracts and redis_client.is_connected():
+                                for contract_key, snap in snap_buf.items():
+                                    if contract_key in self._held_contracts:
+                                        await redis_client.publish_premium_tick(
+                                            contract_key, snap.get("mid", 0),
+                                            snap.get("bid", 0), snap.get("ask", 0),
+                                        )
+                        except Exception:
+                            pass
 
             except asyncio.CancelledError:
                 raise

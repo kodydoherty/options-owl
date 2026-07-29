@@ -289,12 +289,45 @@ def check_breakeven_ratchet(
     return None, new_armed
 
 
+def check_early_lock(
+    gain: float,
+    peak_gain: float,
+    arm_pct: float,
+    floor_pct: float,
+    debug: dict,
+) -> ExitAction | None:
+    """Early small-win floor — plugs the "went +10-15% then round-tripped to a loss" gap.
+
+    The existing protection gates arm too HIGH to catch a modest winner that reverses: breakeven ratchet
+    at +20%, profit-lock at +25%, scaleout at +20%. A trade that peaks at +12-18% has NO floor and can
+    ride all the way back to the -25% hardstop. This arms a LOW floor: once peak gain reaches +arm_pct%,
+    if current gain falls to <= floor_pct%, exit there — locking a small win / scratch instead of letting
+    a green trade go red.
+
+    Validated 2026-07-14 (flow + ML): arm +12% catches the round-trip losers (262 flow trades, -$34k
+    population) while barely touching runners (best-days clip ~$0 at arm 12 — a trade that keeps climbing
+    never falls back to the floor). Below +12% it arms on noise and clips dips-that-recover; above ~+18%
+    the breakeven ratchet already covers the zone. Returns ExitAction or None.
+    """
+    if peak_gain < arm_pct:
+        return None
+    if gain <= floor_pct:
+        return _exit(
+            ExitReason.EARLY_LOCK,
+            f"Early-lock: peaked +{peak_gain:.0f}% (>= arm +{arm_pct:.0f}%), now +{gain:.0f}% "
+            f"<= floor +{floor_pct:.0f}% — locking the small win instead of round-tripping",
+            debug=debug,
+        )
+    return None
+
+
 def check_profit_lock(
     gain: float,
     peak_gain: float,
     keep_frac: float,
     activate_pct: float,
     debug: dict,
+    peak_exempt_pct: float = 0.0,
 ) -> ExitAction | None:
     """V7 Gate (CALL-only, caller-gated): profit-lock ratchet on the upside.
 
@@ -309,6 +342,12 @@ def check_profit_lock(
     consistent per-month; the same rule HURTS puts.
     """
     if peak_gain < activate_pct:
+        return None
+    # Moonshot exemption: once a leg has peaked past peak_exempt_pct, hand it to the wide "let it run"
+    # trail (gate 8) instead of locking the tight keep_frac give-back — the profit-lock otherwise fires
+    # first and a +300% moonshot closes on a 20%-of-peak dip, never reaching the 52-71% wide-trail tier.
+    # 0 = disabled (current behaviour). Validated by the profit-lock sweep before enabling.
+    if peak_exempt_pct > 0 and peak_gain >= peak_exempt_pct:
         return None
     floor_gain = keep_frac * peak_gain
     if gain < floor_gain:

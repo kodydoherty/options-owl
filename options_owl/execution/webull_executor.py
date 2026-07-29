@@ -375,6 +375,18 @@ class WebullExecutor:
         SELL (exit) orders must be able to close any position size."""
         if action.upper() != "SELL":
             if contracts > MAX_ORDER_CONTRACTS:
+                # This SHOULD be unreachable: place_option_order clamps every non-SELL order to
+                # MAX_ORDER_CONTRACTS before calling us. If we still land here, an order path
+                # reached the validator UNCLAMPED (SMCI orphaned at 120 on 2026-07-10 AND -13
+                # despite the clamp being deployed — a path we couldn't reproduce statically).
+                # Log the full call stack so the next occurrence reveals the exact caller instead
+                # of just orphaning the entry to $0.
+                import traceback
+                logger.error(
+                    f"SAFETY-CAP RAISE (unexpected — clamp should have fired): {action} "
+                    f"{contracts} > {MAX_ORDER_CONTRACTS}. Caller stack:\n"
+                    + "".join(traceback.format_stack(limit=8))
+                )
                 raise ValueError(
                     f"Order size {contracts} exceeds hard cap {MAX_ORDER_CONTRACTS}"
                 )
@@ -585,14 +597,20 @@ class WebullExecutor:
         self._ensure_clients()
         await self._check_kill_switch()
         # Webull rejects any single option order over MAX_ORDER_CONTRACTS (100). Cheap
-        # high-conviction names (e.g. SMCI: sizing produced 120 on 2026-07-10) used to blow
-        # past it and get HARD-REJECTED → the whole entry orphaned to $0 (a MISSED trade, not a
-        # loss). Clamp the BUY to the per-order cap instead: capture 100 contracts rather than
-        # nothing. SELL is never clamped (must be able to close any size). The dollar/value cap
-        # in _check_safety_limits still applies to the clamped count.
-        if side.upper() == "BUY" and contracts > MAX_ORDER_CONTRACTS:
+        # high-conviction names (e.g. SMCI: sizing produced 120 on 2026-07-10 AND again 2026-07-13)
+        # used to blow past it and get HARD-REJECTED → the whole entry orphaned to $0 (a MISSED
+        # trade, not a loss). Clamp any non-SELL (open/add) order to the per-order cap instead:
+        # capture 100 contracts rather than nothing.
+        #
+        # IMPORTANT (2026-07-13 fix): the guard here MUST match the guard in _check_safety_limits,
+        # which RAISES for everything `action.upper() != "SELL"`. The old guard was the stricter
+        # `side.upper() == "BUY"`, so an entry whose side string was anything other than exactly
+        # "BUY" (an add/re-size path) skipped the clamp but still hit the raise → orphaned (the
+        # SMCI #504 recurrence). Aligning the two guards closes every non-SELL order path. SELL is
+        # never clamped (must be able to close any size); the $ value cap still applies after.
+        if side.upper() != "SELL" and contracts > MAX_ORDER_CONTRACTS:
             logger.warning(
-                f"WEBULL ORDER CLAMP: {ticker} entry sized {contracts} contracts > per-order "
+                f"WEBULL ORDER CLAMP: {ticker} {side} sized {contracts} contracts > per-order "
                 f"cap {MAX_ORDER_CONTRACTS} — clamping to {MAX_ORDER_CONTRACTS} (Webull rejects "
                 f"larger single orders; capturing the cap instead of orphaning the entry)"
             )
@@ -825,6 +843,216 @@ class WebullExecutor:
             order["close_contracts"] = close_contracts
         return [order]
 
+    @staticmethod
+    def _build_stop_order_payload(
+        *,
+        client_order_id: str,
+        ticker: str,
+        strike: float,
+        expiry_date: str,
+        option_type: str,
+        contracts: int,
+        stop_price: float,
+        close_contracts: list[dict] | None = None,
+    ) -> list[dict]:
+        """Build a resting SELL STOP_LOSS payload (Webull triggers a market sell when premium <= stop_price).
+
+        Mirrors ``_build_order_payload`` but ``order_type='STOP_LOSS'`` + ``stop_price`` (no limit price) and
+        the side is ALWAYS ``SELL`` — a broker-side backstop for an open long option. Webull requires the
+        stop_price to sit on a legal increment (penny < $3, nickel >= $3) exactly like a limit price, so we
+        snap it through the same chokepoint (rounding DOWN, the SELL direction). Options stops are DAY-only.
+        """
+        stop_price = _round_option_price(stop_price, "SELL")
+        leg = {
+            "side": "SELL",
+            "quantity": str(contracts),
+            "symbol": ticker.upper(),
+            "strike_price": str(strike),
+            "option_expire_date": expiry_date,
+            "instrument_type": "OPTION",
+            "option_type": option_type.upper(),
+            "market": "US",
+        }
+        order = {
+            "client_order_id": client_order_id,
+            "combo_type": "NORMAL",
+            "order_type": "STOP_LOSS",
+            "quantity": str(contracts),
+            "stop_price": f"{stop_price:.2f}",
+            "option_strategy": "SINGLE",
+            "side": "SELL",
+            "time_in_force": "DAY",
+            "entrust_type": "QTY",
+            "legs": [leg],
+        }
+        if close_contracts:
+            order["close_contracts"] = close_contracts
+        return [order]
+
+    async def place_stop_loss(
+        self,
+        *,
+        ticker: str,
+        strike: float,
+        expiry_date: str,
+        option_type: str,
+        contracts: int,
+        stop_price: float,
+    ) -> OrderResult:
+        """Rest a broker-side SELL STOP_LOSS on an OPEN long option position.
+
+        The venue fires a market sell the microsecond premium <= ``stop_price`` — the zero-latency backstop
+        under our 5s poll. Requires a real Webull position (looks up ``position_id`` → ``close_contracts`` so
+        Webull treats it as sell-to-close, NEVER sell-to-open/naked-short). Returns an ``OrderResult`` whose
+        ``client_order_id`` the caller MUST track so it can cancel/replace the stop (and cancel it before any
+        manual exit — the double-fill guard). Gated by ``ENABLE_BROKER_STOP``; a no-op OrderResult otherwise.
+        """
+        if getattr(self.settings, "ENABLE_BROKER_STOP", False) is not True:
+            return OrderResult(
+                success=False, error="broker stop disabled (ENABLE_BROKER_STOP=false)",
+                fill_status="DISABLED",
+            )
+        self._ensure_clients()
+        await self._check_kill_switch()
+
+        # A resting stop is a SELL — never clamp size (must be able to cover the whole position), but the
+        # broker still rejects > MAX_ORDER_CONTRACTS as a single order. Cap at the venue limit; a leg larger
+        # than the cap needs a second stop (Phase 3 handles multi-stop; Phase 1 caps + logs).
+        if contracts > MAX_ORDER_CONTRACTS:
+            logger.warning(
+                f"BROKER STOP CLAMP: {ticker} stop sized {contracts} > per-order cap "
+                f"{MAX_ORDER_CONTRACTS} — resting a stop for {MAX_ORDER_CONTRACTS} only"
+            )
+            contracts = MAX_ORDER_CONTRACTS
+
+        stop_price = _round_option_price(stop_price, "SELL")
+        client_order_id = uuid.uuid4().hex[:32]
+
+        position_id = await self._find_position_id(ticker, strike, expiry_date, option_type)
+        if not position_id:
+            # No live position → nothing to protect. NEVER submit a SELL stop without close_contracts
+            # (Webull could read it as sell-to-open / naked short).
+            logger.warning(
+                f"BROKER STOP SKIPPED: no Webull position for {ticker} ${strike} {option_type} "
+                f"exp={expiry_date} — cannot rest a stop-to-close"
+            )
+            return OrderResult(
+                success=False,
+                error=f"No Webull position for {ticker} ${strike} {option_type} — no stop rested",
+                fill_status="NO_POSITION",
+            )
+
+        order_payload = self._build_stop_order_payload(
+            client_order_id=client_order_id,
+            ticker=ticker,
+            strike=strike,
+            expiry_date=expiry_date,
+            option_type=option_type,
+            contracts=contracts,
+            stop_price=stop_price,
+            close_contracts=[{"position_id": position_id, "quantity": str(contracts)}],
+        )
+
+        logger.info(
+            f"BROKER STOP: SELL {contracts}x {ticker} ${strike} {option_type} exp={expiry_date} "
+            f"stop=${stop_price:.2f} position_id={position_id} [client_id={client_order_id}]"
+        )
+
+        try:
+            order_id, _raw, error = await self._submit_order_payload(order_payload)
+        except Exception as exc:
+            logger.error(f"BROKER STOP ERROR: {ticker} ${strike} {option_type} — {exc}")
+            return OrderResult(
+                success=False, client_order_id=client_order_id, error=str(exc),
+                fill_status="FAILED",
+            )
+
+        if order_id is None:
+            logger.error(f"BROKER STOP REJECTED: {ticker} ${strike} {option_type} — {error}")
+            return OrderResult(
+                success=False, client_order_id=client_order_id, error=str(error),
+                fill_status="REJECTED",
+            )
+
+        logger.info(f"BROKER STOP RESTED: {ticker} order_id={order_id} stop=${stop_price:.2f}")
+        return OrderResult(
+            success=True, order_id=order_id, client_order_id=client_order_id,
+            fill_status="SUBMITTED",
+        )
+
+    async def replace_stop_loss(
+        self,
+        *,
+        client_order_id: str,
+        ticker: str,
+        strike: float,
+        expiry_date: str,
+        option_type: str,
+        contracts: int,
+        stop_price: float,
+    ) -> OrderResult:
+        """MODIFY an existing resting STOP_LOSS's stop price IN PLACE (Webull ``replace_option``).
+
+        This is the safe way to ratchet a trailing stop: the order keeps its single holding-quantity
+        reservation, so there is NO cancel/replace window where two orders both reserve the position (the
+        OPTION_LONG_POSITION_MUST_BE_CLOSE_THAN_SELL_SHORT storm on 2026-07-23). The modify order carries the
+        SAME ``client_order_id`` so Webull identifies the order to change. On ANY failure the caller keeps the
+        existing stop (never falls back to cancel+replace). Gated by ENABLE_BROKER_STOP.
+        """
+        if getattr(self.settings, "ENABLE_BROKER_STOP", False) is not True:
+            return OrderResult(success=False, error="broker stop disabled", fill_status="DISABLED")
+        self._ensure_clients()
+        stop_price = _round_option_price(stop_price, "SELL")
+        # Reuse the STOP_LOSS payload shape, keyed by the existing client_order_id (identifies the order).
+        modify_orders = self._build_stop_order_payload(
+            client_order_id=client_order_id, ticker=ticker, strike=strike,
+            expiry_date=expiry_date, option_type=option_type, contracts=contracts,
+            stop_price=stop_price,
+        )
+        logger.info(
+            f"BROKER STOP MODIFY: {ticker} ${strike} {option_type} exp={expiry_date} "
+            f"stop=${stop_price:.2f} client_id={client_order_id}"
+        )
+        try:
+            response = await asyncio.to_thread(
+                self._trade_client.order_v2.replace_option, self._account_id, modify_orders,
+            )
+        except (ValueError, ConnectionError, OSError) as conn_exc:
+            if "connection" in str(conn_exc).lower():
+                await asyncio.to_thread(self._reconnect)
+                try:
+                    response = await asyncio.to_thread(
+                        self._trade_client.order_v2.replace_option, self._account_id, modify_orders,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(f"BROKER STOP MODIFY failed (keeping existing stop): {ticker} — {exc}")
+                    return OrderResult(success=False, client_order_id=client_order_id,
+                                       error=str(exc), fill_status="FAILED")
+            else:
+                logger.warning(f"BROKER STOP MODIFY failed (keeping existing stop): {ticker} — {conn_exc}")
+                return OrderResult(success=False, client_order_id=client_order_id,
+                                   error=str(conn_exc), fill_status="FAILED")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"BROKER STOP MODIFY error (keeping existing stop): {ticker} — {exc}")
+            return OrderResult(success=False, client_order_id=client_order_id,
+                               error=str(exc), fill_status="FAILED")
+        result = response.json() if hasattr(response, "json") else response
+        if isinstance(result, dict):
+            order_id = result.get("order_id", result.get("orderId"))
+            error = result.get("error", result.get("msg"))
+        elif isinstance(result, list) and result:
+            order_id = result[0].get("order_id", result[0].get("orderId"))
+            error = result[0].get("error")
+        else:
+            order_id, error = None, f"Unexpected replace response: {result}"
+        if order_id is None and error:
+            logger.warning(f"BROKER STOP MODIFY rejected (keeping existing stop): {ticker} — {error}")
+            return OrderResult(success=False, client_order_id=client_order_id,
+                               error=str(error), fill_status="REJECTED")
+        logger.info(f"BROKER STOP MODIFIED: {ticker} stop=${stop_price:.2f} client_id={client_order_id}")
+        return OrderResult(success=True, order_id=order_id or client_order_id,
+                           client_order_id=client_order_id, fill_status="SUBMITTED")
+
     async def _submit_order_payload(
         self, order_payload: list[dict],
     ) -> tuple[str | None, object, object]:
@@ -991,6 +1219,28 @@ class WebullExecutor:
         last_result: OrderResult | None = None
         last_client_id: str | None = None
 
+        # Liquidity-aware size-down (2026-07-17): on a fast chop tape a large order orphans because
+        # the full contract count can't clear the displayed book (small accounts' tiny orders fill,
+        # kody's large ones don't). Cap the order near available ask_size × a depth multiplier so we
+        # take a real, smaller fill instead of $0. Redis-only + freshness-guarded; when size is
+        # unknown we keep the full requested size (i.e. exactly the current behaviour). The reduced
+        # count is reported back via filled_quantity so paper_trader records the TRUE position — a
+        # phantom (recorded > filled) position would break the sell path.
+        requested_contracts = contracts
+        if getattr(self.settings, "WEBULL_ENTRY_LIQUIDITY_AWARE", False) and contracts > 0:
+            ask_size = await self._fetch_ask_size(ticker, strike, expiry_date, option_type)
+            if ask_size and ask_size > 0:
+                mult = float(getattr(self.settings, "WEBULL_ENTRY_LIQUIDITY_MULT", 2.0) or 2.0)
+                floor = int(getattr(self.settings, "WEBULL_ENTRY_MIN_CONTRACTS", 1) or 1)
+                cap = max(floor, int(ask_size * mult))
+                if cap < contracts:
+                    logger.warning(
+                        f"WEBULL ENTRY LIQUIDITY SIZE-DOWN: {ticker} ${strike} {option_type} "
+                        f"{contracts}x → {cap}x (ask_size={ask_size:.0f} × {mult:.1f}) — "
+                        f"avoids orphaning against a thin book"
+                    )
+                    contracts = cap
+
         for attempt in range(max_attempts):
             # Price EVERY rung (including rung 0) off the freshest available ask — harvester live
             # Redis quote first, HTTP fallback — so the limit isn't stale by the time the order
@@ -1098,6 +1348,10 @@ class WebullExecutor:
                     client_order_id=client_order_id,
                     details=result if isinstance(result, dict) else None,
                     fill_status="FILLED",
+                    # Report the actual (possibly liquidity-reduced) count so paper_trader records
+                    # the TRUE position size, not the originally-requested one. None-safe: on a
+                    # normal full-size fill this equals the request; when sized down it's smaller.
+                    filled_quantity=(contracts if contracts != requested_contracts else None),
                 )
 
             if fill_status in ("PARTIAL_FILLED", "PARTIAL"):
@@ -1432,6 +1686,36 @@ class WebullExecutor:
                 return ask if ask > 0 else None
             except (TypeError, ValueError):
                 return None
+        return None
+
+    async def _fetch_ask_size(
+        self, ticker: str, strike: float, expiry_date: str, option_type: str,
+    ) -> float | None:
+        """Displayed ask_size (contracts available at the ask) from the harvester's live Redis
+        snapshot, freshness-guarded exactly like _fetch_ask. Used for liquidity-aware entry
+        sizing so a large order takes a real (smaller) fill instead of orphaning against a thin
+        book. Returns None when no fresh sized snapshot is available (→ sizing falls back to the
+        full requested size, i.e. current behaviour). HTTP quotes carry no reliable size, so this
+        is Redis-only — a missing size must never fabricate a cap.
+        """
+        if not getattr(self.settings, "WEBULL_ENTRY_USE_LIVE_QUOTE", True):
+            return None
+        try:
+            import time
+
+            from options_owl.db import redis_client
+
+            max_age = float(getattr(self.settings, "WEBULL_ENTRY_QUOTE_MAX_AGE_SEC", 20.0) or 20.0)
+            contract_key = f"{ticker.upper()}:{option_type.lower()}:{float(strike)}:{expiry_date}"
+            snap = await redis_client.get_option_snapshot(contract_key)
+            if snap:
+                ts = float(snap.get("t") or 0)
+                size = float(snap.get("ask_size") or 0)
+                # Only trust a VERIFIABLY fresh snapshot (same guard as _fetch_ask).
+                if size > 0 and ts > 0 and (time.time() - ts) <= max_age:
+                    return size
+        except Exception as exc:
+            logger.debug(f"_fetch_ask_size redis miss for {ticker} ${strike} {option_type}: {exc}")
         return None
 
     async def _fetch_bid(

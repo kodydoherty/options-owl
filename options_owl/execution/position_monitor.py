@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 from datetime import datetime, time, timedelta, timezone
 from typing import TYPE_CHECKING
 
@@ -21,6 +22,7 @@ from options_owl.execution.alerts import (
     alert_premium_blackout,
     clear_alerts_for_trade,
 )
+from options_owl.execution.broker_stop import BrokerStopManager
 from options_owl.execution.paper_trader import PaperTrader, get_open_trades, log_trade_event
 from options_owl.risk.pipeline import run_exit_pipeline
 
@@ -50,6 +52,21 @@ ATM_DELTA = 0.50
 
 POLL_INTERVAL_SECONDS = 5
 
+
+def _compute_adaptive_sleep(near_stop: bool, poll_interval: float, settings) -> float:
+    """Adaptive near-stop poll interval (pure, testable).
+
+    When a held position is near its stop, shorten the poll so a fast dive is caught closer to the stop.
+    Only ever SHORTENS (returns min of the two) — never lengthens, never returns <0.5s, and returns the
+    unchanged poll_interval when the feature is off or nothing is near a stop. Safe by construction: the
+    worst case is polling a bit more often; it can never block or slow the monitor loop.
+    """
+    if not near_stop or not getattr(settings, "ENABLE_ADAPTIVE_POLL", False):
+        return poll_interval
+    fast = getattr(settings, "ADAPTIVE_POLL_FAST_SEC", 1.0)
+    return min(poll_interval, max(0.5, fast))
+
+
 # Track consecutive premium failures per trade for alerting
 _premium_fail_count: dict[int, int] = {}
 PREMIUM_FAIL_ALERT_THRESHOLD = 3  # alert after 3 consecutive failures
@@ -71,6 +88,37 @@ _bounce_states: dict[int, dict] = {}
 # Per-trade thesis-cut state for v3 exit (persists across poll cycles).
 # Keys are trade IDs, values are {"ticks_in_zone": int}.
 _thesis_cut_states: dict[int, dict] = {}
+
+# Event-driven monitor (2026-07-23): per-trade close lock. Both the poll loop and the event task funnel
+# every close through _finalize_full_close, which holds this lock + rechecks the trade is still open — so
+# the two paths can NEVER double-close a trade. When ENABLE_EVENT_DRIVEN_MONITOR is off there's no event
+# task, so the lock is always uncontended = behavior-identical to the pure poll loop.
+_trade_close_locks: dict[int, "asyncio.Lock"] = {}
+
+
+def _get_trade_close_lock(trade_id: int) -> "asyncio.Lock":
+    lk = _trade_close_locks.get(trade_id)
+    if lk is None:
+        lk = asyncio.Lock()
+        _trade_close_locks[trade_id] = lk
+    return lk
+
+
+async def _trade_is_open(db_path: str, trade_id: int) -> bool:
+    """True iff the trade is still status='open' — the dedup recheck before a close."""
+    try:
+        async with _connect_db(db_path) as conn:
+            cur = await conn.execute(
+                "SELECT status FROM paper_trades WHERE id = ?", (trade_id,),
+            )
+            row = await cur.fetchone()
+            # Fail-OPEN on uncertainty: only dedup (skip the close) when the row EXISTS and is NOT open —
+            # i.e. another path provably closed it. A missing row / read error must NOT skip a legit close.
+            if row is None:
+                return True
+            return row[0] == "open"
+    except Exception:
+        return True  # fail-open: if we can't check, let the close proceed (its own guards apply)
 
 # Track last date we synced portfolio from Webull (once per trading day)
 _last_portfolio_sync_date: str = ""
@@ -1146,6 +1194,26 @@ async def _reconcile_positions(
 async def _finalize_full_close(
     paper_trader, trade, current_price, exit_premium, reason, db_path, discord_client,
 ) -> bool:
+    """Locked, dedup-guarded entry point for closing a trade — the SINGLE chokepoint both the poll loop and
+    the event-driven task funnel through. Holds the per-trade close lock and rechecks the trade is still
+    open, so the two paths can never double-close. Delegates to ``_finalize_full_close_inner`` for the
+    actual close. Behavior-identical to the old function when there's no event task (lock uncontended).
+    """
+    async with _get_trade_close_lock(trade["id"]):
+        if not await _trade_is_open(db_path, trade["id"]):
+            logger.debug(
+                f"  #{trade['id']} {trade.get('ticker')} already closed by another path — "
+                f"skipping duplicate close ({reason})"
+            )
+            return True
+        return await _finalize_full_close_inner(
+            paper_trader, trade, current_price, exit_premium, reason, db_path, discord_client,
+        )
+
+
+async def _finalize_full_close_inner(
+    paper_trader, trade, current_price, exit_premium, reason, db_path, discord_client,
+) -> bool:
     """Close ALL contracts on a trade with the orphan-safe guard.
 
     close_trade (DB) → re-read contracts (DCA) → close_webull_position (Webull sell).
@@ -1339,6 +1407,103 @@ async def _finalize_partial_close(
 
 
 # ---------------------------------------------------------------------------
+# Event-driven exits (P2/P3) — react to premium ticks at ~data-speed instead of the poll cadence.
+# Additive to the poll loop; every close goes through the locked/deduped _finalize_full_close so the two
+# paths can never double-close. Flag-gated (ENABLE_EVENT_DRIVEN_MONITOR); off = pure poll loop.
+# ---------------------------------------------------------------------------
+
+
+async def _evaluate_trade_on_tick(
+    paper_trader, trade, tick_premium, bid, ask, market_stream, discord_client, db_path,
+) -> bool:
+    """Evaluate ONE open trade's exit against a fresh premium tick; close via the locked chokepoint if the
+    FSM fires. Uses the SAME V5 bridge as the poll loop (no logic duplication). Candle-based gates are left
+    to the poll loop (candle_data=None here); this fast-path catches the premium-based exits (never-green,
+    hardstop, trail) at ~1s. Never raises. Returns True iff it closed the trade."""
+    try:
+        if _v5_bridge is None:
+            return False
+        ticker = trade["ticker"]
+        current_price = None
+        if market_stream is not None:
+            try:
+                current_price = await asyncio.wait_for(market_stream.get_price(ticker), timeout=3)
+            except Exception:  # noqa: BLE001
+                current_price = None
+        if current_price is None:
+            return False  # no underlying → let the poll loop handle it
+        reason, description = _v5_bridge.evaluate(
+            trade, tick_premium, current_price, _now_et(), candle_data=None,
+        )
+        if reason is None:
+            return False
+        logger.info(
+            f"EVENT-EXIT: #{trade['id']} {ticker} {getattr(reason, 'value', reason)} "
+            f"@ ${tick_premium:.2f} (per-tick, ~data-speed)"
+        )
+        return await _finalize_full_close(
+            paper_trader, trade, current_price, tick_premium, reason, db_path, discord_client,
+        )
+    except Exception as exc:  # noqa: BLE001 - the event path must never crash the monitor
+        logger.warning(f"event-driven exit check failed for #{trade.get('id')} (non-fatal): {exc}")
+        return False
+
+
+async def _run_event_driven_exits(paper_trader, market_stream, discord_client, db_path) -> None:
+    """Subscribe to the premium-tick pub/sub and evaluate held trades' exits per-tick, alongside the poll
+    loop. Flag-gated; never crashes the monitor (all errors swallowed, auto-resubscribe)."""
+    import json as _json
+    import time as _t
+    if getattr(paper_trader.settings, "ENABLE_EVENT_DRIVEN_MONITOR", False) is not True:
+        return
+    from options_owl.db import redis_client
+    trades_by_key: dict[str, dict] = {}
+    last_refresh = 0.0
+    pubsub = None
+    logger.info("EVENT-DRIVEN MONITOR: starting (per-tick exits alongside the 3-5s poll loop)")
+    while True:
+        try:
+            if pubsub is None:
+                pubsub = redis_client.premium_tick_pubsub()
+                if pubsub is None:
+                    await asyncio.sleep(5)
+                    continue
+                await pubsub.subscribe(redis_client.PREMIUM_TICK_CHANNEL)
+                logger.info("EVENT-DRIVEN MONITOR: subscribed to premium ticks")
+            now_m = _t.monotonic()
+            if now_m - last_refresh > 3.0:  # refresh the open-trade map every ~3s
+                trs = await get_open_trades(db_path)
+                nk = {}
+                for tr in trs:
+                    exp = _resolve_expiry_for_lookup(tr)
+                    if exp:
+                        nk[f"{tr['ticker']}:{tr['option_type']}:{tr['strike']}:{exp}"] = tr
+                trades_by_key = nk
+                last_refresh = now_m
+            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            if not msg:
+                continue
+            data = _json.loads(msg["data"]) if isinstance(msg.get("data"), (str, bytes)) else msg.get("data")
+            if not isinstance(data, dict):
+                continue
+            tr = trades_by_key.get(data.get("c"))
+            mid = data.get("mid")
+            if tr is not None and mid and mid > 0:
+                closed = await _evaluate_trade_on_tick(
+                    paper_trader, tr, mid, data.get("bid"), data.get("ask"),
+                    market_stream, discord_client, db_path,
+                )
+                if closed:
+                    trades_by_key.pop(data.get("c"), None)  # don't re-fire on the same trade
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"event-driven monitor loop error (non-fatal, resubscribing): {exc}")
+            pubsub = None
+            await asyncio.sleep(2)
+
+
+# ---------------------------------------------------------------------------
 # Main monitor loop
 # ---------------------------------------------------------------------------
 
@@ -1367,6 +1532,20 @@ async def run_position_monitor(
     db_path = paper_trader.db_path
     polygon_api_key = getattr(paper_trader.settings, "POLYGON_API_KEY", "") or ""
     _subscribed_options: set[int] = set()  # trade IDs with active option WS subscriptions
+    # Broker-side stop manager (design A): places/tracks/cleans up resting Webull STOP_LOSS orders as a
+    # zero-latency backstop under the 5s poll. Additive + fail-safe — every failure falls back to poll-only.
+    # Inert unless ENABLE_BROKER_STOP (default off). See broker_stop.BrokerStopManager.
+    broker_stops = BrokerStopManager(paper_trader.settings)
+    # This bot's name (from journal/owlet-<name>/raw_messages.db) — used to register held contracts for the
+    # harvester's real-time held-contract options-WS feed (owl:optquote:).
+    _bot_name = os.path.basename(os.path.dirname(db_path)) or "owlet"
+    # Event-driven exits (P2/P3): launch the per-tick exit task ALONGSIDE this poll loop. Additive +
+    # flag-gated — off = pure poll loop (no task, locks uncontended). Every close funnels through the
+    # locked/deduped _finalize_full_close so poll + event can never double-close.
+    if getattr(paper_trader.settings, "ENABLE_EVENT_DRIVEN_MONITOR", False) is True:
+        asyncio.create_task(
+            _run_event_driven_exits(paper_trader, market_stream, discord_client, db_path)
+        )
     poll_interval = POLL_INTERVAL_SECONDS
     if market_stream is not None:
         poll_interval = market_stream.poll_interval
@@ -1376,6 +1555,14 @@ async def run_position_monitor(
         )
     else:
         logger.info(f"Position monitor started — polling every {poll_interval}s during market hours")
+
+    # One-time broker-stop reconcile on startup: cancel any resting STOP_LOSS orphaned by a prior run
+    # (in-memory tracking is empty after a restart), re-adopt valid stops for still-open trades. Best-effort.
+    try:
+        _startup_open = await get_open_trades(db_path)
+        await broker_stops.reconcile_orphans(_startup_open, paper_trader.webull_executor)
+    except Exception as exc:  # noqa: BLE001 - startup reconcile must never block the monitor
+        logger.warning(f"broker-stop startup reconcile failed (non-fatal): {exc}")
 
     while True:
         try:
@@ -1434,9 +1621,36 @@ async def run_position_monitor(
                     _last_pnl_reconcile_ts = _time.monotonic()
 
             trades = await get_open_trades(db_path)
+            # Broker-stop self-cleanup: cancel + forget resting stops for any trade no longer open
+            # (closed, expired, vanished) BEFORE the empty-trades early-continue, so nothing leaks.
+            try:
+                await broker_stops.prune_closed(
+                    {t["id"] for t in trades}, paper_trader.webull_executor,
+                )
+            except Exception as exc:  # noqa: BLE001 - cleanup must never break the loop
+                logger.warning(f"broker-stop prune failed (non-fatal): {exc}")
             if not trades:
                 await asyncio.sleep(poll_interval)
                 continue
+
+            # Register held contracts so the harvester's real-time options-WS feed subscribes to exactly
+            # what we hold (owl:optquote:). Cheap Redis write; gated + fail-safe. Only when the feed is on.
+            if (getattr(paper_trader.settings, "ENABLE_HELD_OPTION_WS", False) is True
+                    or getattr(paper_trader.settings, "ENABLE_EVENT_DRIVEN_MONITOR", False) is True):
+                try:
+                    from options_owl.db import redis_client as _rc_held
+                    _held_keys = []
+                    for _t in trades:
+                        _exp = _resolve_expiry_for_lookup(_t)
+                        if _exp:
+                            _held_keys.append(
+                                f"{_t['ticker']}:{_t['option_type']}:{_t['strike']}:{_exp}"
+                            )
+                    await asyncio.wait_for(
+                        _rc_held.register_held_contracts(_bot_name, _held_keys), timeout=2,
+                    )
+                except Exception as exc:  # noqa: BLE001 - never block the monitor on a Redis write
+                    logger.debug(f"held-contract register failed (non-fatal): {exc}")
 
             logger.info(f"Position monitor: checking {len(trades)} open trade(s)")
 
@@ -1470,6 +1684,12 @@ async def run_position_monitor(
             # Cache option chains per (ticker, expiry_date) for this poll cycle
             # when using legacy yfinance path.
             chain_cache: dict[tuple[str, str], dict | None] = {}
+
+            # Adaptive near-stop polling (flag-gated): if any HELD position is within a buffer of its
+            # stop this cycle, poll faster NEXT cycle so a fast 0DTE dive is caught closer to the stop
+            # (the ~$2k poll-gap slippage past -25%). Initialized here (never conditional-only) so the
+            # end-of-cycle sleep can always read it. Only ever SHORTENS the sleep — cannot block the loop.
+            near_stop_this_cycle = False
 
             for trade in trades:
                 ticker = trade["ticker"]
@@ -1506,6 +1726,41 @@ async def run_position_monitor(
                 exit_bid: float | None = None
                 exit_ask: float | None = None
                 expiry_date = _resolve_expiry_for_lookup(trade)
+
+                # Source -1.5: real-time held-contract WS quote (FRESHEST — harvester /options WS per-tick).
+                # Preferred over the 15s REST snapshot when available so trail/stop/profit-lock react in
+                # ~sub-second. Freshness-guarded; falls through to the snapshot when stale/absent.
+                if (
+                    exit_premium is None
+                    and expiry_date
+                    and getattr(paper_trader.settings, "ENABLE_HELD_OPTION_WS", False) is True
+                ):
+                    try:
+                        from options_owl.db import redis_client
+                        if redis_client.is_connected():
+                            oq = await asyncio.wait_for(
+                                redis_client.get_optquote(
+                                    f"{ticker}:{trade['option_type']}:{trade['strike']}:{expiry_date}"
+                                ),
+                                timeout=2,
+                            )
+                            if oq and oq.get("mid") and oq["mid"] > 0:
+                                import time as _t
+                                oq_age = _t.time() - oq.get("t", 0)
+                                oq_max = float(getattr(
+                                    paper_trader.settings, "EXIT_SNAPSHOT_MAX_AGE_SEC", 10.0))
+                                if oq_age < oq_max:
+                                    exit_premium = oq["mid"]
+                                    _prem_source = "optquote_ws"
+                                    exit_bid = oq.get("bid")
+                                    exit_ask = oq.get("ask")
+                                    logger.debug(
+                                        f"  {ticker} — optquote WS ${exit_premium:.2f} (age={oq_age:.1f}s)"
+                                    )
+                    except asyncio.TimeoutError:
+                        pass
+                    except Exception:
+                        pass
 
                 # Source -1: Redis snapshot (near-instant from harvester flow WS)
                 if exit_premium is None and expiry_date:
@@ -1674,6 +1929,13 @@ async def run_position_monitor(
                 else:
                     # Reset failure count on successful premium fetch
                     _premium_fail_count.pop(trade["id"], None)
+
+                # Ensure/ratchet the resting broker stop for this live trade, using the FRESH premium so
+                # the trailing ratchet tracks the peak. Bounded-retry + rate-limited + fail-safe (any
+                # failure leaves it poll-only). Inert unless ENABLE_BROKER_STOP. Never raises.
+                await broker_stops.ensure_stop(
+                    trade, paper_trader.webull_executor, current_premium=exit_premium,
+                )
 
                 # --- Expiry safety net: force-close near market close ---
                 now_et = _now_et()
@@ -2085,6 +2347,28 @@ async def run_position_monitor(
                         (exit_premium - entry_prem) / entry_prem * 100
                         if entry_prem > 0 else 0
                     )
+                    # Adaptive fast-poll: poll faster next cycle when a held position is either
+                    # (a) near its STOP (a further dive slips past the stop), OR (b) RUNNING up big (a
+                    # fast reversal round-trips through the profit-lock floor before a 5s poll reacts —
+                    # the measured +17%→-31% / 19pt give-back). Both → 1s poll to catch the exit close
+                    # to the intended level.
+                    if pnl_pct <= getattr(
+                        paper_trader.settings, "ADAPTIVE_POLL_NEAR_STOP_GAIN_PCT", -17.0
+                    ):
+                        near_stop_this_cycle = True
+                    elif pnl_pct >= getattr(
+                        paper_trader.settings, "ADAPTIVE_POLL_RUNNING_GAIN_PCT", 10.0
+                    ):
+                        near_stop_this_cycle = True
+                    elif (
+                        getattr(paper_trader.settings, "ENABLE_NEVERGREEN_CUT", False) is True
+                        and pnl_pct <= -getattr(
+                            paper_trader.settings, "NEVERGREEN_CUT_LOSS_PCT", 8.0)
+                    ):
+                        # A trade in the never-green danger zone (down past the cut level) reacts at 1s so
+                        # the never-green cut fires ~at level instead of up to 5s late. Fast-polling a
+                        # would-be recoverer is harmless (the FSM still decides; the cut needs peak<8%).
+                        near_stop_this_cycle = True
                     mfe = trade.get("mfe_premium") or entry_prem
                     logger.info(
                         f"  #{trade['id']} {ticker} {trade['option_type'].upper()} "
@@ -2249,4 +2533,9 @@ async def run_position_monitor(
             _premium_tick_buffer.clear()
             asyncio.create_task(_write_premium_ticks(_flush_ticks))
 
-        await asyncio.sleep(poll_interval)
+        # Adaptive near-stop polling: shorten the sleep when a held position is near its stop, so a
+        # fast dive is caught closer to the stop. Pure helper — only SHORTENS, never blocks. Flag-gated;
+        # default off = unchanged fixed-interval behavior.
+        await asyncio.sleep(
+            _compute_adaptive_sleep(near_stop_this_cycle, poll_interval, paper_trader.settings)
+        )

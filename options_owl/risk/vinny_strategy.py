@@ -727,6 +727,29 @@ def runner_v1_size_mult(
     return float(mult), f"P(runner)={p_runner:.3f} {tier} ×{mult:.2f}"
 
 
+def vvix_size_mult(
+    vvix_pctile: float | None,
+    *,
+    lo: float = 0.7,
+    hi: float = 1.3,
+) -> tuple[float, str]:
+    """Market-regime sizing tilt from the VVIX trailing percentile — ALL trades (calls + puts, flow + ML).
+
+    Low VVIX percentile (calm vol-of-vol → orderly, trend-friendly tape) sizes UP; high percentile
+    (whippy/chop tape that shreds long premium) sizes DOWN. Linear: mult = hi - (hi-lo)*pctile, so
+    pctile 0 → hi, pctile 1 → lo, pctile 0.5 → midpoint (~1.0 for a symmetric band). Validated 2026
+    flow+ML: survives no-lookahead, lifts P&L/DD on both books; deployed MILD (0.7-1.3) — the aggressive
+    band bought extra P&L with extra drawdown. Returns (multiplier, description). None pctile → no tilt
+    (1.0, safe fallback). Position caps still bound the result downstream; STACKS on the other size mults.
+    """
+    if vvix_pctile is None:
+        return 1.0, "VVIX unavailable — no tilt"
+    p = min(1.0, max(0.0, float(vvix_pctile)))
+    mult = hi - (hi - lo) * p
+    mult = min(hi, max(lo, mult))
+    return float(mult), f"VVIX pctile={p:.2f} ×{mult:.2f}"
+
+
 def fleet_takes_signal(ticker, option_type, now_et, settings) -> bool:
     """Priority round-robin fleet staggering — does THIS bot take this signal?
 

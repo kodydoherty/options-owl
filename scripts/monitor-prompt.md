@@ -122,6 +122,21 @@ free -h
 ```
 **Alert if:** disk > 90% used or memory < 500MB available.
 
+## 6b. Broker-Side Stop-Loss (LIVE test as of 2026-07-23)
+The broker-side stop-loss feature is LIVE on all bots (`ENABLE_BROKER_STOP=true`) — it rests a Webull
+STOP_LOSS under each open position as a zero-latency backstop. Verify it is placing correctly:
+```bash
+cd /root/options-owl && python3 scripts/broker_stop_check.py
+```
+- **PASS** — every open live position has a resting broker stop (or none open yet). Good.
+- **WARN** — an open position has no stop tracked yet (transient placement lag — re-check next cycle).
+- **FAIL** — Webull is REJECTING our STOP_LOSS payload / the manager gave up (poll-only fallback). This
+  means the venue is not accepting the order. **This is a bug-report, NOT a strategy change** — report it
+  CRITICAL and, if it is spamming rejects on the live bots (kody/dennis), you MAY set
+  `ENABLE_BROKER_STOP=false` in docker-compose for the affected live bot + `docker compose up -d <bot>` to
+  fall back to poll-only (the safe legacy behavior) and flag for human review. Do NOT change any other flag.
+Also glance at `tail -20 journal/broker_stop_check.log` for the 3-min cron history.
+
 ## 7. Report
 After all checks, output a ONE LINE summary:
 - `HEALTHY: N containers up, N signals today, N open positions, N trades today`

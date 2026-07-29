@@ -26,7 +26,27 @@ from options_owl.risk.vinny_strategy import flow_conviction_mult  # noqa: E402
 
 CLUSTER_WIN = 30
 SLEEVE = 750.0
-HAIRCUT = 0.03
+HAIRCUT = 0.03            # exit slippage: sell at close × (1 - HAIRCUT)
+# Entry-fill REALISM (2026-07-28) — the "paper is a fantasy" fix, flow side.
+# This harness booked entries at the option CLOSE at the signal minute (pp[0]) — no spread, no run-up.
+# Measured live-vs-paper: flow entries fill ~19.6% ABOVE that (fast sweeps run up between signal and fill).
+# Fix: fill at the close FLOW_ENTRY_DELAY bars later (captures the run-up from the data), never cheaper
+# than the signal close (no dip discount), plus a spread-cross (flow thetadata has no bid/ask). Then walk
+# exits from the fill bar forward. Tunable — calibrate the total entry gap against the ~19.6% measured.
+FLOW_ENTRY_RUNUP = __import__("os").getenv("FLOW_ENTRY_RUNUP", "1") != "0"   # A/B toggle
+FLOW_ENTRY_DELAY = 1      # bars after the signal a live flow order realistically fills
+FLOW_ENTRY_SPREAD_SLIP = 0.02   # half-spread cross on top of the run-up (measured full spread ~4%)
+
+
+def _flow_executable_entry(pp, d0):
+    """The price a live flow order realistically FILLS at: the close d0 bars after the signal (run-up),
+    never below the signal close (no fantasy dip discount), plus a spread-cross. Returns (entry_basis, d0)."""
+    base = float(pp[0])
+    if FLOW_ENTRY_RUNUP and 0 <= d0 < len(pp) and pp[d0] > 0 and not np.isnan(pp[d0]):
+        px = max(base, float(pp[d0]))
+    else:
+        px, d0 = base, 0
+    return px * (1 + FLOW_ENTRY_SPREAD_SLIP), d0
 PUT_UNIV = D.CUR_PUT | {"SPY"}
 CALL_UNIV = D.CUR_CALL
 # Mirror PROD's deployed OTM-strike layer (ENABLE_FLOW_OTM_STRIKE) so this gold-standard report
@@ -60,7 +80,10 @@ def _sim_reason(pp, mp, up, ep, ets, cfg, dte, otype):
 
 
 def fetch(is_put, wl):
-    hdr = {"Authorization": f"Bearer {D.KEY}", "Accept": "application/json"}
+    hdr = {"Authorization": f"Bearer {D.KEY}", "Accept": "application/json",
+           "UW-CLIENT-API-ID": "100001",  # UW now requires this + a browser UA (2026-07-10)
+           "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")}
     rows, older = [], None
     for _ in range(260):
         p = {"limit": 200, "is_put": "true" if is_put else "false", "min_premium": D.MIN_PREM}
@@ -141,8 +164,26 @@ def collect(is_put, wl):
                 if np.isnan(pp[0]) or pp[0] <= 0:
                     continue
                 ets = datetime(*map(int, d.split("-")), 9, 30, tzinfo=D.ET) + timedelta(minutes=mb)
-                ret, reason = _sim_reason(pp, mp, up, pp[0], ets, cfg, int(dte0), otype)
+                # Executable entry: fill at the run-up price + spread FLOW_ENTRY_DELAY bars after the
+                # signal, then walk exits from the fill bar forward (not the stale signal close pp[0]).
+                d0 = min(FLOW_ENTRY_DELAY, len(pp) - 1)
+                entry_exec, d0 = _flow_executable_entry(pp, d0)
+                ret, reason = _sim_reason(pp[d0:], mp[d0:], up[d0:], entry_exec, ets, cfg, int(dte0), otype)
                 mult = flow_conviction_mult(csize, ev["prem"], ev["ask_frac"], is_idx, None)[0]
+                # ── Greeks at entry (2026-07-15 vega/IV-crush test) — back IV out of the option price via
+                # BS bisection, then vega. T = calendar years incl. intraday remaining (0DTE → tiny T → vega≈0,
+                # which is the point: 0DTE has no vega risk, only pricier multi-day flow does). Best-effort.
+                iv = vega = delta_g = 0.0
+                try:
+                    from options_owl.risk.greeks import calc_iv_from_premium, calc_vega, calc_delta
+                    T = max(1e-6, (int(dte0) + (390 - mb) / 390.0) / 365.0)
+                    _iv = calc_iv_from_premium(float(pp[0]), float(spot), float(strike), T, 0.04, otype)
+                    if _iv:
+                        iv = round(_iv, 4)
+                        vega = round(calc_vega(float(spot), float(strike), T, 0.04, _iv), 4)
+                        delta_g = round(calc_delta(float(spot), float(strike), T, 0.04, _iv, otype), 4)
+                except Exception:
+                    pass
                 # Market-direction proxy: the UNDERLYING's % change from the day open at entry.
                 # A put bought while its underlying is rallying (mkt_chg > 0) is counter-trend
                 # (the today SPY-put -54% case). Stored so a filter can be swept in-memory.
@@ -158,8 +199,21 @@ def collect(is_put, wl):
                 out.append({"date": d, "ticker": tk, "side": otype, "cluster": csize,
                             "mi": int(ev["mi"]),
                             "premium": ev["prem"], "ask_frac": round(ev["ask_frac"], 2),
+                            # entry_prem = the OPTION's per-share entry price (pp[0]); ×100 = cost/contract.
+                            # Needed for integer-contract sizing in the portfolio-size sweep (the whale's
+                            # total "premium" above is a different thing). 2026-07-15.
+                            "entry_prem": round(float(entry_exec), 2), "dte": int(dte0),
+                            "strike": float(strike), "spot": round(float(spot), 2),
+                            "iv": iv, "vega": vega, "delta": delta_g,
                             "conv_mult": round(mult, 2), "ret_pct": round(ret, 1),
-                            "exit_reason": reason, "mkt_chg": mkt_chg, "spy_chg": spy_chg})
+                            "exit_reason": reason, "mkt_chg": mkt_chg, "spy_chg": spy_chg,
+                            # UW alert-quality tags (2026-07-10 flow-quality test): whether the
+                            # sweep is one leg of a spread (NOT directional), opening vs closing,
+                            # floor trade, and which UW rule fired. Carried so a filter can be swept.
+                            "has_multileg": bool(ev.get("has_multileg", False)),
+                            "all_opening": bool(ev.get("all_opening_trades", False)),
+                            "has_floor": bool(ev.get("has_floor", False)),
+                            "alert_rule": str(ev.get("alert_rule") or "")})
     return out
 
 

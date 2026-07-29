@@ -134,10 +134,12 @@ services:
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
       - ENABLE_FOMC_PAUSE=true
       - MAX_CONCURRENT=8
-      - MAX_POSITION_PCT=15
+      - MAX_POSITION_PCT=10
       - MAX_DCA_POSITION_PCT=10
       - MAX_TRADE_LOSS_EXIT_PCT=8
-      - MAX_PORTFOLIO_RISK_PCT=75
+      - MAX_PORTFOLIO_RISK_PCT=45  # REVERTED 2026-07-28 pm: honest-fill harness showed the flow edge was ~fantasy; don't size up a book leaning on it
+      - BLOCKED_TICKERS=MSFT,COIN,AVGO,MU,SPY   # SPY paused: -$1769/45tr biggest bleeder
+      - UW_FLOW_CALL_TICKERS=META,TSLA,ORCL,ARM,GOOG,LRCX   # SPY + AMD/INTC/AMZN pulled 2026-07-28: bleed at honest fills AND live
       - ENABLE_WEBULL_PAPER=true
       - WEBULL_APP_KEY=${KODY_WEBULL_APP_KEY}
       - WEBULL_APP_SECRET=${KODY_WEBULL_APP_SECRET}
@@ -154,11 +156,32 @@ services:
       # Exit-only ablation: both OOS windows beat V6 exits at identical win rate
       # (OOS +72% / OOS2 +27% P&L, higher PF). PUTs unchanged.
       - ENABLE_V7_WIDE_TRAIL=true
+      # Liquidity-aware entry sizing (2026-07-17): cap large orders near available ask_size so
+      # they take a real smaller fill instead of orphaning against a thin book on a chop tape
+      # (kody's large orders were missing fills; paper bots no-op this — no real orders).
+      - WEBULL_ENTRY_LIQUIDITY_AWARE=true
+      # PUTS PAUSED 2026-07-20 (Kody's call): chop regime bleed — puts −$2-3k/6wk on kody, 66% of it on FLAT
+      # days (theta bleed, no real dips in-window). Blanket pause (ML + flow). Re-enable when SPY starts a real
+      # downtrend. Reversible: set true + up -d. Tracking put-profitability research separately.
+      - ENABLE_PUT_TRADING=false
       # V7 gate-volume fix (multi-value sweep 2026-06-13, 3 OOS windows): pattern 0.74→0.62
       # at entry 0.80. ~1.8× volume (1.7→3.1 trades/day), PF holds ~3.8, DD 6.5→10.
       - ML_PATTERN_THRESHOLD=0.62
+      # Call-side ticker expansion LIVE 2026-07-20: ORCL/INTC/TSM/ARM/SMH (+$66k) + USO/SLV/GDX (+$20.6k)
+      # validated 14mo CALLS, PF 2.77/2.91. Adds them to the ML pattern scan (calls only; put-excluded).
+      - ENABLE_EXPANSION_TICKERS=true
+      # CALL move-from-open gate LIVE 2026-07-22: block calls into a FALLING ticker (>=0% required),
+      # ML+flow. Real data: counter-trend calls lost -$3,199/6wk. Self-adaptive (blocks on chop, passes
+      # on trends). Reversible via flag.
+      - ENABLE_CALL_UNDERLYING_TRIGGER=true
+      # Upside adaptive fast-poll: 1s poll when a position is running (up >=10%) too, not just near a
+      # stop — catches the +17%->-31% round-trip-through-the-floor before a 5s poll can react.
+      - ENABLE_ADAPTIVE_POLL=true
+      - ENABLE_NEVERGREEN_CUT=true    # 2026-07-23: cut down-8% never-green(peak<8%) dead trades
+      - ENABLE_BROKER_STOP=true       # RE-ENABLED 2026-07-27: modify-in-place + circuit-breaker (fuse) — close the -8%->-17% fill gap
+      - ENABLE_HELD_OPTION_WS=false  # DISABLED: single Polygon /options WS is FlowCollector's (max_connections)
       # UW whale-flow signals on all bots 2026-06-13 (live on kody/dennis, paper on adam/vinny/yank).
-      - ENABLE_UW_FLOW_SIGNAL=true
+      - ENABLE_UW_FLOW_SIGNAL=false
       # Selective OTM flow strike (validated combos: AMD/INTC/META/SPY calls, TSLA puts) — 2026-06-15.
       - ENABLE_FLOW_OTM_STRIKE=true
       # Anti-martingale ADD: buy more on a confirmed runner (CALL +30 / PUT +30&+100 pyramid) — 2026-06-15.
@@ -219,6 +242,19 @@ services:
       - ENABLE_CONF_LINEAR_SIZING=true
       - CONF_LINEAR_BUDGET_MIN=0.4
       - CONF_LINEAR_BUDGET_MAX=1.8
+      # VVIX sizing tilt (LIVE kody+dennis 2026-07-14): size up on low-VVIX (calm/trend) mornings, down
+      # on high-VVIX (whippy/chop). Validated flow+ML, no-lookahead, lifts P&L/DD. Mild 0.7-1.3 band;
+      # STACKS on conf_linear/runner_v1 (caps bound it). Rollback: set false + up -d.
+      - ENABLE_VVIX_SIZING_TILT=true
+      # Early small-win floor (LIVE 2026-07-14): lock a small win at +3% once a leg peaks +12%, instead of
+      # letting a +10-15% winner round-trip to the -25% hardstop. Validated flow +$6.4k + ML rescue.
+      - ENABLE_EARLY_LOCK=true
+      # Daily-cap open-unrealized (LIVE 2026-07-14): the 10% daily cap now counts UNDERWATER open positions
+      # from our own ledger (not just NLV) so a black day trips it before the losers close.
+      - ENABLE_DAILY_CAP_UNREALIZED=true
+      # Adaptive near-stop polling (LIVE 2026-07-14): poll faster (1s) when a held position is within
+      # ~8pts of its stop, so a fast dive is caught closer to -25% (shrinks the ~$2k poll-gap slippage).
+      - ENABLE_ADAPTIVE_POLL=true
       - ENABLE_V6_BREAKEVEN_RATCHET=true
       - ENABLE_V6_2PM_TIGHTEN=true
       - ENABLE_V6_PREMIUM_CAP=false
@@ -226,7 +262,7 @@ services:
       - ENABLE_DELTA_GATE=true
       - ENABLE_V6_SPREAD_GATE=true
       - ENABLE_V6_SCALEOUT=true
-      - ENABLE_V6_DCA=true
+      - ENABLE_V6_DCA=false
       - ENABLE_V6_EARLY_POP_GATE=true
       - ENABLE_DIP_CONFIRM=true
       # Polygon WS disabled — Kody's key is used by harvester for centralized flow capture.
@@ -282,10 +318,12 @@ services:
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
       - ENABLE_FOMC_PAUSE=true
       - MAX_CONCURRENT=8
-      - MAX_POSITION_PCT=15
+      - MAX_POSITION_PCT=10
       - MAX_DCA_POSITION_PCT=10
       - MAX_TRADE_LOSS_EXIT_PCT=8
-      - MAX_PORTFOLIO_RISK_PCT=75
+      - MAX_PORTFOLIO_RISK_PCT=45  # REVERTED 2026-07-28 pm: honest-fill harness showed the flow edge was ~fantasy; don't size up a book leaning on it
+      - BLOCKED_TICKERS=MSFT,COIN,AVGO,MU,SPY   # SPY paused: -$1769/45tr biggest bleeder
+      - UW_FLOW_CALL_TICKERS=META,TSLA,ORCL,ARM,GOOG,LRCX   # SPY + AMD/INTC/AMZN pulled 2026-07-28: bleed at honest fills AND live
       - ENABLE_WEBULL_PAPER=true
       - WEBULL_APP_KEY=${DENNIS_WEBULL_APP_KEY}
       - WEBULL_APP_SECRET=${DENNIS_WEBULL_APP_SECRET}
@@ -295,11 +333,32 @@ services:
       - ENABLE_V6_PER_TICKER_CONFIG=true
       # V7 wide-trail exits (CALL + PUT) — enabled for dennis 2026-06-12
       - ENABLE_V7_WIDE_TRAIL=true
+      # Liquidity-aware entry sizing (2026-07-17): cap large orders near available ask_size so
+      # they take a real smaller fill instead of orphaning against a thin book on a chop tape
+      # (kody's large orders were missing fills; paper bots no-op this — no real orders).
+      - WEBULL_ENTRY_LIQUIDITY_AWARE=true
+      # PUTS PAUSED 2026-07-20 (Kody's call): chop regime bleed — puts −$2-3k/6wk on kody, 66% of it on FLAT
+      # days (theta bleed, no real dips in-window). Blanket pause (ML + flow). Re-enable when SPY starts a real
+      # downtrend. Reversible: set true + up -d. Tracking put-profitability research separately.
+      - ENABLE_PUT_TRADING=false
       # V7 gate-volume fix (multi-value sweep 2026-06-13, 3 OOS windows): pattern 0.74→0.62
       # at entry 0.80. ~1.8× volume (1.7→3.1 trades/day), PF holds ~3.8, DD 6.5→10.
       - ML_PATTERN_THRESHOLD=0.62
+      # Call-side ticker expansion LIVE 2026-07-20: ORCL/INTC/TSM/ARM/SMH (+$66k) + USO/SLV/GDX (+$20.6k)
+      # validated 14mo CALLS, PF 2.77/2.91. Adds them to the ML pattern scan (calls only; put-excluded).
+      - ENABLE_EXPANSION_TICKERS=true
+      # CALL move-from-open gate LIVE 2026-07-22: block calls into a FALLING ticker (>=0% required),
+      # ML+flow. Real data: counter-trend calls lost -$3,199/6wk. Self-adaptive (blocks on chop, passes
+      # on trends). Reversible via flag.
+      - ENABLE_CALL_UNDERLYING_TRIGGER=true
+      # Upside adaptive fast-poll: 1s poll when a position is running (up >=10%) too, not just near a
+      # stop — catches the +17%->-31% round-trip-through-the-floor before a 5s poll can react.
+      - ENABLE_ADAPTIVE_POLL=true
+      - ENABLE_NEVERGREEN_CUT=true    # 2026-07-23: cut down-8% never-green(peak<8%) dead trades
+      - ENABLE_BROKER_STOP=true       # RE-ENABLED 2026-07-27: modify-in-place + circuit-breaker (fuse) — close the -8%->-17% fill gap
+      - ENABLE_HELD_OPTION_WS=false  # DISABLED: single Polygon /options WS is FlowCollector's (max_connections)
       # UW whale-flow signals on all bots 2026-06-13 (live on kody/dennis, paper on adam/vinny/yank).
-      - ENABLE_UW_FLOW_SIGNAL=true
+      - ENABLE_UW_FLOW_SIGNAL=false
       # Selective OTM flow strike (validated combos: AMD/INTC/META/SPY calls, TSLA puts) — 2026-06-15.
       - ENABLE_FLOW_OTM_STRIKE=true
       # Anti-martingale ADD: buy more on a confirmed runner (CALL +30 / PUT +30&+100 pyramid) — 2026-06-15.
@@ -347,7 +406,7 @@ services:
       - ENABLE_DELTA_GATE=true
       - ENABLE_V6_SPREAD_GATE=true
       - ENABLE_V6_SCALEOUT=true
-      - ENABLE_V6_DCA=true
+      - ENABLE_V6_DCA=false
       - ENABLE_V6_EARLY_POP_GATE=true
       - ENABLE_DIP_CONFIRM=true
       - ENABLE_POLYGON_WS=false
@@ -367,6 +426,19 @@ services:
       - ENABLE_CONF_LINEAR_SIZING=true
       - CONF_LINEAR_BUDGET_MIN=0.4
       - CONF_LINEAR_BUDGET_MAX=1.8
+      # VVIX sizing tilt (LIVE kody+dennis 2026-07-14): size up on low-VVIX (calm/trend) mornings, down
+      # on high-VVIX (whippy/chop). Validated flow+ML, no-lookahead, lifts P&L/DD. Mild 0.7-1.3 band;
+      # STACKS on conf_linear/runner_v1 (caps bound it). Rollback: set false + up -d.
+      - ENABLE_VVIX_SIZING_TILT=true
+      # Early small-win floor (LIVE 2026-07-14): lock a small win at +3% once a leg peaks +12%, instead of
+      # letting a +10-15% winner round-trip to the -25% hardstop. Validated flow +$6.4k + ML rescue.
+      - ENABLE_EARLY_LOCK=true
+      # Daily-cap open-unrealized (LIVE 2026-07-14): the 10% daily cap now counts UNDERWATER open positions
+      # from our own ledger (not just NLV) so a black day trips it before the losers close.
+      - ENABLE_DAILY_CAP_UNREALIZED=true
+      # Adaptive near-stop polling (LIVE 2026-07-14): poll faster (1s) when a held position is within
+      # ~8pts of its stop, so a fast dive is caught closer to -25% (shrinks the ~$2k poll-gap slippage).
+      - ENABLE_ADAPTIVE_POLL=true
       - AGENT_ID=owlet_dennis
       - ENABLE_POSTGRES=true
       - DATABASE_URL=postgresql://owl:${POSTGRES_PASSWORD:-owl_dev_2026}@postgres:5432/options_owl
@@ -417,7 +489,28 @@ services:
       - ENABLE_DISCORD_SIGNALS=false
       - ENABLE_V6_PER_TICKER_CONFIG=true
       - ENABLE_V7_WIDE_TRAIL=true
+      # Liquidity-aware entry sizing (2026-07-17): cap large orders near available ask_size so
+      # they take a real smaller fill instead of orphaning against a thin book on a chop tape
+      # (kody's large orders were missing fills; paper bots no-op this — no real orders).
+      - WEBULL_ENTRY_LIQUIDITY_AWARE=true
+      # PUTS PAUSED 2026-07-20 (Kody's call): chop regime bleed — puts −$2-3k/6wk on kody, 66% of it on FLAT
+      # days (theta bleed, no real dips in-window). Blanket pause (ML + flow). Re-enable when SPY starts a real
+      # downtrend. Reversible: set true + up -d. Tracking put-profitability research separately.
+      - ENABLE_PUT_TRADING=false
       - ML_PATTERN_THRESHOLD=0.62
+      # Call-side ticker expansion LIVE 2026-07-20: ORCL/INTC/TSM/ARM/SMH (+$66k) + USO/SLV/GDX (+$20.6k)
+      # validated 14mo CALLS, PF 2.77/2.91. Adds them to the ML pattern scan (calls only; put-excluded).
+      - ENABLE_EXPANSION_TICKERS=true
+      # CALL move-from-open gate LIVE 2026-07-22: block calls into a FALLING ticker (>=0% required),
+      # ML+flow. Real data: counter-trend calls lost -$3,199/6wk. Self-adaptive (blocks on chop, passes
+      # on trends). Reversible via flag.
+      - ENABLE_CALL_UNDERLYING_TRIGGER=true
+      # Upside adaptive fast-poll: 1s poll when a position is running (up >=10%) too, not just near a
+      # stop — catches the +17%->-31% round-trip-through-the-floor before a 5s poll can react.
+      - ENABLE_ADAPTIVE_POLL=true
+      - ENABLE_NEVERGREEN_CUT=true    # 2026-07-23: cut down-8% never-green(peak<8%) dead trades
+      - ENABLE_BROKER_STOP=true      # Phase 4 paper canary (2026-07-22) — broker-side stop-loss
+      - ENABLE_HELD_OPTION_WS=false  # DISABLED: single Polygon /options WS is FlowCollector's (max_connections)
       - ENABLE_UW_FLOW_SIGNAL=true
       - ENABLE_FLOW_OTM_STRIKE=true
       - ENABLE_ANTIMARTINGALE_ADD=false
@@ -429,7 +522,8 @@ services:
       - ENABLE_STALL_CUT=true
       - ENABLE_EOD_CLOSE_ALL=true
       - ENABLE_LATE_ENTRY_CUTOFF=true
-      - PREMIUM_HARDSTOP_0DTE_PCT=25
+      - PREMIUM_HARDSTOP_0DTE_PCT=35
+      - V7_PROFIT_LOCK_PUTS=false
       - MAX_SIZING_BALANCE=50000
       - ENABLE_FLEET_STAGGER=false
       - FLEET_SIZE=5
@@ -442,7 +536,7 @@ services:
       - ENABLE_DELTA_GATE=true
       - ENABLE_V6_SPREAD_GATE=true
       - ENABLE_V6_SCALEOUT=true
-      - ENABLE_V6_DCA=true
+      - ENABLE_V6_DCA=false
       - ENABLE_V6_EARLY_POP_GATE=true
       - ENABLE_DIP_CONFIRM=true
       - ENABLE_POLYGON_WS=false
@@ -540,7 +634,28 @@ services:
       - ENABLE_V6_PER_TICKER_CONFIG=true
       # Same V7 strategy as kody/dennis (identical code+config; only PAPER_TRADE differs).
       - ENABLE_V7_WIDE_TRAIL=true
+      # Liquidity-aware entry sizing (2026-07-17): cap large orders near available ask_size so
+      # they take a real smaller fill instead of orphaning against a thin book on a chop tape
+      # (kody's large orders were missing fills; paper bots no-op this — no real orders).
+      - WEBULL_ENTRY_LIQUIDITY_AWARE=true
+      # PUTS PAUSED 2026-07-20 (Kody's call): chop regime bleed — puts −$2-3k/6wk on kody, 66% of it on FLAT
+      # days (theta bleed, no real dips in-window). Blanket pause (ML + flow). Re-enable when SPY starts a real
+      # downtrend. Reversible: set true + up -d. Tracking put-profitability research separately.
+      - ENABLE_PUT_TRADING=false
       - ML_PATTERN_THRESHOLD=0.62
+      # Call-side ticker expansion LIVE 2026-07-20: ORCL/INTC/TSM/ARM/SMH (+$66k) + USO/SLV/GDX (+$20.6k)
+      # validated 14mo CALLS, PF 2.77/2.91. Adds them to the ML pattern scan (calls only; put-excluded).
+      - ENABLE_EXPANSION_TICKERS=true
+      # CALL move-from-open gate LIVE 2026-07-22: block calls into a FALLING ticker (>=0% required),
+      # ML+flow. Real data: counter-trend calls lost -$3,199/6wk. Self-adaptive (blocks on chop, passes
+      # on trends). Reversible via flag.
+      - ENABLE_CALL_UNDERLYING_TRIGGER=true
+      # Upside adaptive fast-poll: 1s poll when a position is running (up >=10%) too, not just near a
+      # stop — catches the +17%->-31% round-trip-through-the-floor before a 5s poll can react.
+      - ENABLE_ADAPTIVE_POLL=true
+      - ENABLE_NEVERGREEN_CUT=true    # 2026-07-23: cut down-8% never-green(peak<8%) dead trades
+      - ENABLE_BROKER_STOP=true      # Phase 4 paper canary (2026-07-22) — broker-side stop-loss
+      - ENABLE_HELD_OPTION_WS=false  # DISABLED: single Polygon /options WS is FlowCollector's (max_connections)
       # UW whale-flow signals on all bots 2026-06-13 (live on kody/dennis, paper on adam/vinny/yank).
       - ENABLE_UW_FLOW_SIGNAL=true
       # Selective OTM flow strike (validated combos: AMD/INTC/META/SPY calls, TSLA puts) — 2026-06-15.
@@ -569,7 +684,8 @@ services:
       - ENABLE_STALL_CUT=true
       - ENABLE_EOD_CLOSE_ALL=true
       - ENABLE_LATE_ENTRY_CUTOFF=true
-      - PREMIUM_HARDSTOP_0DTE_PCT=25
+      - PREMIUM_HARDSTOP_0DTE_PCT=35
+      - V7_PROFIT_LOCK_PUTS=false
       # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
       - MAX_SIZING_BALANCE=50000
       # Fleet staggering K=2: each signal → 2 of 5 bots (priority round-robin) so they don't all crater
@@ -590,7 +706,7 @@ services:
       - ENABLE_DELTA_GATE=true
       - ENABLE_V6_SPREAD_GATE=true
       - ENABLE_V6_SCALEOUT=true
-      - ENABLE_V6_DCA=true
+      - ENABLE_V6_DCA=false
       - ENABLE_V6_EARLY_POP_GATE=true
       - ENABLE_DIP_CONFIRM=true
 
@@ -684,7 +800,28 @@ services:
       - ENABLE_V6_PER_TICKER_CONFIG=true
       # Same V7 strategy as kody/dennis (identical code+config; only PAPER_TRADE differs).
       - ENABLE_V7_WIDE_TRAIL=true
+      # Liquidity-aware entry sizing (2026-07-17): cap large orders near available ask_size so
+      # they take a real smaller fill instead of orphaning against a thin book on a chop tape
+      # (kody's large orders were missing fills; paper bots no-op this — no real orders).
+      - WEBULL_ENTRY_LIQUIDITY_AWARE=true
+      # PUTS PAUSED 2026-07-20 (Kody's call): chop regime bleed — puts −$2-3k/6wk on kody, 66% of it on FLAT
+      # days (theta bleed, no real dips in-window). Blanket pause (ML + flow). Re-enable when SPY starts a real
+      # downtrend. Reversible: set true + up -d. Tracking put-profitability research separately.
+      - ENABLE_PUT_TRADING=false
       - ML_PATTERN_THRESHOLD=0.62
+      # Call-side ticker expansion LIVE 2026-07-20: ORCL/INTC/TSM/ARM/SMH (+$66k) + USO/SLV/GDX (+$20.6k)
+      # validated 14mo CALLS, PF 2.77/2.91. Adds them to the ML pattern scan (calls only; put-excluded).
+      - ENABLE_EXPANSION_TICKERS=true
+      # CALL move-from-open gate LIVE 2026-07-22: block calls into a FALLING ticker (>=0% required),
+      # ML+flow. Real data: counter-trend calls lost -$3,199/6wk. Self-adaptive (blocks on chop, passes
+      # on trends). Reversible via flag.
+      - ENABLE_CALL_UNDERLYING_TRIGGER=true
+      # Upside adaptive fast-poll: 1s poll when a position is running (up >=10%) too, not just near a
+      # stop — catches the +17%->-31% round-trip-through-the-floor before a 5s poll can react.
+      - ENABLE_ADAPTIVE_POLL=true
+      - ENABLE_NEVERGREEN_CUT=true    # 2026-07-23: cut down-8% never-green(peak<8%) dead trades
+      - ENABLE_BROKER_STOP=true      # Phase 4 paper canary (2026-07-22) — broker-side stop-loss
+      - ENABLE_HELD_OPTION_WS=false  # DISABLED: single Polygon /options WS is FlowCollector's (max_connections)
       # UW whale-flow signals on all bots 2026-06-13 (live on kody/dennis, paper on adam/vinny/yank).
       - ENABLE_UW_FLOW_SIGNAL=true
       # Selective OTM flow strike (validated combos: AMD/INTC/META/SPY calls, TSLA puts) — 2026-06-15.
@@ -698,7 +835,7 @@ services:
       # CALL-only profit-lock (keep 60% of peak gain once +30%) — the runner-capture win, stays ON.
       - V7_PROFIT_LOCK_KEEP_FRAC=0.8
       - V7_PROFIT_LOCK_ACTIVATE_PCT=25
-      - V7_PROFIT_LOCK_PUTS=true
+      - V7_PROFIT_LOCK_PUTS=false
       - ENABLE_V7_PROFIT_LOCK=true
       # 0DTE premium hard-stop -25%: cut a 0DTE contract down 25% from entry regardless of underlying
       # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
@@ -716,7 +853,7 @@ services:
       - ENABLE_STALL_CUT=true
       - ENABLE_EOD_CLOSE_ALL=true
       - ENABLE_LATE_ENTRY_CUTOFF=true
-      - PREMIUM_HARDSTOP_0DTE_PCT=25
+      - PREMIUM_HARDSTOP_0DTE_PCT=35
       # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
       - MAX_SIZING_BALANCE=50000
       # Fleet staggering K=2: each signal → 2 of 5 bots (priority round-robin) so they don't all crater
@@ -737,7 +874,7 @@ services:
       - ENABLE_DELTA_GATE=true
       - ENABLE_V6_SPREAD_GATE=true
       - ENABLE_V6_SCALEOUT=true
-      - ENABLE_V6_DCA=true
+      - ENABLE_V6_DCA=false
       # Stage D conviction sizing — vinny FIRST (paper canary), validated +72%/PF1.64; then kody.
       - ENABLE_V7_CONVICTION_SIZING=true
       - ENABLE_V6_EARLY_POP_GATE=true
@@ -806,7 +943,37 @@ services:
       - ENABLE_V6_PER_TICKER_CONFIG=true
       # Same V7 strategy as kody/dennis (identical code+config; only PAPER_TRADE differs).
       - ENABLE_V7_WIDE_TRAIL=true
+      # Liquidity-aware entry sizing (2026-07-17): cap large orders near available ask_size so
+      # they take a real smaller fill instead of orphaning against a thin book on a chop tape
+      # (kody's large orders were missing fills; paper bots no-op this — no real orders).
+      - WEBULL_ENTRY_LIQUIDITY_AWARE=true
+      # PUTS PAUSED 2026-07-20 (Kody's call): chop regime bleed — puts −$2-3k/6wk on kody, 66% of it on FLAT
+      # days (theta bleed, no real dips in-window). Blanket pause (ML + flow). Re-enable when SPY starts a real
+      # downtrend. Reversible: set true + up -d. Tracking put-profitability research separately.
+      # CANARY 2026-07-20 (yank, PAPER only): puts back ON with the underlying-DOWN trigger fix —
+      # require the PUT's own ticker falling <= -0.5% at entry (ML + flow). Live puts stay PAUSED.
+      - ENABLE_PUT_TRADING=true
+      - ENABLE_PUT_UNDERLYING_TRIGGER=true
+      - PUT_UNDERLYING_DOWN_TRIGGER=-0.5
+      # Put-ticker exclusion (canary): puts work on indexes/stable mega-caps, LOSE on whippy high-vol
+      # names. Live 6wk: TSLA -$927, MU -$832, NFLX -$622, BA -$371, NVDA -$336 (all dip-then-rip). Add
+      # them to the existing put exclusion. Keep QQQ/IWM/AAPL/META (put winners) tradeable.
+      - PUT_EXCLUDED_TICKERS=PLTR,AMD,MSTR,AVGO,AMZN,GOOGL,ORCL,INTC,TSM,ARM,SMH,USO,SLV,GDX,TSLA,NVDA,NFLX,MU,BA
       - ML_PATTERN_THRESHOLD=0.62
+      # Call-side ticker expansion LIVE 2026-07-20: ORCL/INTC/TSM/ARM/SMH (+$66k) + USO/SLV/GDX (+$20.6k)
+      # validated 14mo CALLS, PF 2.77/2.91. Adds them to the ML pattern scan (calls only; put-excluded).
+      - ENABLE_EXPANSION_TICKERS=true
+      # CALL move-from-open gate LIVE 2026-07-22: block calls into a FALLING ticker (>=0% required),
+      # ML+flow. Real data: counter-trend calls lost -$3,199/6wk. Self-adaptive (blocks on chop, passes
+      # on trends). Reversible via flag.
+      - ENABLE_CALL_UNDERLYING_TRIGGER=true
+      # Upside adaptive fast-poll: 1s poll when a position is running (up >=10%) too, not just near a
+      # stop — catches the +17%->-31% round-trip-through-the-floor before a 5s poll can react.
+      - ENABLE_ADAPTIVE_POLL=true
+      - ENABLE_NEVERGREEN_CUT=true    # 2026-07-23: cut down-8% never-green(peak<8%) dead trades
+      - ENABLE_EVENT_DRIVEN_MONITOR=true   # CANARY (paper): per-tick exits, ~1s reaction
+      - ENABLE_BROKER_STOP=true      # Phase 4 paper canary (2026-07-22) — broker-side stop-loss
+      - ENABLE_HELD_OPTION_WS=false  # DISABLED: single Polygon /options WS is FlowCollector's (max_connections)
       # UW whale-flow signals on all bots 2026-06-13 (live on kody/dennis, paper on adam/vinny/yank).
       - ENABLE_UW_FLOW_SIGNAL=true
       # Selective OTM flow strike (validated combos: AMD/INTC/META/SPY calls, TSLA puts) — 2026-06-15.
@@ -818,7 +985,7 @@ services:
       - ENABLE_ANTIMARTINGALE_ADD=false
       - ANTIMG_CALL_LEVELS=30,80,150
       # CALL-only profit-lock (keep 60% of peak gain once +30%) — the runner-capture win, stays ON.
-      - ENABLE_V7_PROFIT_LOCK=true
+      - ENABLE_V7_PROFIT_LOCK=false
       # 0DTE premium hard-stop -25%: cut a 0DTE contract down 25% from entry regardless of underlying
       # (the NVDA -42% theta-melt fix) — PUT PF win + call tail insurance, 2026-06-16.
       - ENABLE_0DTE_PREMIUM_HARDSTOP=true
@@ -835,7 +1002,8 @@ services:
       - ENABLE_STALL_CUT=true
       - ENABLE_EOD_CLOSE_ALL=true
       - ENABLE_LATE_ENTRY_CUTOFF=true
-      - PREMIUM_HARDSTOP_0DTE_PCT=25
+      - PREMIUM_HARDSTOP_0DTE_PCT=35
+      - V7_PROFIT_LOCK_PUTS=false
       # Take-profit: freeze sizing at $50k once reached, bank the excess (caps absolute drawdown) — 2026-06-16.
       - MAX_SIZING_BALANCE=50000
       # Fleet staggering K=2: each signal → 2 of 5 bots (priority round-robin) so they don't all crater
@@ -856,7 +1024,7 @@ services:
       - ENABLE_DELTA_GATE=true
       - ENABLE_V6_SPREAD_GATE=true
       - ENABLE_V6_SCALEOUT=true
-      - ENABLE_V6_DCA=true
+      - ENABLE_V6_DCA=false
       - ENABLE_V6_EARLY_POP_GATE=true
       - ENABLE_DIP_CONFIRM=true
 
@@ -978,11 +1146,13 @@ services:
       - PYTHONUNBUFFERED=1
       # + new UW-flow CALL tickers (ORCL,INTC,ARM,GOOG,LRCX) so agents get real-time Redis price/
       # candle/premium streams for them (else they fall back to Polygon REST). GOOG ≠ GOOGL.
-      - HARVEST_UNIVERSE=SPY,QQQ,IWM,AAPL,TSLA,NVDA,META,AMD,AMZN,GOOGL,MSFT,MU,MSTR,NFLX,SMCI,PLTR,COIN,BA,JPM,AVGO,XLK,XLF,DIA,GLD,SLV,TLT,VIX,ORCL,INTC,ARM,GOOG,LRCX
+      - HARVEST_UNIVERSE=SPY,QQQ,IWM,AAPL,TSLA,NVDA,META,AMD,AMZN,GOOGL,MSFT,MU,MSTR,NFLX,SMCI,PLTR,COIN,BA,JPM,AVGO,XLK,XLF,DIA,GLD,SLV,TLT,VIX,ORCL,INTC,ARM,GOOG,LRCX,TSM,SMH,USO,GDX
       - HARVEST_POLL_INTERVAL=15
       - HARVEST_MAX_DTE=7
       - HARVEST_STRIKE_WINDOW=5
       - HARVEST_MARKET_HOURS_ONLY=true
+      - ENABLE_PREMIUM_TICK_PUBLISH=true   # event-driven monitor canary: publish held ticks
+      - ENABLE_HELD_OPTION_WS=false  # DISABLED: conflicts with FlowCollector's /options WS (max_connections)
       # PostgreSQL for tick data capture (stock prices, option snapshots, flow)
       - ENABLE_POSTGRES=true
       - DATABASE_URL=postgresql://owl:${POSTGRES_PASSWORD:-owl_dev_2026}@postgres:5432/options_owl

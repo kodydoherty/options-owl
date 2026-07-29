@@ -56,6 +56,23 @@ def _minutes_since_open() -> int:
     return int((now - market_open).total_seconds() / 60)
 
 
+def flow_ticker_allowed(fs, settings) -> bool:
+    """CONSUMER-side flow whitelist (2026-07-28 fix). The publisher (harvester's uw_flow_collector)
+    filters against ITS UW_FLOW_*_TICKERS, but the harvester has no per-bot env so it uses the settings
+    DEFAULT (which includes SPY). The per-bot UW_FLOW_*_TICKERS override (e.g. kody/dennis with 'SPY
+    removed from flow') was therefore DEAD CONFIG — flow SPY still traded on the live bots (bled -$748/16d)
+    while paper shadows kept it. Re-checking the bot's OWN whitelist on consume makes per-bot flow
+    exclusions actually take effect. Fail-open on an empty/unset list — a config typo must never silently
+    kill ALL flow. Pure + import-light so it's unit-testable in isolation."""
+    from options_owl.models.signals import Direction
+    is_put_dir = fs.direction == Direction.PUT
+    raw = (settings.UW_FLOW_PUT_TICKERS if is_put_dir else settings.UW_FLOW_CALL_TICKERS) or ""
+    wl = {t.strip().upper() for t in raw.split(",") if t.strip()}
+    if not wl:
+        return True  # fail-open: unset list must not nuke all flow
+    return str(fs.ticker).upper() in wl
+
+
 def select_flow_strike(chain: list[dict], spot: float, is_put: bool,
                        otm_mode: bool, target: float) -> tuple[float | None, str | None]:
     """Pure strike selector for a flow signal. Returns (strike, mode) or (None, None).
@@ -1267,6 +1284,11 @@ async def run_bot(settings: Settings) -> None:
 
         async def _on_flow_signal(fs):
             _flow_id["n"] -= 1  # negative synthetic id (distinct from Discord/ML)
+            if not flow_ticker_allowed(fs, paper_trader.settings):
+                logger.info(
+                    f"UW_FLOW: {fs.ticker} {fs.direction.value} SKIPPED — not in this bot's "
+                    f"flow whitelist (per-bot UW_FLOW_*_TICKERS)")
+                return
             strike, expiry, mode, spot = await _resolve_flow_strike(fs)
             if not strike or spot <= 0:
                 # Could not resolve a near-dated contract — SKIP. Do NOT trade the whale's

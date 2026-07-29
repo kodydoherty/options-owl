@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     WEBULL_ENTRY_POLL_SEC: float = 1.0  # fill-status poll cadence within a rung (was 3s)
     WEBULL_ENTRY_USE_LIVE_QUOTE: bool = True  # price the chase off the harvester's live Redis ask (HTTP fallback) so the limit isn't stale by rest-time
     WEBULL_ENTRY_QUOTE_MAX_AGE_SEC: float = 20.0  # reject a Redis snapshot older than this (falls back to HTTP) — a stale quote can never make the limit worse
+    # Liquidity-aware entry sizing (2026-07-17): large orders orphan on a fast chop tape because the
+    # full contract count can't clear the displayed book (small accounts' tiny orders fill, kody's
+    # large ones don't). Cap the order near available ask_size so we take a real (smaller) fill
+    # instead of orphaning the whole thing. DEFAULT OFF — enable per-bot in docker-compose after review.
+    WEBULL_ENTRY_LIQUIDITY_AWARE: bool = False  # size the entry down toward available ask_size (avoids large-order orphans)
+    WEBULL_ENTRY_LIQUIDITY_MULT: float = 2.0  # allow up to this × displayed ask_size (there's usually depth behind top-of-book)
+    WEBULL_ENTRY_MIN_CONTRACTS: int = 1  # never size the order below this floor, regardless of thin displayed size
     # Exit-MONITOR Redis snapshot freshness (2026-07-10): the FSM reads the premium from the
     # harvester's Redis snapshot to decide exits. A thin 0DTE contract's snapshot can FREEZE for
     # 20-30s during a fast move (few quotes), and the old 30s trust window let the monitor read a
@@ -96,6 +103,93 @@ class Settings(BaseSettings):
     VIX_MAX: float = 35.0  # pause trading above this VIX level
     VIX_HIGH_THRESHOLD: float = 25.0  # reduce position size above this
     VIX_POSITION_REDUCTION_PCT: float = 50.0  # reduce position size by this %
+
+    # VVIX sizing tilt (validated 2026 flow+ML, no-lookahead): size up on low-VVIX (calm/trend) mornings,
+    # down on high-VVIX (whippy/chop). A SIZING tilt — never skips a trade, never adds to one. Off by
+    # default; live on kody+dennis. Mild 0.7-1.3 band (aggressive band added P&L at higher drawdown).
+    ENABLE_VVIX_SIZING_TILT: bool = False
+    VVIX_TILT_MIN: float = 0.7  # multiplier at the high-VVIX (chop) extreme
+    VVIX_TILT_MAX: float = 1.3  # multiplier at the low-VVIX (calm) extreme
+    VVIX_TILT_LOOKBACK_DAYS: int = 90  # trailing window for the percentile rank
+
+    # Early small-win floor (FSM gate 3.55): once a leg peaks +ARM%, exit if it falls back to <= FLOOR%.
+    # Plugs the "+10-15% peak then round-trips to the -25% hardstop" gap (the +20/+25% gates arm too high).
+    # Validated 2026-07-14 flow +$6.4k/+27% + ML rescue, ~zero runner clip at arm +12%. Off by default;
+    # live kody+dennis. Locks a small win (+3%) rather than just breakeven.
+    ENABLE_EARLY_LOCK: bool = False
+    EARLY_LOCK_ARM_PCT: float = 12.0  # peak gain that arms the floor
+    EARLY_LOCK_FLOOR_PCT: float = 3.0  # exit if gain falls back to <= this (small win, not round-trip)
+
+    # Never-green early cut (2026-07-23): a trade that is down NEVERGREEN_CUT_LOSS_PCT AND has NEVER
+    # reached +NEVERGREEN_MAX_PEAK_PCT is a 3%-win-rate DEAD trade (validated on 21d of kody+dennis live:
+    # −$3.6k→+$1.4k and −$1.0k→+$2.4k, clipping ~1-2 winners). Covers 0DTE + multi-day, fires early (before
+    # grace) since the loss cohort otherwise rides to the −25% hardstop. Spares dip-after-green recoverers
+    # (they peaked ≥ MAX_PEAK). Distinct from STALL_CUT (multi-day-only, −30%/30min — fires too late).
+    ENABLE_NEVERGREEN_CUT: bool = False
+    NEVERGREEN_CUT_LOSS_PCT: float = 8.0     # cut once down this much...
+    NEVERGREEN_MAX_PEAK_PCT: float = 8.0     # ...IF peak gain never reached this (never went green)
+    NEVERGREEN_MIN_MINUTES: float = 2.0      # let the trade establish first (avoid entry-tick noise)
+
+    # Daily-cap open-unrealized (2026-07-14): make the 10% DailyLossGate account for UNDERWATER open
+    # positions from today (mae_premium proxy, mirroring the 25% circuit breaker) so a string of open
+    # losers trips the cap BEFORE they close — a settlement-immune complement to the NLV path. Off by
+    # default; live kody+dennis. Conservative (worst-excursion), losses-only.
+    ENABLE_DAILY_CAP_UNREALIZED: bool = False
+
+    # Adaptive near-stop polling (2026-07-14): when a HELD position is within a buffer of its stop,
+    # poll faster so a fast 0DTE dive is caught closer to the stop — shrinks the ~$2k poll-gap slippage
+    # past -25% (avg realized -28%, tail -76%). Only SHORTENS the sleep; never blocks. Off by default;
+    # live kody+dennis.
+    ENABLE_ADAPTIVE_POLL: bool = False
+    ADAPTIVE_POLL_FAST_SEC: float = 1.0  # sleep when near a stop (vs the normal 3s)
+    ADAPTIVE_POLL_NEAR_STOP_GAIN_PCT: float = -17.0  # a held position at/below this gain% is "near stop"
+    # UPSIDE adaptive poll (2026-07-22): a position that's RUNNING (up >= this gain%) can round-trip
+    # FASTER than a 5s poll can react — the +17%→-31% blow-through-the-floor case (measured avg 19pt
+    # give-back). Poll fast when up big too, so the profit-lock/early-lock floor is caught close to the
+    # floor instead of at the crash. Same 1s fast-sleep; gated under ENABLE_ADAPTIVE_POLL.
+    ADAPTIVE_POLL_RUNNING_GAIN_PCT: float = 10.0  # a held position at/above this gain% also polls fast
+
+    # Broker-side stop-loss (2026-07-22): rest a Webull STOP_LOSS order at the venue so a fast 0DTE crash
+    # fills the microsecond it hits the level — the give-back our 5s poll can't catch (measured avg 19pt,
+    # tail +17%→-31%). Emulates a trail via a fixed stop + cancel/replace as the floor climbs (Webull has
+    # no options trailing stop). HIGH-RISK live sell-path — off by default; validated paper-sim → monitored
+    # live test before any live-money bot. See specs/active/2026-07-22_broker-side-stop-loss.md.
+    ENABLE_BROKER_STOP: bool = False
+    # Fraction of entry premium at which the resting stop sits on entry (0.75 = stop at -25%, matching the
+    # -25% premium hardstop). The monitor still runs; this is the zero-latency backstop under it.
+    BROKER_STOP_ENTRY_FRAC: float = 0.75
+    # Don't cancel/replace the resting stop unless the new stop price moves at least this fraction of entry
+    # (rate-limit order churn / Webull 429s — never replace every poll).
+    BROKER_STOP_MIN_STEP_FRAC: float = 0.05
+    # Minimum seconds between cancel/replace of a leg's resting stop (churn guard).
+    BROKER_STOP_MIN_REPLACE_SEC: float = 30.0
+    # Bounded placement retries across monitor cycles before giving up → poll-only fallback.
+    BROKER_STOP_MAX_ATTEMPTS: int = 3
+    # CANARY CAP (2026-07-23): rest a broker stop on at most this many positions AT ONCE. 1 = the first
+    # live re-test only ever puts a stop on a SINGLE trade, so a mechanism failure can cost at most one
+    # trade's give-back (not the whole book, like the 11-trade blocked-exit storm). 0 = unlimited (full
+    # rollout once proven). Raise gradually: 1 → 3 → unlimited as live sessions prove it clean.
+    BROKER_STOP_MAX_POSITIONS: int = 1
+    # Replace-to-trail (Phase 3): emulate a trailing stop (Webull has none for options) by cancel+replacing
+    # the resting stop UP as the contract runs. Once peak gain >= ARM_PCT, ratchet the stop to
+    # peak_premium × TRAIL_KEEP_FRAC but never below breakeven — converts the +17%→-31% round-trip into a
+    # ~breakeven/locked exit. Kept intentionally LOOSE (backstop, not the primary exit — the FSM owns that).
+    BROKER_STOP_RATCHET_ARM_PCT: float = 20.0   # arm the ratchet once peak gain >= this %
+    BROKER_STOP_TRAIL_KEEP_FRAC: float = 0.75   # once armed, stop = peak premium × this (give back 25%)
+
+    # Held-contract options-WS feed (2026-07-22): the harvester opens a Polygon /options WS subscribed to
+    # ONLY the union of currently-held contracts (small set) and publishes per-tick NBBO to Redis
+    # `owl:optquote:`; the monitor reads it ahead of the 15s REST snapshot for real-time exit premiums.
+    # Additive + isolated — a failure falls back to the existing REST snapshots. Default off.
+    ENABLE_HELD_OPTION_WS: bool = False
+    HELD_OPTION_WS_REFRESH_SEC: float = 3.0   # how often the harvester diffs the held set + publishes quotes
+
+    # Event-driven monitor (2026-07-23): react per-tick (~1s) instead of the 3-5s poll. Two flags — the
+    # harvester publishes held-contract premium ticks to Redis pub/sub, and the monitor subscribes + evaluates
+    # the FSM per-tick alongside the poll loop (which stays as the backstop). Both default OFF; the sell path
+    # is the highest-risk file — paper-canary before live. See specs/active/2026-07-23_event-driven-monitor.md.
+    ENABLE_PREMIUM_TICK_PUBLISH: bool = False   # harvester side: publish held-contract ticks
+    ENABLE_EVENT_DRIVEN_MONITOR: bool = False   # monitor side: subscribe + evaluate per-tick
 
     # Feature 4: Theta decay exit rules
     ENABLE_THETA_DECAY_EXIT: bool = False
@@ -314,6 +408,7 @@ class Settings(BaseSettings):
     V7_PROFIT_LOCK_KEEP_FRAC: float = 0.8        # keep 80% of peak gain (2026-06-29: backtest +$852/+105% vs 60% on calls, 15d; the faders fade, tight lock banks it)
     V7_PROFIT_LOCK_ACTIVATE_PCT: float = 25.0    # arms once peak gain >= +25%
     V7_PROFIT_LOCK_PUTS: bool = True             # PUTs profit-lock at keep 80% too (2026-06-30: 7mo test +$544 on puts, "Best PUTS: lock" — validated, fleet-wide)
+    V7_PROFIT_LOCK_PEAK_EXEMPT_PCT: float = 0.0  # 0 = off; if >0, a leg peaking past this % skips the lock and rides the wide "let it run" trail (moonshot exemption — sweep before enabling)
     # Stepping-tier profit lock (2026-06-26): ratchet a HARD floor up every N% of peak
     # gain so a big winner can't round-trip to zero. Floor = (one step below the highest
     # step reached), monotonic. Calls AND puts. Layered on the V7 trail / profit-lock.
@@ -582,7 +677,18 @@ class Settings(BaseSettings):
     # Backtested (60 days, 2026-03-11 to 2026-06-09):
     #   AMZN -$10K, GOOGL -$7K, PLTR -$48K, AMD -$9K on PUTs
     # High-potential PUT tickers: SPY, QQQ, IWM, TSLA, META, AAPL, NVDA
-    PUT_EXCLUDED_TICKERS: str = "PLTR,AMD,MSTR,AVGO,AMZN,GOOGL"
+    # ORCL/INTC/TSM/ARM/SMH appended 2026-07-18: validated as CALL adds only (see ENABLE_EXPANSION_TICKERS);
+    # their puts were NOT validated (INTC puts lost), so keep them call-only. No-op while the expansion flag
+    # is off (they aren't scanned at all then).
+    PUT_EXCLUDED_TICKERS: str = "PLTR,AMD,MSTR,AVGO,AMZN,GOOGL,ORCL,INTC,TSM,ARM,SMH,USO,SLV,GDX"
+
+    # Call-side ticker expansion (validated 2026-07-18, 14mo gold-standard, CALLS: +$66k / PF 2.77 / 70% WR,
+    # ORCL/INTC/TSM/ARM/SMH all positive). Off by default; set true per-bot in docker-compose to add them to
+    # the ML pattern scan (ml_pipeline.TICKERS). Harvester must capture them first (HARVEST_UNIVERSE).
+    ENABLE_EXPANSION_TICKERS: bool = False
+    # Tech/semis (2026-07-18, +$66k/PF2.77) + commodity diversifiers USO/SLV/GDX (2026-07-19, +$20.6k/PF2.91,
+    # uncorrelated w/ tech book — USO+$8.7k, SLV+$8.6k, GDX+$3.6k, all 68-73% WR). Calls only.
+    EXPANSION_CALL_TICKERS: str = "ORCL,INTC,TSM,ARM,SMH,USO,SLV,GDX"
 
     # PUT market direction gate — only enter PUTs when SPY is green (market up)
     # Rationale: cheap PUTs on green days catch intraday reversals; on red days
@@ -590,6 +696,21 @@ class Settings(BaseSettings):
     # expanded ticker list and more slots.
     ENABLE_PUT_MARKET_DIRECTION_GATE: bool = True
     PUT_MARKET_UP_MIN_PCT: float = 0.0  # SPY must be >= this % from open to allow PUTs
+
+    # Underlying-DOWN requirement for PUT entries (2026-07-20). Require the PUT's OWN underlying to be
+    # falling >= |trigger|% from its open at entry — applies to ML *and* flow puts (flow otherwise
+    # bypasses the market-direction gate). Real live data (297 puts/6wk): puts bought when the ticker
+    # was flat/up lost -$2,013 (33% WR, 55% of all put losses); puts on falling tickers ~breakeven+.
+    # Off by default; canary on a paper bot first (live puts currently PAUSED via ENABLE_PUT_TRADING).
+    ENABLE_PUT_UNDERLYING_TRIGGER: bool = False
+    PUT_UNDERLYING_DOWN_TRIGGER: float = -0.5  # ticker must be <= this % from open to allow a PUT
+
+    # CALL underlying-UP trigger (2026-07-22) — mirror of the put trigger. Require the CALL's OWN
+    # underlying to NOT be falling at entry (>= this % from open), ML *and* flow. Real live data
+    # (394 calls/6wk): calls into a falling ticker (<=-0.5%) lost -$3,199. Mildest setting = 0.0
+    # (block only genuinely-falling tickers). Fail-open on missing data (main revenue book).
+    ENABLE_CALL_UNDERLYING_TRIGGER: bool = False
+    CALL_UNDERLYING_UP_TRIGGER: float = 0.0  # ticker must be >= this % from open to allow a CALL
     PUT_BEAR_MODE_THRESHOLD: float = -0.5  # SPY down this % = bear mode (expand PUT tickers)
     PUT_BEAR_EXPANDED_TICKERS: str = "SPY,QQQ,NVDA,TSLA,META,AAPL,AMZN,GOOGL,AMD,MSTR,PLTR,AVGO,IWM"
 

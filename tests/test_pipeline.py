@@ -185,6 +185,109 @@ class TestDailyLossGate:
         r = await DailyLossGate().evaluate(ctx)
         assert r.result == GateResult.FAIL
 
+    @pytest.mark.asyncio
+    async def test_uses_db_realized_when_balance_lags(self):
+        """Cash-account settlement lag: the Webull balance reads only a SMALL loss (proceeds settle
+        T+1 / baseline drift) while the DB realized ledger shows the TRUE bigger loss. The gate must
+        take the most-conservative measure (DB) and FAIL. Regression for 2026-07-13, when a real
+        -$1,780 day read as only -$325 on the balance path so the 10% cap would never have fired."""
+        from options_owl.risk.pipeline import _now_et
+        today = _now_et().strftime("%Y-%m-%d")
+        wb = AsyncMock()
+        wb.get_account_balance = AsyncMock(return_value=4675.0)  # start 5000 → balance says -$325
+        ctx = _base_entry_ctx(portfolio={
+            "current_balance": 3400.0,
+            "daily_pnl": -800.0,          # DB realized: true loss, exceeds 10% of 5000 ($500)
+            "starting_balance": 5000.0,
+            "last_trade_date": today,
+        })
+        ctx["settings"] = _FakeSettings(PAPER_TRADE=False)
+        ctx["webull_executor"] = wb
+        r = await DailyLossGate().evaluate(ctx)
+        assert r.result == GateResult.FAIL  # DB (-800) used, not the lagging balance (-325)
+
+    @pytest.mark.asyncio
+    async def test_balance_catches_what_db_misses(self):
+        """Reverse cross-check: DB realized is small but the balance shows a big drop (fees/external);
+        the conservative min still fires."""
+        from options_owl.risk.pipeline import _now_et
+        today = _now_et().strftime("%Y-%m-%d")
+        wb = AsyncMock()
+        wb.get_account_balance = AsyncMock(return_value=4400.0)  # -$600 on the balance
+        ctx = _base_entry_ctx(portfolio={
+            "current_balance": 4400.0, "daily_pnl": -100.0,  # DB only -100
+            "starting_balance": 5000.0, "last_trade_date": today,
+        })
+        ctx["settings"] = _FakeSettings(PAPER_TRADE=False)
+        ctx["webull_executor"] = wb
+        r = await DailyLossGate().evaluate(ctx)
+        assert r.result == GateResult.FAIL  # balance (-600) catches it
+
+    async def _db_with_open_loser(self, tmp_path):
+        """Temp DB with one OPEN Webull trade underwater by -$3000 (mae 2.0 vs entry 5.0, 10 lots)."""
+        import aiosqlite
+
+        from options_owl.execution.paper_trader import init_paper_db
+        from options_owl.risk.pipeline import _now_et
+        db = str(tmp_path / "cap.db")
+        await init_paper_db(db)
+        # Store a NAIVE noon timestamp like production (paper_trader uses datetime.now(), not ET-with-offset).
+        # An offset-aware ET string would make SQLite date() convert to UTC and roll to tomorrow late in the
+        # ET evening — a time-of-day flake. Noon has no rollover regardless of when the suite runs.
+        opened = _now_et().strftime("%Y-%m-%dT12:00:00")
+        async with aiosqlite.connect(db) as conn:
+            await conn.execute(
+                """INSERT INTO paper_trades
+                   (signal_id, ticker, direction, sentiment, score, strength, bot_source,
+                    entry_price, strike, option_type, contracts, premium_per_contract, total_cost,
+                    status, opened_at, mae_premium, webull_order_id)
+                   VALUES (1,'SPY','bullish','bullish',90,'strong','discord',
+                    600,600,'call',10,5.0,5000,'open',?,2.0,'WB123')""",
+                (opened,),
+            )
+            await conn.commit()
+        return db
+
+    @pytest.mark.asyncio
+    async def test_unrealized_trips_cap_when_enabled(self, tmp_path):
+        """Flag ON: a string of underwater OPEN positions trips the 10% cap BEFORE they close,
+        even with zero realized P&L (the black-day / open-position gap)."""
+        db = await self._db_with_open_loser(tmp_path)
+        ctx = _base_entry_ctx(portfolio={"current_balance": 5000.0, "daily_pnl": 0.0,
+                                          "last_trade_date": None})
+        ctx["db_path"] = db
+        ctx["settings"] = _FakeSettings(PAPER_TRADE=False, ENABLE_DAILY_CAP_UNREALIZED=True)
+        r = await DailyLossGate().evaluate(ctx)
+        assert r.result == GateResult.FAIL  # -$3000 open unrealized > 10% of $5000
+
+    @pytest.mark.asyncio
+    async def test_unrealized_ignored_when_disabled(self, tmp_path):
+        """Flag OFF (default): the same underwater open positions do NOT trip the cap — no behavior
+        change unless explicitly enabled."""
+        db = await self._db_with_open_loser(tmp_path)
+        ctx = _base_entry_ctx(portfolio={"current_balance": 5000.0, "daily_pnl": 0.0,
+                                          "last_trade_date": None})
+        ctx["db_path"] = db
+        ctx["settings"] = _FakeSettings(PAPER_TRADE=False, ENABLE_DAILY_CAP_UNREALIZED=False)
+        r = await DailyLossGate().evaluate(ctx)
+        assert r.result == GateResult.PASS
+
+    @pytest.mark.asyncio
+    async def test_pass_when_both_within_and_balance_fetch_fails_safely(self):
+        """Both within limit → PASS; and a balance-fetch exception must not crash the gate."""
+        from options_owl.risk.pipeline import _now_et
+        today = _now_et().strftime("%Y-%m-%d")
+        wb = AsyncMock()
+        wb.get_account_balance = AsyncMock(side_effect=RuntimeError("no connection"))
+        ctx = _base_entry_ctx(portfolio={
+            "current_balance": 4850.0, "daily_pnl": -150.0,  # DB within 500 limit
+            "starting_balance": 5000.0, "last_trade_date": today,
+        })
+        ctx["settings"] = _FakeSettings(PAPER_TRADE=False)
+        ctx["webull_executor"] = wb
+        r = await DailyLossGate().evaluate(ctx)
+        assert r.result == GateResult.PASS  # DB -150 within limit; balance failure ignored
+
 
 class TestConcurrentPositionsGate:
     @pytest.mark.asyncio

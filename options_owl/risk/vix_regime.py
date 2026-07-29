@@ -17,6 +17,8 @@ if TYPE_CHECKING:
 
 # Cache: (timestamp, vix_level)
 _vix_cache: tuple[float, float] | None = None
+# Cache: (timestamp, (level, percentile))
+_vvix_cache: tuple[float, tuple[float, float]] | None = None
 _CACHE_TTL_SECONDS = 5 * 60  # 5 minutes
 
 
@@ -57,6 +59,45 @@ def fetch_vix_level() -> float | None:
         return level
     except Exception as exc:
         logger.warning(f"VIX fetch failed: {exc}")
+        return None
+
+
+def fetch_vvix_percentile(lookback_days: int = 90) -> tuple[float, float] | None:
+    """Fetch current VVIX and its trailing percentile via yfinance.
+
+    Percentile = fraction of the trailing `lookback_days` VVIX closes that are BELOW today's latest
+    value (0.0 = calmest in the window, 1.0 = most elevated). This is the regime-adaptive, no-lookahead
+    form of the validated VVIX sizing tilt: it ranks today vs the recent past rather than a fixed level,
+    so it auto-adjusts if the VVIX baseline shifts. Cached for 5 minutes.
+
+    Returns:
+        (level, percentile) or None on failure (caller must treat None as "no tilt").
+    """
+    global _vvix_cache
+
+    if _vvix_cache is not None:
+        ts, val = _vvix_cache
+        if time.time() - ts < _CACHE_TTL_SECONDS:
+            return val
+
+    try:
+        # Pull a little extra to guarantee `lookback_days` bars after weekends/holidays.
+        hist = yf.Ticker("^VVIX").history(period=f"{int(lookback_days * 1.6) + 10}d")
+        closes = [float(c) for c in hist["Close"].tolist() if c and c > 0]
+        if len(closes) < 20:
+            logger.warning(f"VVIX fetch returned too few bars ({len(closes)}) — no tilt")
+            return None
+        level = closes[-1]
+        window = closes[-(lookback_days + 1):-1]  # trailing window, excludes today (no lookahead)
+        if not window:
+            return None
+        pctile = sum(1 for c in window if c < level) / len(window)
+        val = (level, pctile)
+        _vvix_cache = (time.time(), val)
+        logger.debug(f"VVIX fetched: level={level:.1f} pctile={pctile:.2f} (n={len(window)})")
+        return val
+    except Exception as exc:
+        logger.warning(f"VVIX fetch failed: {exc}")
         return None
 
 

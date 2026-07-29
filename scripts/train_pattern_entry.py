@@ -49,11 +49,19 @@ THETADATA_DB = str(PROJECT_DIR / "journal" / "thetadata_options.db")
 MODEL_DIR = PROJECT_DIR / "journal" / "models" / "ml_v3"
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
+# A/B knobs (set from CLI in main): TRAIN_START windows the training data (e.g. last 2 months);
+# OUT_STEM writes to a separate model file so the live pattern_entry.txt is NOT overwritten.
+TRAIN_START: str | None = None
+OUT_STEM: str = "pattern_entry"
+
 TICKERS = [
     "SPY", "QQQ", "NVDA", "TSLA", "META", "AAPL", "AMZN",
     "GOOGL", "MSFT", "AMD", "MSTR", "PLTR", "AVGO", "IWM",
     # New tickers (added 2026-05-28)
     "COIN", "NFLX", "JPM", "BA", "MU", "SMCI",
+    # Expansion + sector-diversification (added 2026-07-24)
+    "ORCL", "INTC", "TSM", "ARM", "SMH", "USO", "SLV", "GDX",
+    "XLV", "ITA", "XAR", "PPA",
 ]
 
 N_WORKERS = min(os.cpu_count() or 4, 16)
@@ -286,10 +294,17 @@ def preload_ticker_data(ticker: str) -> list[dict]:
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
 
-    dates = [r[0] for r in conn.execute(
-        "SELECT DISTINCT substr(timestamp, 1, 10) FROM option_ohlc WHERE ticker=? ORDER BY 1",
-        (ticker,),
-    ).fetchall()]
+    if TRAIN_START:
+        dates = [r[0] for r in conn.execute(
+            "SELECT DISTINCT substr(timestamp, 1, 10) FROM option_ohlc "
+            "WHERE ticker=? AND substr(timestamp,1,10) >= ? ORDER BY 1",
+            (ticker, TRAIN_START),
+        ).fetchall()]
+    else:
+        dates = [r[0] for r in conn.execute(
+            "SELECT DISTINCT substr(timestamp, 1, 10) FROM option_ohlc WHERE ticker=? ORDER BY 1",
+            (ticker,),
+        ).fetchall()]
 
     items = []
     for dt in dates:
@@ -525,8 +540,8 @@ def train(tickers: list[str]):
         t_auc = roc_auc_score(t_labels, t_preds)
         print(f"    {ticker}: AUC={t_auc:.3f} ({t_mask.sum()} samples)")
 
-    # Save model
-    model_path = str(MODEL_DIR / "pattern_entry.txt")
+    # Save model (OUT_STEM keeps the live pattern_entry.txt intact for A/B)
+    model_path = str(MODEL_DIR / f"{OUT_STEM}.txt")
     model.save_model(model_path)
 
     meta = {
@@ -546,7 +561,8 @@ def train(tickers: list[str]):
         "train_dates": f"{all_dates[0]} to {all_dates[split_idx-1]}",
         "test_dates": f"{all_dates[split_idx]} to {all_dates[-1]}",
     }
-    with open(str(MODEL_DIR / "pattern_entry_meta.json"), "w") as f:
+    meta["train_start_filter"] = TRAIN_START or "all"
+    with open(str(MODEL_DIR / f"{OUT_STEM}_meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
 
     print(f"\n  Saved to {model_path}")
@@ -557,7 +573,15 @@ def main():
     parser = argparse.ArgumentParser(description="Train pattern-based entry model")
     parser.add_argument("--ticker", type=str, help="Single ticker (default: all)")
     parser.add_argument("--evaluate", action="store_true", help="Evaluate only")
+    parser.add_argument("--start", type=str, default=None,
+                        help="Only train on data >= this date (YYYY-MM-DD), e.g. last 2 months")
+    parser.add_argument("--out", type=str, default="pattern_entry",
+                        help="Output model stem (default pattern_entry; use e.g. pattern_entry_recent for A/B)")
     args = parser.parse_args()
+
+    global TRAIN_START, OUT_STEM
+    TRAIN_START = args.start
+    OUT_STEM = args.out
 
     tickers = [args.ticker.upper()] if args.ticker else TICKERS
 

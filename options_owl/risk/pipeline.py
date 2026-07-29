@@ -291,6 +291,29 @@ class PutMarketDirectionGate(EntryGate):
         signal = ctx["signal"]
         settings = ctx["settings"]
         from options_owl.models.signals import Direction
+        direction0 = getattr(signal, "direction", None)
+
+        # Underlying-DOWN requirement for ALL puts — ML *and* flow (2026-07-20). Real live data
+        # (297 puts / 6wk, kody+dennis): puts bought when the ticker was FLAT or UP (>=0% from open)
+        # lost -$2,013 at 33% WR = 55% of ALL put losses; puts bought when the ticker was actually
+        # falling (<= -0.5%) were ~breakeven-to-positive. The current -0.15% SPY-based gate is too
+        # loose AND flow bypasses it entirely (the leak). This checks the PUT's OWN underlying and
+        # applies to flow too — evaluated BEFORE the flow bypass below. Flag-gated (default off).
+        if direction0 == Direction.PUT and getattr(settings, "ENABLE_PUT_UNDERLYING_TRIGGER", False):
+            trig = float(getattr(settings, "PUT_UNDERLYING_DOWN_TRIGGER", -0.5))
+            ticker0 = getattr(signal, "ticker", "")
+            own_change = await _ticker_change_from_open(ctx, ticker0)
+            if own_change is None:
+                # Can't confirm the underlying is falling → block (fail-closed; puts on non-falling
+                # names are the documented bleeder).
+                return GateOutcome(self.name, GateResult.FAIL,
+                                   f"PUT blocked: {ticker0} underlying move unknown — need <= {trig}% "
+                                   f"(fail-closed)")
+            if own_change > trig:
+                return GateOutcome(self.name, GateResult.FAIL,
+                                   f"PUT blocked: {ticker0} only {own_change:+.2f}% from open "
+                                   f"(need <= {trig}% — underlying not falling; live -$2,013 bleeder)")
+
         if _is_flow_sourced(signal):
             # Flow normally bypasses this gate (own whitelist). But flow INDEX puts bought into a
             # RALLY are counter-trend losers (2026-07-01 SPY-put -54% — bought while SPY +0.86%).
@@ -468,6 +491,26 @@ class DirectionalRegimeGate(EntryGate):
 
         signal = ctx["signal"]
         from options_owl.models.signals import Direction
+
+        # CALL underlying-UP trigger (2026-07-22) — mirror of the PUT underlying trigger. Require the
+        # CALL's OWN underlying to NOT be falling at entry (>= CALL_UNDERLYING_UP_TRIGGER% from open),
+        # applied to ML *and* flow (both bleed on counter-trend calls). Real live data (394 calls/6wk):
+        # calls bought into a falling ticker (<=-0.5%) lost -$3,199 (ML -$1,450 + flow -$1,749); calls
+        # on rising tickers won. Evaluated BEFORE the flow bypass. Fail-OPEN on missing data (this is
+        # the main revenue book — only block when we can CONFIRM the ticker is falling). Flag off default.
+        if getattr(signal, "direction", None) == Direction.CALL \
+                and getattr(settings, "ENABLE_CALL_UNDERLYING_TRIGGER", False) is True:
+            try:
+                ctrig = float(getattr(settings, "CALL_UNDERLYING_UP_TRIGGER", 0.0))
+            except (TypeError, ValueError):
+                ctrig = 0.0
+            own_up = await _ticker_change_from_open(ctx, getattr(signal, "ticker", ""))
+            if own_up is not None and own_up < ctrig:
+                return GateOutcome(
+                    self.name, GateResult.FAIL,
+                    f"CALL blocked: {getattr(signal, 'ticker', '')} {own_up:+.2f}% from open "
+                    f"(< {ctrig}% — underlying not rising; counter-trend, live -$3,199 bleeder)")
+
         if _is_flow_sourced(signal):
             # Flow normally bypasses this gate (own whitelist). But flow CALLs bought into a FALLING
             # tape are counter-trend losers (2026-07-08 TSLA/NVDA-call-into-a-red-SPY). Light
@@ -987,37 +1030,71 @@ class DailyLossGate(EntryGate):
         today = _now_et().strftime("%Y-%m-%d")
         limit = settings.PORTFOLIO_SIZE * (settings.DAILY_LOSS_LIMIT_PCT / 100)
 
-        # Best source: live Webull balance vs start-of-day baseline
+        # Daily P&L is measured from TWO sources, and we use the MOST CONSERVATIVE (most negative)
+        # so the cap fires when EITHER shows the loss. (2026-07-13 fix — a -$1,780 real day read as
+        # only -$325 on the balance path, so the cap would never have fired at the true number.)
+        #
+        # 1) DB REALIZED ledger (portfolio["daily_pnl"]): sum of today's closed-trade P&L, reset each
+        #    day. Immediate + settlement-independent — the source of truth for a CASH account.
+        # 2) Webull BALANCE delta (live - start-of-day). On a CASH account this LAGS realized P&L
+        #    (sale proceeds settle T+1) AND the start-of-day baseline can drift if the portfolio sync
+        #    re-baselines mid-day when flat — so it can read a far SMALLER loss than reality. Never
+        #    rely on it alone; it's only a secondary cross-check that can catch fees/external moves.
+        measures: list[float] = []
+
+        # (1) realized ledger — only counts toward TODAY
+        if portfolio.get("last_trade_date") == today:
+            measures.append(float(portfolio.get("daily_pnl", 0) or 0.0))
+        else:
+            measures.append(0.0)  # no trades yet today → realized 0
+
+        # (2) balance delta (best-effort; never blocks the gate if it fails)
+        balance_pnl = None
         webull_executor = ctx.get("webull_executor")
         starting = portfolio.get("starting_balance", 0)
-
         if webull_executor and starting and starting > 0 and not settings.PAPER_TRADE:
             try:
                 live_balance = await webull_executor.get_account_balance()
                 if live_balance and live_balance > 0:
-                    daily_pnl = live_balance - starting
-                    if daily_pnl <= -limit:
-                        return GateOutcome(self.name, GateResult.FAIL,
-                                           f"Daily loss ${daily_pnl:.2f} exceeds "
-                                           f"-${limit:.2f} (live: ${live_balance:.2f} "
-                                           f"vs start: ${starting:.2f})")
-                    return GateOutcome(self.name, GateResult.PASS,
-                                       f"Daily P&L ${daily_pnl:.2f} within limit "
-                                       f"(live: ${live_balance:.2f} vs start: ${starting:.2f})")
+                    balance_pnl = live_balance - starting
+                    measures.append(balance_pnl)
             except Exception as exc:
                 logger.warning(f"DailyLossGate: Webull balance fetch failed: {exc}")
-                # fall through to paper fallback
 
-        # Fallback: paper portfolio daily_pnl
-        if portfolio.get("last_trade_date") != today:
-            return GateOutcome(self.name, GateResult.PASS, "New trading day")
+        # (3) DB OPEN-position unrealized (flag-gated; settlement-immune complement to the NLV path).
+        #     A string of underwater OPEN Webull positions from today should trip the cap BEFORE they
+        #     close — the realized ledger (1) is closed-only and the NLV path (2) can lag/fail. Uses
+        #     mae_premium (worst adverse excursion) as the conservative mark, mirroring the 25% circuit
+        #     breaker in paper_trader. Losses only. Best-effort — never blocks the gate on a DB error.
+        open_unreal = None
+        db_path = ctx.get("db_path")
+        if getattr(settings, "ENABLE_DAILY_CAP_UNREALIZED", False) and db_path:
+            try:
+                from options_owl.journal.db import connect as _connect_db
+                async with _connect_db(db_path) as conn:
+                    cur = await conn.execute(
+                        "SELECT COALESCE(SUM("
+                        "  (COALESCE(mae_premium, premium_per_contract) - premium_per_contract)"
+                        "  * contracts * 100), 0) FROM paper_trades "
+                        "WHERE status='open' AND date(opened_at)=? AND webull_order_id IS NOT NULL",
+                        (today,),
+                    )
+                    row = await cur.fetchone()
+                open_unreal = min(0.0, float((row[0] if row else 0) or 0.0))
+                if open_unreal < 0:
+                    measures.append(measures[0] + open_unreal)  # realized + open unrealized loss
+            except Exception as exc:
+                logger.warning(f"DailyLossGate: open-unrealized calc failed (ignoring): {exc}")
 
-        daily_pnl = portfolio.get("daily_pnl", 0)
+        daily_pnl = min(measures) if measures else 0.0
+        src = (f"db=${measures[0]:.0f}"
+               + (f", bal=${balance_pnl:.0f}" if balance_pnl is not None else ", bal=n/a")
+               + (f", openUnreal=${open_unreal:.0f}" if open_unreal is not None else ""))
         if daily_pnl <= -limit:
             return GateOutcome(self.name, GateResult.FAIL,
-                               f"Daily loss ${daily_pnl:.2f} exceeds -${limit:.2f} (paper)")
+                               f"Daily loss ${daily_pnl:.2f} exceeds -${limit:.2f} ({src})")
         return GateOutcome(self.name, GateResult.PASS,
-                           f"Daily P&L ${daily_pnl:.2f} within limit (paper)")
+                           f"Daily P&L ${daily_pnl:.2f} within limit ({src})")
 
 
 class ConcurrentPositionsGate(EntryGate):

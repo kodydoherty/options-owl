@@ -724,6 +724,15 @@ async def run_harvester() -> None:
             return None
 
         flow_collector = FlowCollector(UNIVERSE, price_getter=_get_price)
+        # Event-driven monitor: publish held-contract premium ticks to pub/sub when enabled (additive).
+        try:
+            from options_owl.config.settings import Settings as _TickSettings
+            flow_collector._publish_ticks = getattr(
+                _TickSettings(), "ENABLE_PREMIUM_TICK_PUBLISH", False) is True
+            if flow_collector._publish_ticks:
+                logger.info("PREMIUM_TICK_PUBLISH: harvester publishing held-contract premium ticks to Redis")
+        except Exception as exc:
+            logger.warning(f"PREMIUM_TICK_PUBLISH flag read failed ({exc})")
         await flow_collector.start_ws(flow_api_key)
 
     logger.info(
@@ -775,6 +784,21 @@ async def run_harvester() -> None:
             logger.info("UW_FLOW_PUBLISHER: harvester holds the sole UW flow WS → publishing to Redis")
     except Exception as exc:
         logger.warning(f"UW_FLOW_PUBLISHER: failed to start ({exc})")
+
+    # HELD-CONTRACT OPTIONS-WS FEED — the harvester opens a Polygon /options WS for ONLY the union of
+    # currently-held contracts and republishes per-tick NBBO to Redis owl:optquote:. Isolated + flag-gated
+    # (ENABLE_HELD_OPTION_WS); any failure falls back to the 15s REST snapshots. Retains the single-WS-holder
+    # rule (one connection on the harvester, tiny dynamic subscription set).
+    held_ws_task = None
+    try:
+        from options_owl.config.settings import Settings as _HeldSettings
+        _held_settings = _HeldSettings()
+        if getattr(_held_settings, "ENABLE_HELD_OPTION_WS", False) is True:
+            from options_owl.collectors.held_option_ws import run_held_option_ws
+            held_ws_task = asyncio.create_task(run_held_option_ws(_held_settings, stop_event))
+            logger.info("HELD_OPTION_WS: harvester publishing real-time held-contract option quotes to Redis")
+    except Exception as exc:
+        logger.warning(f"HELD_OPTION_WS: failed to start ({exc})")
 
     async with httpx.AsyncClient() as client:
         while not stop_event.is_set():
@@ -930,6 +954,12 @@ async def run_harvester() -> None:
         flow_pub_task.cancel()
         try:
             await flow_pub_task
+        except asyncio.CancelledError:
+            pass
+    if held_ws_task is not None:
+        held_ws_task.cancel()
+        try:
+            await held_ws_task
         except asyncio.CancelledError:
             pass
     await candle_collector.stop_ws()

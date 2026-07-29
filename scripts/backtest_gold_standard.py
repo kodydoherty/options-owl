@@ -167,6 +167,36 @@ MULTI_DAY_CAP = None              # prod runs 2; default None reproduces prior b
 MULTI_DAY_EXPENSIVE_THRESHOLD = 5.0  # prod: premium > $5 multi-day → cap at 1 (only when cap active)
 LATE_0DTE_CAP = False             # prod runs this; default off to match prior baseline
 
+# ── Honest fill (run-up-aware executable entry) — honest-fill-harness-2026-07-28 ──
+# ON by default; --no-entry-runup reverts to the old fantasy signal-instant fill.
+ENTRY_FILL_RUNUP = True
+ENTRY_FILL_DELAY_BARS = 1
+
+
+def _executable_entry_ask(asks, closes, minute):
+    """The ask a live order would realistically FILL at, given order-placement latency + run-up.
+
+    Returns the ask ENTRY_FILL_DELAY_BARS after the signal (captures the momentum run-up from the data),
+    but never CHEAPER than the signal-instant ask — a live order placed at signal time does not get a
+    discount if the option later dips (dip-buy is refuted; live kody fills at the ask, not below). Falls
+    back to the signal-minute ask, then the close, on missing data. With ENTRY_FILL_RUNUP off this is the
+    old behavior (signal-minute ask)."""
+    n = len(asks)
+    if minute < n and asks[minute] > 0 and not np.isnan(asks[minute]):
+        sig_ask = float(asks[minute])
+    else:
+        sig_ask = 0.0
+    if ENTRY_FILL_RUNUP:
+        j = minute + ENTRY_FILL_DELAY_BARS
+        if 0 <= j < n and asks[j] > 0 and not np.isnan(asks[j]):
+            return max(sig_ask, float(asks[j]))
+    if sig_ask > 0:
+        return sig_ask
+    if minute < len(closes) and closes[minute] > 0:
+        return float(closes[minute])
+    return 0.0
+
+
 SCALP_THRESH_OVERRIDE = None      # scalp_peak_threshold_pct (default ~20)
 SOFT_KEEP_OVERRIDE = None         # soft_trail_keep_pct (default ~0.60)
 ADAPTIVE_MULT_OVERRIDE = None     # multiplier on adaptive trail widths (1.0 = unchanged)
@@ -433,6 +463,26 @@ _V6_SETTINGS = SimpleNamespace(
     V7_PROFIT_LOCK_KEEP_FRAC=0.8,
     V7_PROFIT_LOCK_ACTIVATE_PCT=25.0,
     V7_PROFIT_LOCK_PUTS=True,
+    V7_PROFIT_LOCK_PEAK_EXEMPT_PCT=0.0,   # moonshot exemption OFF (shipped+reverted 2026-07-14)
+    # ── Tight exit risk-controls — LIVE on kody, added to the compounding FSM (fidelity fix 2026-07-14).
+    ENABLE_0DTE_PREMIUM_HARDSTOP=True,
+    PREMIUM_HARDSTOP_0DTE_PCT=25.0,
+    ENABLE_MULTIDAY_CALL_HARDSTOP=True,
+    MULTIDAY_CALL_HARDSTOP_PCT=25.0,
+    ENABLE_MULTIDAY_PUT_HARDSTOP=True,
+    MULTIDAY_PUT_HARDSTOP_PCT=25.0,
+    ENABLE_STALL_CUT=True,
+    STALL_CUT_MIN_MINUTES=30.0,
+    STALL_CUT_LOSS_PCT=30.0,
+    STALL_CUT_PEAK_PCT=10.0,
+    ENABLE_EARLY_LOCK=True,
+    EARLY_LOCK_ARM_PCT=12.0,
+    EARLY_LOCK_FLOOR_PCT=3.0,
+    ENABLE_EOD_CLOSE_ALL=True,
+    ENABLE_NEVERGREEN_CUT=True,
+    NEVERGREEN_CUT_LOSS_PCT=8.0,
+    NEVERGREEN_MAX_PEAK_PCT=8.0,
+    NEVERGREEN_MIN_MINUTES=2.0,
 )
 
 
@@ -2475,7 +2525,7 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                         signal_quality_score = float(signal_model.predict(X_sq)[0])
 
                 # Step 3: Entry gates
-                entry_premium = float(td["asks"][minute]) if td["asks"][minute] > 0 else float(td["closes"][minute])
+                entry_premium = _executable_entry_ask(td["asks"], td["closes"], minute)
                 if entry_premium <= 0 or np.isnan(entry_premium):
                     continue
 
@@ -2902,7 +2952,7 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                                     continue
 
                         # Step 3: Entry gates (same as CALLs)
-                        entry_premium = float(ptd["asks"][minute]) if ptd["asks"][minute] > 0 else float(ptd["closes"][minute])
+                        entry_premium = _executable_entry_ask(ptd["asks"], ptd["closes"], minute)
                         if entry_premium <= 0 or np.isnan(entry_premium):
                             continue
 
@@ -3887,6 +3937,10 @@ def main():
                         help="Disable the V7 convex exits (ON by default to match prod ENABLE_V7_WIDE_TRAIL)")
     parser.add_argument("--scaleout-trigger", type=float, default=None,
                         help="V6 scaleout trigger %% (default 20)")
+    parser.add_argument("--no-entry-runup", action="store_true",
+                        help="Disable honest run-up-aware fill; revert to fantasy signal-instant ask")
+    parser.add_argument("--entry-fill-delay", type=int, default=None,
+                        help="Bars after signal the fill lands (default ENTRY_FILL_DELAY_BARS=1)")
     args = parser.parse_args()
 
     print("=" * 70)
@@ -4010,6 +4064,12 @@ def main():
     REENTRY_COOLDOWN_MIN = args.reentry_cooldown_min
     BREAKEVEN_TRIGGER_OVERRIDE = args.breakeven_trigger
     SCALEOUT_TRIGGER_OVERRIDE = args.scaleout_trigger
+
+    # ---- Honest-fill wiring ----
+    global ENTRY_FILL_RUNUP, ENTRY_FILL_DELAY_BARS
+    ENTRY_FILL_RUNUP = not args.no_entry_runup
+    if args.entry_fill_delay is not None:
+        ENTRY_FILL_DELAY_BARS = args.entry_fill_delay
 
     # ---- Position-sizing experiment wiring ----
     SIZING_MODE = args.sizing_mode

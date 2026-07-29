@@ -39,6 +39,7 @@ from options_owl.risk.exit_v5.gates import (
     check_adaptive_trail,
     check_bid_disappearance_gate,
     check_breakeven_ratchet,
+    check_early_lock,
     check_checkpoint_cut,
     check_eod_cutoff,
     check_graduated_stop,
@@ -339,6 +340,22 @@ class ExitFSM:
                     f"peaked only {peak_gain:.0f}% (never worked)",
                     debug=debug)
 
+        # Gate 2.7: NEVER-GREEN early cut (0DTE + MULTI-DAY) — a trade down NEVERGREEN_CUT_LOSS_PCT that
+        # has NEVER reached +NEVERGREEN_MAX_PEAK_PCT is a ~3%-win-rate dead trade (validated on 21d of live
+        # kody+dennis: swings the book positive, clips ~1-2 winners). Fires EARLY (before grace) — otherwise
+        # this cohort rides all the way to the −25% hardstop. Spares dip-after-green recoverers (peaked
+        # higher than MAX_PEAK) and gives the trade NEVERGREEN_MIN_MINUTES to establish first.
+        if (self._settings and getattr(self._settings, "ENABLE_NEVERGREEN_CUT", False)):
+            ng_min = getattr(self._settings, "NEVERGREEN_MIN_MINUTES", 2.0)
+            ng_loss = getattr(self._settings, "NEVERGREEN_CUT_LOSS_PCT", 8.0)
+            ng_peak = getattr(self._settings, "NEVERGREEN_MAX_PEAK_PCT", 8.0)
+            if (elapsed_min >= ng_min and drop_entry >= ng_loss and peak_gain < ng_peak):
+                return _exit(
+                    ExitReason.NEVERGREEN_CUT,
+                    f"never-green cut: down {drop_entry:.0f}%, peaked only {peak_gain:.0f}% "
+                    f"in {elapsed_min:.0f}min (never worked)",
+                    debug=debug)
+
         # ── 5-minute grace — skip most exits, but backstop still fires ──
         if elapsed_min < cfg.grace_period_min:
             # Never let grace protect a catastrophic loss. The backstop fires
@@ -408,6 +425,20 @@ class ExitFSM:
             if action:
                 return action
 
+        # Gate 3.55: Early small-win floor — once peaked +arm%, exit if gain falls to <= floor%.
+        # Plugs the "+10-15% peak then round-trips to the -25% hardstop" gap the +20/+25% gates miss.
+        # Fires EARLIER than the breakeven ratchet (lower arm) and locks a small win, not just breakeven.
+        # Validated 2026-07-14 (flow +$6.4k/+27%, ML rescue +$11.9k) with ~zero runner clip at arm +12%.
+        if self._settings and getattr(self._settings, "ENABLE_EARLY_LOCK", False):
+            action = check_early_lock(
+                gain, peak_gain,
+                arm_pct=getattr(self._settings, "EARLY_LOCK_ARM_PCT", 12.0),
+                floor_pct=getattr(self._settings, "EARLY_LOCK_FLOOR_PCT", 3.0),
+                debug=debug,
+            )
+            if action:
+                return action
+
         # V7 Gate 3.6: Profit-lock — once peaked +N%, keep K% of the peak gain instead of
         # riding the wide trail back to break-even. CALL by default; PUTs opt in via
         # V7_PROFIT_LOCK_PUTS (historically puts kept the wide trail to ride slow crashes,
@@ -421,6 +452,7 @@ class ExitFSM:
                 keep_frac=getattr(self._settings, "V7_PROFIT_LOCK_KEEP_FRAC", 0.6),
                 activate_pct=getattr(self._settings, "V7_PROFIT_LOCK_ACTIVATE_PCT", 30.0),
                 debug=debug,
+                peak_exempt_pct=getattr(self._settings, "V7_PROFIT_LOCK_PEAK_EXEMPT_PCT", 0.0),
             )
             if action:
                 return action

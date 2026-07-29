@@ -89,6 +89,34 @@ PRE_MOVE_LOOKBACK = 15    # capture features from this many minutes before entry
 NEGATIVE_RATIO = 2        # negatives per positive (class balancing)
 COOLDOWN_MIN = 30         # min gap between detected moves (avoid overlap)
 
+# ---------------------------------------------------------------------------
+# Honest-fill LABELS (2026-07-28) — the ranker-retrain fix.
+# The label defines "winner" off the signal-bar CLOSE, but a live order fills at the ask a bar later
+# (run-up) + a spread-cross — measured to flip 30-58% of positive labels (see label-shift-verdict).
+# When HONEST_FILL_LABELS=1, the FSM sim uses the executable entry basis instead of the close, so the
+# model learns edge that survives real fills. Off by default → existing behavior unchanged; env-gated
+# so old vs honest models are trained from the same code. Matches the harness _executable_entry_ask.
+# ---------------------------------------------------------------------------
+HONEST_FILL_LABELS = os.getenv("HONEST_FILL_LABELS", "0") == "1"
+HONEST_FILL_DELAY = int(os.getenv("HONEST_FILL_DELAY", "1"))          # bars after signal the fill lands
+HONEST_FILL_SPREAD_SLIP = float(os.getenv("HONEST_FILL_SPREAD_SLIP", "0.02"))  # spread-cross on top
+
+
+def _honest_entry_basis(ohlc_side, quotes_side, i, close_px):
+    """Live-executable entry basis: max(signal close, ask HONEST_FILL_DELAY bars later) × (1+spread_slip).
+    The ask captures the run-up + a live order never fills below the signal price (no dip discount).
+    Falls back to close×(1+slip) when the later ask is missing. Never raises."""
+    px = float(close_px)
+    try:
+        j = i + HONEST_FILL_DELAY
+        if quotes_side is not None and 0 <= j < len(quotes_side):
+            a = quotes_side.iloc[j].get("ask", 0)
+            if a and a > 0 and not np.isnan(a):
+                px = max(px, float(a))
+    except Exception:
+        pass
+    return px * (1 + HONEST_FILL_SPREAD_SLIP)
+
 # Per-ticker MIN_MOVE_PCT (from ablation study — volatile tickers need higher threshold)
 TICKER_MOVE_PCT = {
     "SPY": 38.0, "QQQ": 38.0, "IWM": 38.0,         # index: tighter moves
@@ -267,6 +295,9 @@ def simulate_with_production_fsm(
     entry_price = ohlc_side.iloc[entry_idx]["close"]
     if not entry_price or entry_price <= 0 or np.isnan(entry_price):
         return None
+    # Honest-fill: label winners off the live-executable entry (ask+run-up+spread), not the signal close.
+    if HONEST_FILL_LABELS:
+        entry_price = _honest_entry_basis(ohlc_side, quotes_side, entry_idx, entry_price)
 
     right_val = str(ohlc_side.iloc[entry_idx].get("right", "CALL")).upper()
     option_type = "call" if right_val == "CALL" else "put"

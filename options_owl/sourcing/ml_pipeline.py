@@ -47,6 +47,22 @@ TICKERS = [
     "COIN", "NFLX", "JPM", "BA", "MU", "SMCI",
 ]
 
+# Call-side ticker expansion (validated 2026-07-18 on the 14mo gold-standard harness, CALLS only):
+# ORCL/INTC/TSM/ARM/SMH all net-positive — +$66k, 156 trades, 70% WR, PF 2.77, DD 8.3% (ORCL +$32.7k
+# the standout). Flag-gated (ENABLE_EXPANSION_TICKERS, default off) so it's instantly revertible. These
+# are CALL adds only — puts on these names were NOT validated (INTC puts lost), so they're also added to
+# PUT_EXCLUDED_TICKERS. Harvester must capture them (ORCL/INTC/ARM already in HARVEST_UNIVERSE; TSM/SMH added).
+import os as _os  # noqa: E402
+
+EXPANSION_CALL_TICKERS = [
+    t.strip().upper() for t in _os.getenv("EXPANSION_CALL_TICKERS", "ORCL,INTC,TSM,ARM,SMH,USO,SLV,GDX").split(",")
+    if t.strip()
+]
+if _os.getenv("ENABLE_EXPANSION_TICKERS", "false").lower() == "true":
+    for _t in EXPANSION_CALL_TICKERS:
+        if _t not in TICKERS:
+            TICKERS.append(_t)
+
 # Tickers excluded from sourcing (net losers in concurrent backtest, 2026-05-30)
 # MSFT: 22% WR. COIN: 55% WR, -$8.9K. AVGO: 71% WR but -$3.6K avg loss. MU: flat.
 EXCLUDED_TICKERS = {"MSFT", "COIN", "AVGO", "MU"}

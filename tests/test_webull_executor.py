@@ -114,6 +114,28 @@ class TestBuyOrderClamp:
         with pytest.raises(ValueError, match="hard cap"):
             executor._check_safety_limits(MAX_ORDER_CONTRACTS + 1, 0.25, "BUY")
 
+    @pytest.mark.parametrize("side", ["BUY", "buy"])
+    @pytest.mark.asyncio
+    async def test_buy_clamp_guard_matches_safety_guard(self, side):
+        """The place_option_order clamp guard is now `!= SELL` so it covers exactly the same set
+        _check_safety_limits raises on (`action != SELL`). A case-variant BUY must still clamp (not
+        slip past the clamp into the raise). Belt-and-suspenders after the SMCI orphan recurrence."""
+        executor = WebullExecutor(_make_settings(PAPER_TRADE=False))
+        executor._ensure_clients = MagicMock()
+        executor._check_kill_switch = AsyncMock()
+        captured = {}
+
+        async def _fake_escalation(*, contracts, **kw):
+            captured["contracts"] = contracts
+            return OrderResult(success=True, order_id="x")
+
+        executor._place_buy_with_escalation = _fake_escalation
+        await executor.place_option_order(
+            ticker="SMCI", strike=50.0, expiry_date="2026-07-13", option_type="CALL",
+            side=side, contracts=MAX_ORDER_CONTRACTS + 20, limit_price=0.25,
+        )
+        assert captured["contracts"] == MAX_ORDER_CONTRACTS
+
 
 class TestMissingCredentials:
     def test_no_app_key_raises(self):
@@ -577,6 +599,9 @@ def _chase_settings(**overrides):
         "WEBULL_ENTRY_POLL_SEC": 1.0,
         "WEBULL_ENTRY_USE_LIVE_QUOTE": True,
         "WEBULL_ENTRY_QUOTE_MAX_AGE_SEC": 20.0,
+        "WEBULL_ENTRY_LIQUIDITY_AWARE": False,
+        "WEBULL_ENTRY_LIQUIDITY_MULT": 2.0,
+        "WEBULL_ENTRY_MIN_CONTRACTS": 1,
     }
     defaults.update(overrides)
     return _make_settings(**defaults)
@@ -704,6 +729,123 @@ class TestEntryChaseAggression:
         )
         assert seen["timeout"] == 4.0
         assert seen["poll"] == 1.0
+
+
+class TestLiquidityAwareSizing:
+    """Liquidity-aware entry size-down (2026-07-17): large orders orphan on a thin book, so cap
+    the order near available ask_size × mult and report the TRUE fill via filled_quantity."""
+
+    def _submit_capture(self, executor, captured):
+        async def fake_submit(payload):
+            captured["contracts"] = int(payload[0]["quantity"]) if "quantity" in payload[0] else None
+            captured["payload"] = payload[0]
+            return ("ORDER1", {}, None)
+
+        executor._fetch_ask = AsyncMock(return_value=1.00)
+        executor._submit_order_payload = fake_submit
+        executor._wait_for_fill = AsyncMock(return_value="FILLED")
+
+    @pytest.mark.asyncio
+    async def test_sizes_down_when_order_exceeds_book(self):
+        executor = WebullExecutor(_chase_settings(WEBULL_ENTRY_LIQUIDITY_AWARE=True,
+                                                  WEBULL_ENTRY_LIQUIDITY_MULT=2.0))
+        executor._fetch_ask_size = AsyncMock(return_value=5.0)  # book shows 5 @ ask
+        captured = {}
+        self._submit_capture(executor, captured)
+        res = await executor._place_buy_with_escalation(
+            ticker="SPY", strike=733.0, expiry_date="2026-06-25",
+            option_type="call", contracts=18, initial_limit=1.05,
+        )
+        # 18 requested, cap = 5 × 2 = 10 → sized down to 10, and reported back
+        assert res.fill_status == "FILLED"
+        assert res.filled_quantity == 10
+        assert captured["contracts"] == 10
+
+    @pytest.mark.asyncio
+    async def test_no_sizedown_when_order_fits_book(self):
+        executor = WebullExecutor(_chase_settings(WEBULL_ENTRY_LIQUIDITY_AWARE=True,
+                                                  WEBULL_ENTRY_LIQUIDITY_MULT=2.0))
+        executor._fetch_ask_size = AsyncMock(return_value=25.0)  # plenty of depth
+        captured = {}
+        self._submit_capture(executor, captured)
+        res = await executor._place_buy_with_escalation(
+            ticker="SPY", strike=733.0, expiry_date="2026-06-25",
+            option_type="call", contracts=18, initial_limit=1.05,
+        )
+        assert res.filled_quantity is None  # full size → no override signalled
+        assert captured["contracts"] == 18
+
+    @pytest.mark.asyncio
+    async def test_flag_off_never_sizes_down(self):
+        executor = WebullExecutor(_chase_settings(WEBULL_ENTRY_LIQUIDITY_AWARE=False))
+        executor._fetch_ask_size = AsyncMock(return_value=1.0)  # thin book, but flag off
+        captured = {}
+        self._submit_capture(executor, captured)
+        res = await executor._place_buy_with_escalation(
+            ticker="SPY", strike=733.0, expiry_date="2026-06-25",
+            option_type="call", contracts=18, initial_limit=1.05,
+        )
+        assert res.filled_quantity is None
+        assert captured["contracts"] == 18
+
+    @pytest.mark.asyncio
+    async def test_unknown_size_keeps_full_order(self):
+        """No fresh sized snapshot → fall back to the full requested size (current behaviour)."""
+        executor = WebullExecutor(_chase_settings(WEBULL_ENTRY_LIQUIDITY_AWARE=True))
+        executor._fetch_ask_size = AsyncMock(return_value=None)
+        captured = {}
+        self._submit_capture(executor, captured)
+        res = await executor._place_buy_with_escalation(
+            ticker="SPY", strike=733.0, expiry_date="2026-06-25",
+            option_type="call", contracts=18, initial_limit=1.05,
+        )
+        assert res.filled_quantity is None
+        assert captured["contracts"] == 18
+
+    @pytest.mark.asyncio
+    async def test_min_contracts_floor_respected(self):
+        executor = WebullExecutor(_chase_settings(WEBULL_ENTRY_LIQUIDITY_AWARE=True,
+                                                  WEBULL_ENTRY_LIQUIDITY_MULT=1.0,
+                                                  WEBULL_ENTRY_MIN_CONTRACTS=3))
+        executor._fetch_ask_size = AsyncMock(return_value=1.0)  # 1 × 1.0 = 1, floored to 3
+        captured = {}
+        self._submit_capture(executor, captured)
+        res = await executor._place_buy_with_escalation(
+            ticker="SPY", strike=733.0, expiry_date="2026-06-25",
+            option_type="call", contracts=18, initial_limit=1.05,
+        )
+        assert res.filled_quantity == 3
+        assert captured["contracts"] == 3
+
+    @pytest.mark.asyncio
+    async def test_fetch_ask_size_reads_fresh_redis(self, monkeypatch):
+        import time
+
+        from options_owl.db import redis_client
+
+        executor = WebullExecutor(_chase_settings())
+
+        async def fresh(ck):
+            return {"ask": 2.5, "ask_size": 42, "t": time.time()}
+
+        monkeypatch.setattr(redis_client, "get_option_snapshot", fresh)
+        size = await executor._fetch_ask_size("SPY", 733.0, "2026-06-25", "put")
+        assert size == 42
+
+    @pytest.mark.asyncio
+    async def test_fetch_ask_size_rejects_stale(self, monkeypatch):
+        import time
+
+        from options_owl.db import redis_client
+
+        executor = WebullExecutor(_chase_settings(WEBULL_ENTRY_QUOTE_MAX_AGE_SEC=20.0))
+
+        async def stale(ck):
+            return {"ask": 2.5, "ask_size": 42, "t": time.time() - 100}
+
+        monkeypatch.setattr(redis_client, "get_option_snapshot", stale)
+        size = await executor._fetch_ask_size("SPY", 733.0, "2026-06-25", "put")
+        assert size is None  # stale → no fabricated cap
 
 
 class TestReconnectResetsDataClient:

@@ -1616,6 +1616,34 @@ class PaperTrader:
                                     f"haircut={_dh:.2f} (conv_mult→{_conv_mult:.2f})")
                     elif _edelta is None:
                         logger.info(f"DELTA_SIZING: {signal.ticker} no delta — no haircut (fail-open)")
+                # VVIX sizing tilt (flag-gated, default off): market-regime tilt — size UP on low-VVIX
+                # (calm/trend) mornings, DOWN on high-VVIX (whippy/chop). ALL trades (calls+puts,
+                # flow+ML). Never skips/adds — pure entry-size multiplier. Trailing-percentile (no
+                # lookahead, regime-adaptive). Fail-open (no tilt) if the VVIX feed is unavailable.
+                # Folds into _conv_mult; STACKS on the other mults; position caps still bound it.
+                if getattr(self.settings, "ENABLE_VVIX_SIZING_TILT", False):
+                    from options_owl.risk.vinny_strategy import vvix_size_mult
+                    from options_owl.risk.vix_regime import fetch_vvix_percentile
+                    _vvix_pct = None
+                    try:
+                        _lb = getattr(self.settings, "VVIX_TILT_LOOKBACK_DAYS", 90)
+                        _vv = await asyncio.wait_for(
+                            asyncio.to_thread(fetch_vvix_percentile, _lb), timeout=8)
+                        if _vv is not None:
+                            _vvix_pct = _vv[1]
+                    except (TimeoutError, asyncio.TimeoutError):
+                        logger.warning(f"VVIX_TILT: {signal.ticker} fetch timed out — no tilt")
+                        _vvix_pct = None
+                    except Exception as exc:
+                        logger.warning(f"VVIX_TILT: {signal.ticker} fetch failed ({exc}) — no tilt")
+                        _vvix_pct = None
+                    _vv_mult, _vv_desc = vvix_size_mult(
+                        _vvix_pct,
+                        lo=getattr(self.settings, "VVIX_TILT_MIN", 0.7),
+                        hi=getattr(self.settings, "VVIX_TILT_MAX", 1.3),
+                    )
+                    _conv_mult *= _vv_mult
+                    logger.info(f"VVIX_TILT: {signal.ticker} {_vv_desc} (conv_mult→{_conv_mult:.2f})")
                 total_contracts = score_to_contracts(
                     signal.score,
                     cost_per_contract=cost_per_contract,
@@ -2058,6 +2086,23 @@ class PaperTrader:
                         result.client_order_id
                     )
                 fill_str = f", fill=${fill_price:.2f}" if fill_price else ""
+                # Liquidity-aware size-down / partial fill: the executor may have filled FEWER
+                # contracts than requested (thin book). Record the TRUE count — a recorded
+                # position larger than what actually filled would make the monitor try to sell
+                # phantom contracts (the sell-path bug class). filled_quantity is None on a
+                # normal full-size fill, so this is a no-op there.
+                requested_contracts = trade_info["contracts"]
+                filled_q = getattr(result, "filled_quantity", None)
+                actual_contracts = (
+                    int(filled_q) if filled_q and 0 < int(filled_q) < requested_contracts
+                    else requested_contracts
+                )
+                if actual_contracts != requested_contracts:
+                    logger.warning(
+                        f"WEBULL ENTRY SIZED DOWN: trade#{trade_id} {trade_info['ticker']} "
+                        f"{requested_contracts}x → {actual_contracts}x filled — updating record "
+                        f"to the true position (avoids phantom sell qty)"
+                    )
                 logger.info(
                     f"WEBULL ENTRY: {trade_info['ticker']} "
                     f"x{trade_info['contracts']} — order_id={result.order_id}"
@@ -2082,21 +2127,23 @@ class PaperTrader:
                 # match the real fill — otherwise close_trade() calculates P&L
                 # from the signal premium instead of the actual entry cost.
                 if fill_price and fill_price > 0:
-                    real_total_cost = fill_price * trade_info["contracts"] * 100
+                    real_total_cost = fill_price * actual_contracts * 100
                     await conn.execute(
                         "UPDATE paper_trades SET webull_order_id = ?, "
                         "webull_client_order_id = ?, webull_entry_fill_price = ?, "
-                        "premium_per_contract = ?, total_cost = ? "
+                        "premium_per_contract = ?, total_cost = ?, contracts = ? "
                         "WHERE id = ?",
                         (result.order_id, result.client_order_id, fill_price,
-                         fill_price, real_total_cost, trade_id),
+                         fill_price, real_total_cost, actual_contracts, trade_id),
                     )
                 else:
                     await conn.execute(
                         "UPDATE paper_trades SET webull_order_id = ?, "
-                        "webull_client_order_id = ?, webull_entry_fill_price = ? "
+                        "webull_client_order_id = ?, webull_entry_fill_price = ?, "
+                        "contracts = ? "
                         "WHERE id = ?",
-                        (result.order_id, result.client_order_id, fill_price, trade_id),
+                        (result.order_id, result.client_order_id, fill_price,
+                         actual_contracts, trade_id),
                     )
                 await self._commit_with_retry(
                     conn, f"webull order ID for trade #{trade_id}"
@@ -2269,7 +2316,40 @@ class PaperTrader:
         # enough (the cancel had not propagated). Use _confirm_cancelled so the holding is
         # provably freed before we submit the next sell. (Fixes the META #467/#424/#376
         # blocked-exit chain 2026-07-07.)
-        if retry_count > 0:
+        # BROKER-STOP double-fill guard (design A, 2026-07-22): when a resting broker
+        # STOP_LOSS may be live for this contract, the monitor MUST cancel-and-confirm it
+        # before placing its own sell — else the venue stop and our sell both fill (a double
+        # sell on live money). The resting stop is present from the moment the position opens,
+        # so unlike the retry-only pending-order cleanup this must run on the FIRST attempt too.
+        # The block below already matches ANY open order on the contract (incl. a STOP_LOSS)
+        # and, if the stop already FILLED in the race, logs it and lets the sell fall through
+        # to a no-position (handled). See specs/active/2026-07-22_broker-side-stop-loss.md.
+        _broker_stop_on = getattr(self.settings, "ENABLE_BROKER_STOP", False) is True
+        # TRACKED-ID cancel-confirm (2026-07-27 fix): before the fuzzy open-orders sweep, cancel-and-CONFIRM
+        # this trade's resting stop by its TRACKED client_id. The fuzzy sweep below re-derives leg fields and
+        # silently MISSED on GOOG #633/#378 (format drift) → the sell hit reserved qty → fuse tripped. Looking
+        # the stop up by the id the manager recorded at placement is exact and cannot miss. Best-effort: a
+        # miss/None just falls through to the fuzzy sweep + the fuse, so this can only reduce blocked-sells.
+        if _broker_stop_on:
+            try:
+                from options_owl.execution.broker_stop import get_active_stop_client_id
+                stop_cid = get_active_stop_client_id(trade_id)
+                if stop_cid:
+                    status = await asyncio.wait_for(
+                        self.webull_executor._confirm_cancelled(stop_cid, timeout_seconds=6.0),
+                        timeout=15,
+                    )
+                    logger.info(
+                        f"BROKER STOP cancel-confirmed before sell: trade#{trade_id} "
+                        f"client_id={stop_cid} status={status}"
+                    )
+                    await asyncio.sleep(0.5)  # brief settle so the venue frees the reserved qty
+            except Exception as exc:  # noqa: BLE001 - never block the sell; fuzzy sweep + fuse still guard
+                logger.warning(
+                    f"tracked broker-stop cancel-confirm failed for #{trade_id}: {exc} "
+                    f"— falling through to fuzzy sweep + fuse"
+                )
+        if retry_count > 0 or _broker_stop_on:
             try:
                 open_orders = await asyncio.wait_for(
                     self.webull_executor.get_open_orders(), timeout=15,
@@ -2355,6 +2435,21 @@ class PaperTrader:
                 f"order_id={result.order_id} client_id={result.client_order_id} "
                 f"error={result.error}"
             )
+
+            # CIRCUIT BREAKER: a resting broker stop reserving the holding quantity BLOCKS this FSM sell
+            # (OPTION_LONG_POSITION_MUST_BE_CLOSE_THAN_SELL_SHORT). On 2026-07-23 that produced a 5,000-event
+            # blocked-sell storm on live money. Trip the fuse on the FIRST such event → broker stops disable
+            # themselves process-wide and cancel every resting stop, so the FSM reverts to clean poll-only.
+            if (
+                getattr(self.settings, "ENABLE_BROKER_STOP", False) is True
+                and result.error
+                and "MUST_BE_CLOSE_THAN_SELL_SHORT" in str(result.error)
+            ):
+                from options_owl.execution.broker_stop import kill_broker_stops
+                kill_broker_stops(
+                    f"FSM sell blocked by reserved quantity on {ticker} #{trade_id} — a resting broker "
+                    f"stop is holding the position; disabling broker stops so exits are never blocked"
+                )
 
             if result.success:
                 # Handle partial fills — some contracts sold, some didn't
