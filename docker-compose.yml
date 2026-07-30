@@ -134,10 +134,10 @@ services:
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
       - ENABLE_FOMC_PAUSE=true
       - MAX_CONCURRENT=8
-      - MAX_POSITION_PCT=10
+      - MAX_POSITION_PCT=15
       - MAX_DCA_POSITION_PCT=10
       - MAX_TRADE_LOSS_EXIT_PCT=8
-      - MAX_PORTFOLIO_RISK_PCT=45  # REVERTED 2026-07-28 pm: honest-fill harness showed the flow edge was ~fantasy; don't size up a book leaning on it
+      - MAX_PORTFOLIO_RISK_PCT=75  # scaled back to full normal 2026-07-30: honest edge confirming live (+ conf_linear off)
       - BLOCKED_TICKERS=MSFT,COIN,AVGO,MU,SPY   # SPY paused: -$1769/45tr biggest bleeder
       - UW_FLOW_CALL_TICKERS=META,TSLA,ORCL,ARM,GOOG,LRCX   # SPY + AMD/INTC/AMZN pulled 2026-07-28: bleed at honest fills AND live
       - ENABLE_WEBULL_PAPER=true
@@ -239,7 +239,7 @@ services:
       # conf_linear (winner-concentration) sizing — AGGRESSIVE 0.4-1.8, 6mo-validated 2026-06-22:
       # +107% P&L vs flat at LOWER drawdown over 254 trades. Stacks w/ runner_v1 (×0.28–×2.34);
       # MAX_POSITION_PCT/MAX_POSITION_DOLLARS caps bound the upside. Live kody, paper shadows on the rest.
-      - ENABLE_CONF_LINEAR_SIZING=true
+      - ENABLE_CONF_LINEAR_SIZING=false
       - CONF_LINEAR_BUDGET_MIN=0.4
       - CONF_LINEAR_BUDGET_MAX=1.8
       # VVIX sizing tilt (LIVE kody+dennis 2026-07-14): size up on low-VVIX (calm/trend) mornings, down
@@ -318,10 +318,10 @@ services:
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
       - ENABLE_FOMC_PAUSE=true
       - MAX_CONCURRENT=8
-      - MAX_POSITION_PCT=10
+      - MAX_POSITION_PCT=15
       - MAX_DCA_POSITION_PCT=10
       - MAX_TRADE_LOSS_EXIT_PCT=8
-      - MAX_PORTFOLIO_RISK_PCT=45  # REVERTED 2026-07-28 pm: honest-fill harness showed the flow edge was ~fantasy; don't size up a book leaning on it
+      - MAX_PORTFOLIO_RISK_PCT=75  # scaled back to full normal 2026-07-30: honest edge confirming live (+ conf_linear off)
       - BLOCKED_TICKERS=MSFT,COIN,AVGO,MU,SPY   # SPY paused: -$1769/45tr biggest bleeder
       - UW_FLOW_CALL_TICKERS=META,TSLA,ORCL,ARM,GOOG,LRCX   # SPY + AMD/INTC/AMZN pulled 2026-07-28: bleed at honest fills AND live
       - ENABLE_WEBULL_PAPER=true
@@ -423,7 +423,7 @@ services:
       # conf_linear (winner-concentration) sizing — AGGRESSIVE 0.4-1.8, 6mo-validated 2026-06-22:
       # +107% P&L vs flat at LOWER drawdown over 254 trades. Stacks w/ runner_v1 (×0.28–×2.34);
       # MAX_POSITION_PCT/MAX_POSITION_DOLLARS caps bound the upside. Live kody, paper shadows on the rest.
-      - ENABLE_CONF_LINEAR_SIZING=true
+      - ENABLE_CONF_LINEAR_SIZING=false
       - CONF_LINEAR_BUDGET_MIN=0.4
       - CONF_LINEAR_BUDGET_MAX=1.8
       # VVIX sizing tilt (LIVE kody+dennis 2026-07-14): size up on low-VVIX (calm/trend) mornings, down
