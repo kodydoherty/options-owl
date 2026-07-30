@@ -1,9 +1,12 @@
-"""Call-side ticker expansion (2026-07-18): ORCL/INTC/TSM/ARM/SMH added to the ML pattern scan,
-flag-gated by ENABLE_EXPANSION_TICKERS, and kept CALL-only (puts weren't validated)."""
+"""Call-side ticker expansion, flag-gated by ENABLE_EXPANSION_TICKERS, CALL-only (puts weren't validated).
+TRIMMED 2026-07-30: the original 8-name list was validated on the FANTASY-fill harness; on the HONEST-fill
+harness only INTC/ORCL survive (TSM/ARM/SMH/USO/SLV/GDX lose or are too thin), so the scan list is now
+just INTC/ORCL. The dropped names stay PUT-excluded but must NOT be scanned even with the flag on."""
 import importlib
 import os
 
-EXPANSION = ["ORCL", "INTC", "TSM", "ARM", "SMH", "USO", "SLV", "GDX"]
+EXPANSION = ["INTC", "ORCL"]                                  # current honest-fill winners
+DROPPED = ["TSM", "ARM", "SMH", "USO", "SLV", "GDX"]          # trimmed 2026-07-30, must not be scanned
 
 
 def _reload_with(env_val):
@@ -35,6 +38,8 @@ def test_flag_on_adds_expansion():
     tickers = _reload_with("true")
     for t in EXPANSION:
         assert t in tickers, f"{t} must be scanned when expansion flag is on"
+    for t in DROPPED:
+        assert t not in tickers, f"{t} was TRIMMED (fantasy-fill winner) — must NOT be scanned"
     # no duplicates introduced
     assert len(tickers) == len(set(tickers))
 
@@ -50,5 +55,5 @@ def test_expansion_names_are_put_excluded():
     """CALLS validated, puts were NOT — the expansion names must be excluded from PUT trading."""
     from options_owl.config.settings import Settings
     excl = Settings().PUT_EXCLUDED_TICKERS
-    for t in EXPANSION:
+    for t in EXPANSION + DROPPED:
         assert t in excl, f"{t} must be PUT-excluded (calls-only expansion)"
