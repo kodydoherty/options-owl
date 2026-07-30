@@ -688,7 +688,7 @@ class Settings(BaseSettings):
     ENABLE_EXPANSION_TICKERS: bool = False
     # Tech/semis (2026-07-18, +$66k/PF2.77) + commodity diversifiers USO/SLV/GDX (2026-07-19, +$20.6k/PF2.91,
     # uncorrelated w/ tech book — USO+$8.7k, SLV+$8.6k, GDX+$3.6k, all 68-73% WR). Calls only.
-    EXPANSION_CALL_TICKERS: str = "ORCL,INTC,TSM,ARM,SMH,USO,SLV,GDX"
+    EXPANSION_CALL_TICKERS: str = "INTC,ORCL"  # trimmed 2026-07-30: only INTC/ORCL survive honest fills
 
     # PUT market direction gate — only enter PUTs when SPY is green (market up)
     # Rationale: cheap PUTs on green days catch intraday reversals; on red days

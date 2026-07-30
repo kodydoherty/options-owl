@@ -54,8 +54,11 @@ TICKERS = [
 # PUT_EXCLUDED_TICKERS. Harvester must capture them (ORCL/INTC/ARM already in HARVEST_UNIVERSE; TSM/SMH added).
 import os as _os  # noqa: E402
 
+# TRIMMED 2026-07-30: the +$66k above was on the FANTASY-fill harness. Re-run on the HONEST-fill
+# harness (Apr-Jul): only INTC (+$1,473, 26tr) and ORCL (+$1,198, 17tr) survive; TSM/ARM/SMH/USO/SLV/GDX
+# lose or are too thin (SLV -$1,020, USO -$551) and were bleeding live (USO -$266/TSM -$229 recent 14d).
 EXPANSION_CALL_TICKERS = [
-    t.strip().upper() for t in _os.getenv("EXPANSION_CALL_TICKERS", "ORCL,INTC,TSM,ARM,SMH,USO,SLV,GDX").split(",")
+    t.strip().upper() for t in _os.getenv("EXPANSION_CALL_TICKERS", "INTC,ORCL").split(",")
     if t.strip()
 ]
 if _os.getenv("ENABLE_EXPANSION_TICKERS", "false").lower() == "true":
