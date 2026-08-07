@@ -304,12 +304,21 @@ async def _resolve_atm_from_redis(
         return None
 
 
-async def _run_ml_scan_loop(paper_trader, settings: Settings) -> None:
+async def _run_ml_scan_loop(paper_trader, settings: Settings,
+                            signal_sink=None, central_state=None) -> None:
     """ML-powered scan loop — matches the gold standard backtest.
 
     Reads option data streamed by the harvester via Redis (full snapshots with
     greeks, IV, volume). Falls back to Polygon REST only if Redis has no data.
     Scans every minute 9:35-11:00 AM ET.
+
+    centralize-ml-signals hooks (both optional, default None = today's exact behavior):
+      * signal_sink(signal_dict) — HARVESTER mode: when set, each signal is handed to the sink
+        (publish to Redis) INSTEAD of being traded locally. The harvester has no paper_trader.
+      * central_state {"last_hb": epoch, "fallback_sec": N} — BOT deferral: when the central feed
+        is live (a heartbeat within fallback_sec), skip the LOCAL trade — the harvester's published
+        signal handles it (no double-trade). If the feed goes silent (stale heartbeat), local resumes
+        trading automatically = the hot fallback.
     """
     from options_owl.sourcing.ml_pipeline import (
         EXCLUDED_TICKERS,
@@ -369,7 +378,8 @@ async def _run_ml_scan_loop(paper_trader, settings: Settings) -> None:
 
     # Import constants for entry gates
     PREMIUM_FLOOR = 0.20
-    PREMIUM_CAP = 6.0
+    # Configurable (was hardcoded 6.0). See settings.ML_PREMIUM_CAP for the evidence.
+    PREMIUM_CAP = float(getattr(settings, "ML_PREMIUM_CAP", 6.0))
     SPREAD_GATE_PCT = 15.0
 
     # Scan interval: 15s — catches new WS data within seconds of arrival.
@@ -798,6 +808,21 @@ async def _run_ml_scan_loop(paper_trader, settings: Settings) -> None:
                 for ticker, (signal, ticker_snaps) in zip(active_tickers, results):
                     new_snapshots += ticker_snaps
                     if signal:
+                        # HARVESTER publish mode: emit the signal to the fleet instead of trading here.
+                        if signal_sink is not None:
+                            try:
+                                await signal_sink(signal)
+                                signals_emitted += 1
+                            except Exception as exc:
+                                logger.warning(f"ML_SCAN: signal_sink failed for {ticker}: {exc}")
+                            continue
+                        # BOT deferral: if the central feed is live (recent heartbeat), the harvester's
+                        # published signal handles this trade — skip locally to avoid a double-trade.
+                        # If central is silent (stale heartbeat), fall through → local trades (fallback).
+                        if central_state is not None:
+                            _age = time.time() - float(central_state.get("last_hb", 0.0))
+                            if _age <= float(central_state.get("fallback_sec", 90.0)):
+                                continue
                         try:
                             trade_signal = _ml_signal_to_trade_signal(**signal)
                             signal_id = -int(time.time() * 1000) % 1_000_000
@@ -1177,8 +1202,20 @@ async def run_bot(settings: Settings) -> None:
     async def _monitor_factory():
         await run_position_monitor(paper_trader, market_stream, discord_client=None)
 
+    # Centralized-ML wiring (spec 2026-08-04). Default OFF → local scan is primary (unchanged).
+    #   shadow:  consumer LOGS parity vs local, local still trades (safe test).
+    #   active:  consumer trades, local scan DEFERS while the central feed is live (heartbeat), and
+    #            auto-resumes as fallback if the feed goes silent.
+    _central_ml = getattr(settings, "ENABLE_CENTRAL_ML_SIGNALS", False)
+    _central_shadow = getattr(settings, "ML_CENTRAL_SHADOW", False)
+    _central_active = _central_ml and not _central_shadow
+    _central_state = {"last_hb": 0.0,
+                      "fallback_sec": float(getattr(settings, "ML_CENTRAL_FALLBACK_SEC", 90.0))}
+
     async def _scan_factory():
-        await _run_ml_scan_loop(paper_trader, settings)
+        # Only pass central_state (→ local deferral) in ACTIVE mode; shadow keeps local trading normally.
+        await _run_ml_scan_loop(paper_trader, settings,
+                                central_state=_central_state if _central_active else None)
 
     async def _heartbeat_factory():
         while True:
@@ -1330,6 +1367,53 @@ async def run_bot(settings: Settings) -> None:
         supervised.append(asyncio.create_task(_supervised_task("uw_flow_consumer", _flow_factory)))
         logger.info("UW_FLOW: consuming flow from Redis — harvester is the sole UW WS holder "
                     "(ENABLE_UW_FLOW_SIGNAL=true)")
+
+    # Centralized-ML consumer (spec 2026-08-04). Gated behind ENABLE_CENTRAL_ML_SIGNALS (default off →
+    # no task). Consumes signals published by the harvester so the whole fleet acts on the SAME signal
+    # at the SAME instant. In shadow mode it only LOGS parity; in active mode it trades and the local
+    # scan defers to it (with heartbeat-based fallback). Reuses the exact same _ml_signal_to_trade_signal
+    # path as the local scan → no behavior drift.
+    if _central_ml:
+        from options_owl.collectors import ml_signal_bus
+        from options_owl.db import redis_client as _ml_rc
+
+        _ml_max_age = float(getattr(settings, "ML_SIGNAL_MAX_AGE_SEC", 15.0))
+        _ml_id = {"n": -1_000_000}   # negative synthetic ids, distinct from Discord/ML-local/flow
+
+        async def _on_ml_signal(payload):
+            if ml_signal_bus.is_heartbeat(payload):
+                _central_state["last_hb"] = time.time()          # liveness → local defers/keeps deferring
+                return
+            kw = ml_signal_bus.parse_signal(payload, _ml_max_age)
+            if kw is None:
+                return   # stale / malformed / not a signal
+            _central_state["last_hb"] = time.time()              # a signal is liveness too
+            if _central_shadow:
+                logger.info(
+                    f"ML_CENTRAL[shadow]: {kw['ticker']} {kw['direction']} score={kw.get('score')} "
+                    f"strike={kw.get('strike')} — would trade (SHADOW: not trading)")
+                return
+            try:
+                ts = _ml_signal_to_trade_signal(**kw)
+            except Exception as exc:
+                logger.warning(f"ML_CENTRAL: bad signal {kw} ({exc})")
+                return
+            _ml_id["n"] -= 1
+            logger.info(f"ML_CENTRAL: {kw['ticker']} {kw['direction']} score={kw.get('score')} "
+                        f"-> entry pipeline")
+            await paper_trader.evaluate_and_trade(
+                ts, _ml_id["n"], ml_confidence=kw.get("ml_confidence"))
+
+        async def _consume_ml(payload: dict) -> None:
+            await _on_ml_signal(payload)
+
+        async def _ml_factory():
+            await _ml_rc.subscribe_ml_signals(_consume_ml)
+
+        supervised.append(asyncio.create_task(_supervised_task("ml_signal_consumer", _ml_factory)))
+        logger.info(f"ML_CENTRAL: consuming ML signals from Redis "
+                    f"(shadow={_central_shadow}, active={_central_active}) — harvester is the publisher "
+                    f"(ENABLE_CENTRAL_ML_SIGNALS=true)")
 
     logger.info(
         f"OptionsOwl bot {agent_id} fully initialized — "

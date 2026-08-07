@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     # large ones don't). Cap the order near available ask_size so we take a real (smaller) fill
     # instead of orphaning the whole thing. DEFAULT OFF — enable per-bot in docker-compose after review.
     WEBULL_ENTRY_LIQUIDITY_AWARE: bool = False  # size the entry down toward available ask_size (avoids large-order orphans)
-    WEBULL_ENTRY_LIQUIDITY_MULT: float = 2.0  # allow up to this × displayed ask_size (there's usually depth behind top-of-book)
+    WEBULL_ENTRY_LIQUIDITY_MULT: float = 1.0  # cap at this × the THINNER of ask/bid depth (2026-08-05: was 2.0; tightened after the -75% IWM exit — a position must fit the BID to be exitable, not just the ask)
     WEBULL_ENTRY_MIN_CONTRACTS: int = 1  # never size the order below this floor, regardless of thin displayed size
     # Exit-MONITOR Redis snapshot freshness (2026-07-10): the FSM reads the premium from the
     # harvester's Redis snapshot to decide exits. A thin 0DTE contract's snapshot can FREEZE for
@@ -58,6 +58,12 @@ class Settings(BaseSettings):
     WEBULL_EXIT_AGGRESS_PCT: float = 2.0      # rung 1 crosses this % BELOW the fresh bid (barely marketable)
     WEBULL_EXIT_STEP_PCT: float = 6.0         # each further rung crosses this much more below the bid
     WEBULL_EXIT_MAX_DISCOUNT_PCT: float = 25.0  # floor: never sell more than this % below the bid
+    # Exit partial-peel (2026-08-05, the -75% IWM fix): when a big sell can't fully fill (bid depth <
+    # order size), take what the book offers and immediately re-chase the REMAINDER within the same call
+    # instead of waiting slow 5s monitor cycles (which let the -75% bleed). Safe on a CASH account —
+    # Webull rejects any sell for more than held, so an accounting slip can never naked-short. Default
+    # OFF (paper-canary first); the sizing fix (min-depth cap) is the primary prevention.
+    ENABLE_EXIT_PARTIAL_PEEL: bool = False
     MAX_ENTRY_RETRIES: int = 3  # retry entry up to N times with fresh pricing (10s per attempt)
     MAX_ENTRY_CHASE_PCT: float = 15.0  # max % above signal premium we'll chase on retries
     GFV_BUFFER_PCT: float = 15.0  # safety buffer on GFV limit (only allow 85% of start-of-day balance)
@@ -502,6 +508,17 @@ class Settings(BaseSettings):
     # (they're a source, like Discord) + bearish-confirm/regime, but keep risk gates.
     ENABLE_UW_FLOW_SIGNAL: bool = False          # master flag (default OFF — paper-first)
     UNUSUAL_WHALES_API_KEY: str = ""
+
+    # ── Centralized ML signals (2026-08-04, spec 2026-08-04_centralize-ml-signals) ──
+    # Move ML scan/signal generation into the harvester (published once → all bots consume via Redis),
+    # killing the per-bot scan-timing race (kody missed IWM winners dennis caught). Default OFF = today's
+    # per-bot local scan (unchanged). The local scan is RETAINED as a hot fallback.
+    ENABLE_CENTRAL_ML_SIGNALS: bool = False       # bot: consume ML signals from Redis instead of local scan
+    ENABLE_CENTRAL_ML_PUBLISH: bool = False       # harvester: run the scan + publish to owl:ml:signals
+    ML_CENTRAL_SHADOW: bool = False               # consumer LOGS parity vs local scan but does NOT trade (test gate)
+    ML_CENTRAL_FALLBACK_SEC: float = 90.0         # no heartbeat this long (mkt hours) → auto re-enable local scan
+    ML_SIGNAL_MAX_AGE_SEC: float = 15.0           # drop a consumed signal older than this (stale = don't act)
+    ML_SCAN_INTERVAL_SEC: float = 2.0             # harvester central-scan cadence (near-tick; dial up if hot)
     # PUT whitelist + MU (2026-06-13 new-ticker discovery: MU PUT PF1.12, 75% months, n=137 —
     # consistent volume; MU is blocklisted for general-ML but flow bypasses that, see BlockedTickerGate).
     # +SPY (2026-06-15): the gold-standard flow book is PUT_UNIV = CUR_PUT | {SPY} — SPY puts were the
@@ -742,6 +759,19 @@ class Settings(BaseSettings):
 
     # Minimum option premium — reject deep OTM trades that bleed to theta
     MIN_OPTION_PREMIUM: float = 0.30  # reject options under $0.30 (backtested: $0.30 floor filters lottery tickets)
+    # Signal-level premium cap for the ML scan (was a hardcoded 6.0 in bot_runner).
+    # 6.0 = the long-standing behaviour; lower it to skip expensive contracts.
+    # WHY IT MATTERS (2026-08-07, real Webull fills, kody ml_sourcing):
+    #   >=$3 contracts were 31 trades (16% of the book) for -$2,425 at a 16% win rate
+    #   — roughly HALF of ml_sourcing's total loss. Robust 3/3 months, 3/3 signal
+    #   sources, and 6/6 tickers that traded one. Mechanism is structural: expensive
+    #   contracts carry the LOWEST MFE (13.4% vs 23-26% for cheap), so they cannot
+    #   move enough to clear spread + stops.
+    #   The gold-standard harness DISAGREES (it likes them) because it is 3.4x more
+    #   optimistic on exactly this cohort: >=$3 harness +5.2% vs prod -13.0% (gap 18.2
+    #   pts) against a 5.4pt gap for <$3. The backtest is blind to the fill cost that
+    #   makes them bad. Trust the real fills. Revert = set back to 6.0.
+    ML_PREMIUM_CAP: float = 6.0
 
     # Anti-chase: reject if underlying moved too far from alert price
     ANTI_CHASE_MAX_MOVE_PCT: float = 0.3

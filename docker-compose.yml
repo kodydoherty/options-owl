@@ -170,6 +170,13 @@ services:
       # V7 gate-volume fix (multi-value sweep 2026-06-13, 3 OOS windows): pattern 0.74→0.62
       # at entry 0.80. ~1.8× volume (1.7→3.1 trades/day), PF holds ~3.8, DD 6.5→10.
       - ML_PATTERN_THRESHOLD=0.62
+      # ML premium cap (2026-08-07). Real Webull fills: >=$3 contracts were 31 trades
+      # (16% of the book) for -$2,425 at a 16% win rate — about HALF of ml_sourcing's
+      # total loss. Robust 3/3 months, 3/3 sources, 6/6 tickers. Expensive contracts
+      # carry the LOWEST MFE (13.4%) so they can't clear spread+stops. The backtest
+      # disagrees because it is 3.4x more optimistic on exactly this cohort.
+      # LIVE A/B: kody = 3.0 (test arm), dennis stays 6.0 (control). Revert = 6.0.
+      - ML_PREMIUM_CAP=3.0
       # Call-side ticker expansion LIVE 2026-07-20: ORCL/INTC/TSM/ARM/SMH (+$66k) + USO/SLV/GDX (+$20.6k)
       # validated 14mo CALLS, PF 2.77/2.91. Adds them to the ML pattern scan (calls only; put-excluded).
       - ENABLE_EXPANSION_TICKERS=true

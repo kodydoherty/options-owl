@@ -222,3 +222,32 @@ class TestRegimeFailureBackoff:
 
         assert calls["n"] == 1, "successful score must still be cached for the day"
         assert not ml_pipeline._ticker_regime_fail_cache
+
+
+class TestMLPremiumCapConfigurable:
+    """The ML signal-level premium cap was a hardcoded 6.0 in bot_runner.
+
+    Real Webull fills (2026-08-07) show >=$3 contracts are ~half of ml_sourcing's
+    loss (31 trades, 16% WR, -$2,425) because they carry the lowest MFE (13.4%).
+    Making the cap configurable is what lets us act on that without a code change.
+    """
+
+    def test_default_is_unchanged_behaviour(self):
+        """Default MUST stay 6.0 — anything else silently changes every bot."""
+        s = Settings(DISCORD_TOKEN="x", _env_file=None)
+        assert s.ML_PREMIUM_CAP == 6.0
+
+    def test_cap_is_env_overridable(self, monkeypatch):
+        monkeypatch.setenv("ML_PREMIUM_CAP", "3.0")
+        assert Settings(DISCORD_TOKEN="x", _env_file=None).ML_PREMIUM_CAP == 3.0
+
+    def test_scan_loop_reads_the_setting_not_a_constant(self):
+        """Guard against the cap being re-hardcoded. The scan loop must source it
+        from settings, or lowering the cap in env would silently do nothing."""
+        import inspect
+
+        from options_owl import bot_runner
+
+        src = inspect.getsource(bot_runner._run_ml_scan_loop)
+        assert "ML_PREMIUM_CAP" in src, "scan loop no longer reads settings.ML_PREMIUM_CAP"
+        assert "PREMIUM_CAP = 6.0" not in src, "cap was re-hardcoded"
