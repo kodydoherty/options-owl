@@ -1506,6 +1506,9 @@ class PaperTrader:
             _sizing_audit: dict[str, float | None] = {
                 "p_runner": None, "conv_mult": None, "entry_delta": None,
             }
+            # Hoisted with _sizing_audit for the same reason (and so the rule-#1 guard
+            # stays clean): read inside the sizing block below, 0.0 = gate disabled.
+            _rv_floor = float(getattr(self.settings, "RUNNER_V1_MIN_P", 0.0) or 0.0)
             if use_vinny and use_score_sizing:
                 from options_owl.risk.vinny_strategy import score_to_contracts
                 # Auto-adaptive sizing based on LIVE balance (not static PORTFOLIO_SIZE)
@@ -1597,6 +1600,18 @@ class PaperTrader:
                     except (TimeoutError, asyncio.TimeoutError):
                         _p_run = None
                     _sizing_audit["p_runner"] = _p_run
+                    if _rv_floor > 0 and _p_run is not None and _p_run < _rv_floor:
+                        # Q1 tail: 19% runner rate, negative 3/3 months. Skip rather than
+                        # shrink — x0.7 sizing still books the loss.
+                        logger.info(
+                            f"RUNNER_V1_FLOOR: {signal.ticker} p_runner={_p_run:.3f} "
+                            f"< {_rv_floor:.2f} — SKIPPING (Q1 tail is -EV in 3/3 months)"
+                        )
+                        await log_trade_event(
+                            self.db_path, signal.ticker, "rejected",
+                            f"runner_v1_floor: p_runner={_p_run:.3f} < {_rv_floor:.2f}",
+                        )
+                        return None
                     if _p_run is not None:
                         _rv_mult, _rv_desc = runner_v1_size_mult(
                             _p_run,

@@ -177,6 +177,14 @@ services:
       # disagrees because it is 3.4x more optimistic on exactly this cohort.
       # LIVE A/B: kody = 3.0 (test arm), dennis stays 6.0 (control). Revert = 6.0.
       - ML_PREMIUM_CAP=3.0
+      # runner_v1 Q1 floor (2026-08-07). Retroactive validation on 494 real-fill CALLs:
+      # P(runner) ranks outcomes (runner rate 19/32/42/63% Q1..Q4). The Q1 tail (<0.39)
+      # is 103 trades, -$3,735, 19% runner rate, NEGATIVE 3/3 months. It was only shrunk
+      # to x0.7 and still traded, so the loss still landed. Blocks the tail only — the
+      # full tier ORDER does NOT reproduce monthly. Revert = 0.0.
+      # NOTE: stacks with ML_PREMIUM_CAP on this bot; the two cohorts OVERLAP, so treat
+      # kody as 'filters on' vs history rather than as a clean single-variable A/B.
+      - RUNNER_V1_MIN_P=0.39
       # Call-side ticker expansion LIVE 2026-07-20: ORCL/INTC/TSM/ARM/SMH (+$66k) + USO/SLV/GDX (+$20.6k)
       # validated 14mo CALLS, PF 2.77/2.91. Adds them to the ML pattern scan (calls only; put-excluded).
       - ENABLE_EXPANSION_TICKERS=true
@@ -980,6 +988,12 @@ services:
       # them to the existing put exclusion. Keep QQQ/IWM/AAPL/META (put winners) tradeable.
       - PUT_EXCLUDED_TICKERS=PLTR,AMD,MSTR,AVGO,AMZN,GOOGL,ORCL,INTC,TSM,ARM,SMH,USO,SLV,GDX,TSLA,NVDA,NFLX,MU,BA
       - ML_PATTERN_THRESHOLD=0.62
+      # PAPER ARM (2026-08-07): delta ceiling 0.70 -> 0.45. Real fills show delta 0.45+
+      # is negative 3/3 months (runner rate 29/27/15%, P&L -2,217/-828/-1) and it holds
+      # 53% of the book. Tested on PAPER because it is a SELECTION question (which trades
+      # to take) — paper selects the same trades even though its fills are fantasy, so it
+      # is informative here in a way it would not be for an execution change.
+      - DELTA_ENTRY_MAX=0.45
       # Call-side ticker expansion LIVE 2026-07-20: ORCL/INTC/TSM/ARM/SMH (+$66k) + USO/SLV/GDX (+$20.6k)
       # validated 14mo CALLS, PF 2.77/2.91. Adds them to the ML pattern scan (calls only; put-excluded).
       - ENABLE_EXPANSION_TICKERS=true

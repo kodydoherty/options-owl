@@ -772,6 +772,16 @@ class Settings(BaseSettings):
     #   pts) against a 5.4pt gap for <$3. The backtest is blind to the fill cost that
     #   makes them bad. Trust the real fills. Revert = set back to 6.0.
     ML_PREMIUM_CAP: float = 6.0
+    # Hard floor on runner_v1 P(runner) for CALL entries. 0.0 = disabled (no behaviour
+    # change); the trade is SKIPPED entirely below this, rather than merely sized down.
+    # WHY (2026-08-07, retroactive validation on 494 real-fill CALLs — see
+    # scripts/validate_runner_v1.py): P(runner) genuinely ranks outcomes (runner rate
+    # 19/32/42/63% across Q1..Q4). The Q1 tail (<0.39) is 103 trades, -$3,735, 19%
+    # runner rate, and is NEGATIVE in 3/3 months (-1,587 / -1,692 / -456). Today Q1 is
+    # only shrunk to x0.7 (RUNNER_V1_MULT_Q1) and still traded, so the loss still lands.
+    # NOTE the full 4-tier ORDER does NOT reproduce monthly — only the Q1 tail is robust,
+    # so this blocks the tail rather than trusting the ranking. Revert = 0.0.
+    RUNNER_V1_MIN_P: float = 0.0
 
     # Anti-chase: reject if underlying moved too far from alert price
     ANTI_CHASE_MAX_MOVE_PCT: float = 0.3
