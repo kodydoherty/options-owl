@@ -413,6 +413,20 @@ async def init_paper_db(path: str) -> None:
             )
         except Exception:
             pass  # column already exists
+        # Migration: persist the SIZING DECISION (2026-08-07). runner_v1 / VVIX / delta
+        # haircut are LIVE and size real money, but their inputs were only ever LOGGED —
+        # and logs age out (only ~6 days survived), so runner_v1 could not be validated
+        # against real fills at all. One column per input makes every future sizing
+        # decision auditable without re-deriving anything.
+        for col in (
+            "p_runner REAL",            # runner_v1 P(runner), NULL when it abstained
+            "size_conv_mult REAL",      # final stacked conviction multiplier
+            "size_entry_delta REAL",    # |delta| used by the delta haircut
+        ):
+            try:
+                await conn.execute(f"ALTER TABLE paper_trades ADD COLUMN {col}")
+            except Exception:
+                pass  # column already exists
         # Migration: add Supabase alert_id for shared brain integration
         try:
             await conn.execute(
@@ -1483,6 +1497,15 @@ class PaperTrader:
             use_vinny = getattr(self.settings, "ENABLE_VINNY_STRATEGY", False)
             use_score_sizing = getattr(self.settings, "ENABLE_SCORE_SIZING", False)
 
+            # Sizing audit, initialised OUTSIDE every conditional. The sizing layers below
+            # only run under `use_vinny and use_score_sizing`, but the INSERT at the end of
+            # this function runs unconditionally — initialising inside the branch is exactly
+            # the conditional-only assignment CLAUDE.md forbids (it is the UnboundLocalError
+            # that froze the monitor on 2026-05-07 and it re-appeared here in testing).
+            # None means "this layer did not apply", which is what we want persisted.
+            _sizing_audit: dict[str, float | None] = {
+                "p_runner": None, "conv_mult": None, "entry_delta": None,
+            }
             if use_vinny and use_score_sizing:
                 from options_owl.risk.vinny_strategy import score_to_contracts
                 # Auto-adaptive sizing based on LIVE balance (not static PORTFOLIO_SIZE)
@@ -1573,6 +1596,7 @@ class PaperTrader:
                         _p_run = await asyncio.wait_for(compute_runner_v1_p(signal, self.settings), timeout=20)
                     except (TimeoutError, asyncio.TimeoutError):
                         _p_run = None
+                    _sizing_audit["p_runner"] = _p_run
                     if _p_run is not None:
                         _rv_mult, _rv_desc = runner_v1_size_mult(
                             _p_run,
@@ -1608,6 +1632,7 @@ class PaperTrader:
                                 _edelta = abs(float(_snap["delta"]))
                     except Exception:
                         _edelta = None
+                    _sizing_audit["entry_delta"] = _edelta
                     _dref = getattr(self.settings, "DELTA_SIZING_REF", 0.45)
                     _dh = delta_size_haircut(_edelta, _dref)
                     if _dh < 1.0:
@@ -1644,6 +1669,7 @@ class PaperTrader:
                     )
                     _conv_mult *= _vv_mult
                     logger.info(f"VVIX_TILT: {signal.ticker} {_vv_desc} (conv_mult→{_conv_mult:.2f})")
+                _sizing_audit["conv_mult"] = _conv_mult
                 total_contracts = score_to_contracts(
                     signal.score,
                     cost_per_contract=cost_per_contract,
@@ -1782,8 +1808,10 @@ class PaperTrader:
                 "signal_premium, entry_slippage, "
                 "dca_tranches_remaining, dca_total_contracts, "
                 "target_1, target_2, target_3, target_4, target_5, "
-                "stop_price, exit_by, expiry_date, strategy, supabase_alert_id, status, opened_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)",
+                "stop_price, exit_by, expiry_date, strategy, supabase_alert_id, "
+                "p_runner, size_conv_mult, size_entry_delta, status, opened_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                "?, ?, ?, 'open', ?)",
                 (
                     signal_id,
                     signal.ticker,
@@ -1812,6 +1840,9 @@ class PaperTrader:
                     expiry_date,
                     strategy,
                     None,  # supabase_alert_id (deprecated)
+                    _sizing_audit.get("p_runner"),
+                    _sizing_audit.get("conv_mult"),
+                    _sizing_audit.get("entry_delta"),
                     now,
                 ),
             )

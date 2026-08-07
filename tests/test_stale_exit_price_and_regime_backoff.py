@@ -251,3 +251,51 @@ class TestMLPremiumCapConfigurable:
         src = inspect.getsource(bot_runner._run_ml_scan_loop)
         assert "ML_PREMIUM_CAP" in src, "scan loop no longer reads settings.ML_PREMIUM_CAP"
         assert "PREMIUM_CAP = 6.0" not in src, "cap was re-hardcoded"
+
+
+class TestSizingAuditInitialisation:
+    """_sizing_audit must be initialised OUTSIDE every conditional.
+
+    The sizing layers run only under `use_vinny and use_score_sizing`, but the
+    INSERT that persists them runs unconditionally. Initialising inside the branch
+    raised UnboundLocalError on every non-vinny trade — caught by 36 test failures
+    during development. Same class as the 2026-05-07 monitor freeze that stopped all
+    exits. This test fails if anyone moves the init back inside a branch.
+    """
+
+    def test_init_dominates_every_use(self):
+        import ast
+        import inspect
+
+        from options_owl.execution import paper_trader
+
+        tree = ast.parse(inspect.getsource(paper_trader))
+        target = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and n.name == "_open_single_trade"
+        )
+        init = None
+        loads = []
+        for n in ast.walk(target):
+            if isinstance(n, ast.AnnAssign) and getattr(n.target, "id", "") == "_sizing_audit":
+                init = n.lineno
+            if isinstance(n, ast.Name) and n.id == "_sizing_audit" and isinstance(n.ctx, ast.Load):
+                loads.append(n.lineno)
+        assert init is not None, "_sizing_audit is no longer initialised"
+        assert loads, "_sizing_audit is never read — persistence was removed?"
+        assert all(u > init for u in loads), (
+            f"_sizing_audit read at {sorted(x for x in loads if x < init)} before its "
+            f"init at {init} — conditional-only assignment, will UnboundLocalError"
+        )
+
+    def test_persisted_columns_are_declared(self):
+        """The audit columns must be migrated, or the INSERT fails at runtime."""
+        import inspect
+
+        from options_owl.execution import paper_trader
+
+        src = inspect.getsource(paper_trader)
+        for col in ("p_runner", "size_conv_mult", "size_entry_delta"):
+            assert f'"{col} REAL"' in src, f"{col} migration missing"
+            assert col in src, f"{col} not persisted"
