@@ -37,6 +37,20 @@ class OrderResult:
     details: dict | None = None
     fill_status: str = "UNKNOWN"  # FILLED, PARTIAL, SUBMITTED, CANCELLED, FAILED
     filled_quantity: int | None = None  # How many contracts actually filled
+    # ── Slippage telemetry (2026-08-07) ────────────────────────────────────────
+    # Execution is the largest measured cost in the system: on 06-01..07-15 the book
+    # returned -5.43% equal-weighted where the harness returned +2.19% on the SAME
+    # trades at the SAME win rate — ~7.6 pts, i.e. ~$84/trade, of pure fill cost.
+    # That number had to be INFERRED by differencing prod against a backtest. Every
+    # field below is already computed during the chase and then discarded at the
+    # return; keeping it turns a once-off inference into a daily measurement that can
+    # be sliced by ticker / premium / side / time-of-day.
+    # All optional and purely additive — no caller or order behaviour changes.
+    quote_at_decision: float | None = None   # ask (BUY) / bid (SELL) the limit was priced off
+    limit_submitted: float | None = None     # the limit we actually sent
+    fill_price: float | None = None          # broker's realised fill, when reported
+    rungs_used: int | None = None            # chase rungs consumed (1 = filled first try)
+    seconds_to_fill: float | None = None     # decision -> fill wall time
 
 
 @dataclass
@@ -1095,6 +1109,32 @@ class WebullExecutor:
             error = f"Unexpected response: {result}"
         return order_id, result, error
 
+    async def _fetch_fill_price(self, client_order_id: str, fallback: float) -> float | None:
+        """Broker's realised average fill price; `fallback` (the limit) when unreported.
+
+        Best-effort ONLY: this runs on the live-money order path right after a confirmed
+        fill, so it must never raise and never delay the return. Any failure degrades to
+        the submitted limit, which is still a usable (if slightly optimistic) datapoint.
+        """
+        try:
+            detail = await asyncio.wait_for(
+                self.get_order_status(client_order_id), timeout=3
+            )
+            if isinstance(detail, dict):
+                for key in ("avgFilledPrice", "avg_filled_price", "filledPrice",
+                            "avgPrice", "filled_avg_price"):
+                    raw = detail.get(key)
+                    if raw not in (None, "", 0, "0"):
+                        try:
+                            val = float(raw)
+                        except (TypeError, ValueError):
+                            val = 0.0
+                        if val > 0:
+                            return val
+        except Exception:
+            pass
+        return float(fallback) if fallback else None
+
     async def _get_filled_quantity(self, client_order_id: str) -> int | None:
         """Best-effort lookup of how many contracts have filled for an order."""
         try:
@@ -1192,6 +1232,11 @@ class WebullExecutor:
             WEBULL_ENTRY_FILL_ATTEMPTS  (default 3)
             WEBULL_ENTRY_MAX_CHASE_PCT  (default 15.0)
         """
+        import time as _time
+
+        # Initialised BEFORE the chase loop (CLAUDE.md rule #1 — conditional-only
+        # assignment is the bug class that froze the monitor on 2026-05-07).
+        _chase_t0: float | None = None
         max_attempts = int(getattr(self.settings, "WEBULL_ENTRY_FILL_ATTEMPTS", 4) or 4)
         max_attempts = max(1, max_attempts)
         max_chase_pct = float(getattr(self.settings, "WEBULL_ENTRY_MAX_CHASE_PCT", 15.0) or 15.0)
@@ -1228,16 +1273,24 @@ class WebullExecutor:
         # phantom (recorded > filled) position would break the sell path.
         requested_contracts = contracts
         if getattr(self.settings, "WEBULL_ENTRY_LIQUIDITY_AWARE", False) and contracts > 0:
-            ask_size = await self._fetch_ask_size(ticker, strike, expiry_date, option_type)
-            if ask_size and ask_size > 0:
+            # TWO-SIDED cap (2026-08-05, the -75% IWM fix): size to the THINNER side so the
+            # position fits both the ASK (to enter) AND the BID (to EXIT). kody entered 24 IWM on
+            # a deep ask, but the bid depth was < 24 on the crash → the sell couldn't clear and it
+            # bled to -75%. Capping at min(ask_size, bid_size) keeps positions exitable. Falls back
+            # to whichever side is available, and to full size when neither is (data missing).
+            ask_size, bid_size = await self._fetch_book_depth(ticker, strike, expiry_date, option_type)
+            sizes = [s for s in (ask_size, bid_size) if s and s > 0]
+            if sizes:
+                depth = min(sizes)
                 mult = float(getattr(self.settings, "WEBULL_ENTRY_LIQUIDITY_MULT", 2.0) or 2.0)
                 floor = int(getattr(self.settings, "WEBULL_ENTRY_MIN_CONTRACTS", 1) or 1)
-                cap = max(floor, int(ask_size * mult))
+                cap = max(floor, int(depth * mult))
                 if cap < contracts:
                     logger.warning(
                         f"WEBULL ENTRY LIQUIDITY SIZE-DOWN: {ticker} ${strike} {option_type} "
-                        f"{contracts}x → {cap}x (ask_size={ask_size:.0f} × {mult:.1f}) — "
-                        f"avoids orphaning against a thin book"
+                        f"{contracts}x → {cap}x (depth={depth:.0f} "
+                        f"[ask={ask_size or 0:.0f}/bid={bid_size or 0:.0f}] × {mult:.1f}) — "
+                        f"fits both entry AND exit book (avoids the un-exitable big position)"
                     )
                     contracts = cap
 
@@ -1247,6 +1300,8 @@ class WebullExecutor:
             # rests (the root cause of the choppy-tape misses). Only when no live quote is
             # available do we fall back to the back-derived base_ask.
             ask = base_ask
+            if _chase_t0 is None:
+                _chase_t0 = _time.monotonic()
             if use_live_quote or attempt > 0:
                 fresh = await self._fetch_ask(ticker, strike, expiry_date, option_type)
                 if fresh and fresh > 0:
@@ -1352,6 +1407,13 @@ class WebullExecutor:
                     # the TRUE position size, not the originally-requested one. None-safe: on a
                     # normal full-size fill this equals the request; when sized down it's smaller.
                     filled_quantity=(contracts if contracts != requested_contracts else None),
+                    quote_at_decision=float(ask) if ask else None,
+                    limit_submitted=float(limit),
+                    fill_price=await self._fetch_fill_price(client_order_id, limit),
+                    rungs_used=attempt + 1,
+                    seconds_to_fill=(
+                        _time.monotonic() - _chase_t0 if _chase_t0 is not None else None
+                    ),
                 )
 
             if fill_status in ("PARTIAL_FILLED", "PARTIAL"):
@@ -1488,7 +1550,54 @@ class WebullExecutor:
         last_result: OrderResult | None = None
         last_client_id: str | None = None
 
+        # PARTIAL-PEEL (2026-08-05): when the bid depth is smaller than the order, sell what the
+        # book takes and immediately re-chase the REMAINDER in the next rung — so a big position
+        # peels off in ~2.5s steps instead of bleeding across slow 5s monitor cycles (the -75% IWM).
+        # SAFETY: we only ever order `remaining` (never more than held) and only reduce it by a
+        # KNOWN filled quantity; if a fill quantity can't be determined we STOP and let the monitor
+        # re-sync the true position (never blind-peel → never oversell). On a cash account Webull
+        # also rejects any sell beyond the held quantity, so the worst case is a rejected order.
+        peel = bool(getattr(self.settings, "ENABLE_EXIT_PARTIAL_PEEL", False))
+        remaining = contracts
+        total_filled = 0
+
+        import time as _time
+
+        # Boxed telemetry, declared BEFORE _done so the closure can never resolve them
+        # unbound. (It is only called inside the loop today, but defining the closure
+        # over not-yet-assigned names is fragile — one early `return _done(...)` would
+        # break it. This also keeps the rule-#1 guard clean.)
+        _sell_quote: list = [None]
+        _sell_limit: list = [None]
+        _sell_rungs: list = [None]
+        _chase_t0: list = [None]
+
+        def _done(order_id, result, status):
+            # Slippage telemetry (2026-08-07): the EXIT side is where the worst observed
+            # gaps were (MSTR decided at $0.66 / filled $0.47 = 29%; TSLA $1.72 vs $1.43).
+            # Captured here because every sell return funnels through this closure.
+            # `_sell_quote` / `_sell_limit` are the values from the LAST rung attempted.
+            return OrderResult(
+                success=True, order_id=str(order_id) if order_id else None,
+                client_order_id=last_client_id,
+                details=result if isinstance(result, dict) else None,
+                fill_status=status,
+                filled_quantity=(None if total_filled == contracts else total_filled),
+                quote_at_decision=_sell_quote[0],
+                limit_submitted=_sell_limit[0],
+                fill_price=_sell_limit[0],   # realised price fetched async by the caller
+                rungs_used=_sell_rungs[0],
+                seconds_to_fill=(
+                    _time.monotonic() - _chase_t0[0] if _chase_t0[0] is not None else None
+                ),
+            )
+
         for attempt in range(max_attempts):
+            if remaining <= 0:
+                break
+            if _chase_t0[0] is None:
+                _chase_t0[0] = _time.monotonic()
+            _sell_rungs[0] = attempt + 1
             # Price each rung off the FRESHEST bid (harvester Redis first, HTTP fallback).
             bid = base_bid
             if use_live_quote or attempt > 0:
@@ -1506,6 +1615,8 @@ class WebullExecutor:
             limit = max(0.01, limit)
             # Round to a legal step. Round DOWN (SELL) so we never round UP through the floor.
             limit = _round_option_price(limit, "SELL")
+            _sell_quote[0] = float(bid) if bid else None
+            _sell_limit[0] = float(limit)
             if limit < 0.01:
                 limit = 0.01
 
@@ -1514,7 +1625,7 @@ class WebullExecutor:
 
             logger.info(
                 f"WEBULL EXIT CHASE attempt {attempt + 1}/{max_attempts}: "
-                f"SELL {contracts}x {ticker} ${strike} {option_type} "
+                f"SELL {remaining}x {ticker} ${strike} {option_type} "
                 f"@ ${limit:.2f} (bid=${bid:.2f}, cross={discount_pct:.0f}% below, "
                 f"floor=${floor_price:.2f}) [client_id={client_order_id}]"
             )
@@ -1526,7 +1637,7 @@ class WebullExecutor:
                 expiry_date=expiry_date,
                 option_type=option_type,
                 side="SELL",
-                contracts=contracts,
+                contracts=remaining,
                 limit_price=limit,
             )
 
@@ -1553,32 +1664,55 @@ class WebullExecutor:
             )
 
             if fill_status == "FILLED":
+                total_filled += remaining
+                remaining = 0
                 logger.info(
-                    f"WEBULL EXIT FILLED (attempt {attempt + 1}): SELL {contracts}x "
+                    f"WEBULL EXIT FILLED (attempt {attempt + 1}): SELL {total_filled}x total "
                     f"{ticker} ${strike} {option_type} @ ${limit:.2f} — order_id={order_id}"
                 )
-                return OrderResult(
-                    success=True, order_id=str(order_id), client_order_id=client_order_id,
-                    details=result if isinstance(result, dict) else None, fill_status="FILLED",
-                )
+                return _done(order_id, result, "FILLED")
 
             if fill_status in ("PARTIAL_FILLED", "PARTIAL"):
-                # Some contracts sold. STOP the ladder and return the partial — the monitor's
-                # next cycle re-looks-up the (now smaller) position and sells the remainder.
-                # Re-pricing the remainder here would need a fresh position_id and risks a
-                # double-submit; the cross-cycle retry is the safe path for the tail.
-                filled_qty = await self._get_filled_quantity(client_order_id)
-                logger.warning(
-                    f"WEBULL EXIT PARTIAL FILL (attempt {attempt + 1}): "
-                    f"{filled_qty or '?'}/{contracts}x {ticker} ${strike} {option_type} "
-                    f"@ ${limit:.2f} — cancelling remainder, monitor will finish next cycle"
-                )
+                raw = await self._get_filled_quantity(client_order_id)
+                # Cancel the working remainder and CONFIRM it's dead before any re-submit.
                 await self.cancel_order(client_order_id)
-                return OrderResult(
-                    success=True, order_id=str(order_id), client_order_id=client_order_id,
-                    details=result if isinstance(result, dict) else None,
-                    fill_status="PARTIAL", filled_quantity=filled_qty,
-                )
+                confirm = await self._confirm_cancelled(client_order_id)
+                if confirm == "FILLED":
+                    total_filled += remaining
+                    remaining = 0
+                    logger.warning(
+                        f"WEBULL EXIT FILLED DURING CANCEL (attempt {attempt + 1}): "
+                        f"{ticker} ${strike} {option_type} — fully out ({total_filled}x)")
+                    return _done(order_id, result, "FILLED")
+                fq = raw if raw is not None else await self._get_filled_quantity(client_order_id)
+                if fq is None:
+                    # Filled some but we can't determine how many → do NOT blind-peel (oversell risk).
+                    # Return the partial; the monitor re-looks-up the true remaining next cycle.
+                    logger.warning(
+                        f"WEBULL EXIT PARTIAL (attempt {attempt + 1}): {ticker} ${strike} "
+                        f"{option_type} — filled qty UNKNOWN, halting; monitor re-syncs next cycle")
+                    return OrderResult(
+                        success=True, order_id=str(order_id), client_order_id=client_order_id,
+                        details=result if isinstance(result, dict) else None,
+                        fill_status="PARTIAL", filled_quantity=(total_filled or None),
+                    )
+                fq = max(0, min(int(fq), remaining))
+                total_filled += fq
+                remaining -= fq
+                logger.warning(
+                    f"WEBULL EXIT PARTIAL FILL (attempt {attempt + 1}): sold {fq} "
+                    f"({total_filled}/{contracts} total), {remaining} remaining — "
+                    f"{ticker} ${strike} {option_type}")
+                if remaining <= 0:
+                    return _done(order_id, result, "FILLED")
+                # Peel OFF (legacy) OR the remainder isn't confirmed dead → stop; monitor finishes tail.
+                if not peel or confirm not in ("CANCELLED", "REJECTED", "EXPIRED"):
+                    return OrderResult(
+                        success=True, order_id=str(order_id), client_order_id=client_order_id,
+                        details=result if isinstance(result, dict) else None,
+                        fill_status="PARTIAL", filled_quantity=total_filled,
+                    )
+                continue  # PEEL: chase the remainder harder in the next rung
 
             last_result = OrderResult(
                 success=False, order_id=str(order_id), client_order_id=client_order_id,
@@ -1589,47 +1723,74 @@ class WebullExecutor:
             # DOUBLE-FILL GUARD (naked-short prevention): cancel-and-CONFIRM before any re-submit.
             confirm_status = await self._confirm_cancelled(client_order_id)
             if confirm_status in ("FILLED", "PARTIAL_FILLED", "PARTIAL"):
-                # Filled in the race with our cancel — honor it and STOP. Never place another
-                # sell on top of a live fill (that would oversell the position).
-                filled_qty = (
-                    None if confirm_status == "FILLED"
-                    else await self._get_filled_quantity(client_order_id)
-                )
+                # Filled in the race with our cancel — account for it.
+                if confirm_status == "FILLED":
+                    total_filled += remaining
+                    remaining = 0
+                else:
+                    fq = await self._get_filled_quantity(client_order_id)
+                    if fq is None:
+                        logger.warning(
+                            f"WEBULL EXIT FILLED DURING CANCEL (attempt {attempt + 1}): qty UNKNOWN "
+                            f"— halting, monitor re-syncs next cycle")
+                        return OrderResult(
+                            success=True, order_id=str(order_id), client_order_id=client_order_id,
+                            details=result if isinstance(result, dict) else None,
+                            fill_status="PARTIAL", filled_quantity=(total_filled or None),
+                        )
+                    fq = max(0, min(int(fq), remaining))
+                    total_filled += fq
+                    remaining -= fq
                 logger.warning(
                     f"WEBULL EXIT FILLED DURING CANCEL (attempt {attempt + 1}): "
                     f"{ticker} ${strike} {option_type} status={confirm_status} "
-                    f"order_id={order_id} — honoring fill, halting chase"
-                )
-                return OrderResult(
-                    success=True, order_id=str(order_id), client_order_id=client_order_id,
-                    details=result if isinstance(result, dict) else None,
-                    fill_status="FILLED" if confirm_status == "FILLED" else "PARTIAL",
-                    filled_quantity=filled_qty,
-                )
+                    f"({total_filled}/{contracts}), {remaining} remaining")
+                if remaining <= 0:
+                    return _done(order_id, result, "FILLED")
+                if not peel:
+                    return OrderResult(
+                        success=True, order_id=str(order_id), client_order_id=client_order_id,
+                        details=result if isinstance(result, dict) else None,
+                        fill_status="PARTIAL", filled_quantity=total_filled,
+                    )
+                continue  # peel the remainder
 
             if confirm_status not in ("CANCELLED", "REJECTED", "EXPIRED"):
                 # Cannot confirm the prior sell is dead — refuse to re-submit (an uncancelled
-                # working sell + a new one = oversell / naked short).
+                # working sell + a new one = oversell / naked short). Return anything already peeled.
                 logger.error(
                     f"WEBULL EXIT CHASE ABORTED: could not confirm cancel of "
                     f"order_id={order_id} (status={confirm_status}) — refusing to re-submit "
-                    f"to avoid overselling"
-                )
+                    f"to avoid overselling")
+                if total_filled > 0:
+                    return OrderResult(
+                        success=True, order_id=str(order_id), client_order_id=client_order_id,
+                        details=result if isinstance(result, dict) else None,
+                        fill_status="PARTIAL", filled_quantity=total_filled,
+                    )
                 return OrderResult(
                     success=False, order_id=str(order_id), client_order_id=client_order_id,
                     error=(
                         f"Exit not filled and prior order cancel unconfirmed "
-                        f"(status={confirm_status}) — aborted chase to avoid overselling"
-                    ),
+                        f"(status={confirm_status}) — aborted chase to avoid overselling"),
                     fill_status=fill_status or "SUBMITTED",
                 )
 
             logger.warning(
                 f"WEBULL EXIT NOT FILLED (attempt {attempt + 1}/{max_attempts}): "
                 f"{ticker} ${strike} {option_type} @ ${limit:.2f} — prior order "
-                f"cancelled (confirmed), crossing harder"
-            )
+                f"cancelled (confirmed), crossing harder")
 
+        # Ladder exhausted. If we peeled some off, report the partial (monitor finishes the tail).
+        if total_filled > 0:
+            logger.warning(
+                f"WEBULL EXIT PEEL INCOMPLETE: sold {total_filled}/{contracts}x {ticker} "
+                f"${strike} {option_type} — {remaining} remaining after {max_attempts} rungs "
+                f"(monitor retries next cycle)")
+            return OrderResult(
+                success=True, client_order_id=last_client_id,
+                fill_status="PARTIAL", filled_quantity=total_filled,
+            )
         if last_result is None:
             last_result = OrderResult(
                 success=False, client_order_id=last_client_id,
@@ -1717,6 +1878,34 @@ class WebullExecutor:
         except Exception as exc:
             logger.debug(f"_fetch_ask_size redis miss for {ticker} ${strike} {option_type}: {exc}")
         return None
+
+    async def _fetch_book_depth(
+        self, ticker: str, strike: float, expiry_date: str, option_type: str,
+    ) -> tuple[float | None, float | None]:
+        """(ask_size, bid_size) — displayed depth on BOTH sides — from the harvester's fresh Redis
+        snapshot, freshness-guarded exactly like _fetch_ask_size. Used for TWO-SIDED liquidity
+        sizing: a position must fit the ASK to enter AND the BID to exit (the -75% IWM lesson —
+        the sell couldn't clear because bid depth < order size). Each side is None when absent or
+        the whole snapshot is stale/missing → sizing falls back to the full requested size."""
+        if not getattr(self.settings, "WEBULL_ENTRY_USE_LIVE_QUOTE", True):
+            return None, None
+        try:
+            import time
+
+            from options_owl.db import redis_client
+
+            max_age = float(getattr(self.settings, "WEBULL_ENTRY_QUOTE_MAX_AGE_SEC", 20.0) or 20.0)
+            contract_key = f"{ticker.upper()}:{option_type.lower()}:{float(strike)}:{expiry_date}"
+            snap = await redis_client.get_option_snapshot(contract_key)
+            if snap:
+                ts = float(snap.get("t") or 0)
+                if ts > 0 and (time.time() - ts) <= max_age:
+                    a = float(snap.get("ask_size") or 0)
+                    b = float(snap.get("bid_size") or 0)
+                    return (a if a > 0 else None), (b if b > 0 else None)
+        except Exception as exc:
+            logger.debug(f"_fetch_book_depth redis miss for {ticker} ${strike} {option_type}: {exc}")
+        return None, None
 
     async def _fetch_bid(
         self, ticker: str, strike: float, expiry_date: str, option_type: str,

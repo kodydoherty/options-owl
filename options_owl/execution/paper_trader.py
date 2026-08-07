@@ -418,6 +418,26 @@ async def init_paper_db(path: str) -> None:
         # and logs age out (only ~6 days survived), so runner_v1 could not be validated
         # against real fills at all. One column per input makes every future sizing
         # decision auditable without re-deriving anything.
+        # Migration: SLIPPAGE TELEMETRY (2026-08-07). Execution is the largest measured
+        # cost in the system — on 06-01..07-15 the book returned -5.43% equal-weighted
+        # where the harness returned +2.19% on the SAME trades at the SAME win rate
+        # (~7.6 pts, ~$84/trade of pure fill cost). That had to be INFERRED by
+        # differencing prod against a backtest. These columns make it a DIRECT daily
+        # measurement, sliceable by ticker / premium / side / time-of-day.
+        for col in (
+            "entry_quote_at_decision REAL",  # ask the entry limit was priced off
+            "entry_limit_submitted REAL",    # limit we actually sent
+            "entry_rungs_used INTEGER",      # chase rungs consumed (1 = first try)
+            "entry_seconds_to_fill REAL",
+            "exit_quote_at_decision REAL",   # bid the exit limit was priced off
+            "exit_limit_submitted REAL",
+            "exit_rungs_used INTEGER",
+            "exit_seconds_to_fill REAL",
+        ):
+            try:
+                await conn.execute(f"ALTER TABLE paper_trades ADD COLUMN {col}")
+            except Exception:
+                pass  # column already exists
         for col in (
             "p_runner REAL",            # runner_v1 P(runner), NULL when it abstained
             "size_conv_mult REAL",      # final stacked conviction multiplier
@@ -2172,24 +2192,37 @@ class PaperTrader:
                 # CRITICAL: also update premium_per_contract and total_cost to
                 # match the real fill — otherwise close_trade() calculates P&L
                 # from the signal premium instead of the actual entry cost.
+                # Slippage telemetry — populated by the executor's chase; None on paths
+                # that never ran a ladder. Written on BOTH branches below so a trade is
+                # never silently missing it. Bound before either branch (rule #1).
+                _sl: tuple = (
+                    getattr(result, "quote_at_decision", None),
+                    getattr(result, "limit_submitted", None),
+                    getattr(result, "rungs_used", None),
+                    getattr(result, "seconds_to_fill", None),
+                )
                 if fill_price and fill_price > 0:
                     real_total_cost = fill_price * actual_contracts * 100
                     await conn.execute(
                         "UPDATE paper_trades SET webull_order_id = ?, "
                         "webull_client_order_id = ?, webull_entry_fill_price = ?, "
-                        "premium_per_contract = ?, total_cost = ?, contracts = ? "
+                        "premium_per_contract = ?, total_cost = ?, contracts = ?, "
+                        "entry_quote_at_decision = ?, entry_limit_submitted = ?, "
+                        "entry_rungs_used = ?, entry_seconds_to_fill = ? "
                         "WHERE id = ?",
                         (result.order_id, result.client_order_id, fill_price,
-                         fill_price, real_total_cost, actual_contracts, trade_id),
+                         fill_price, real_total_cost, actual_contracts, *_sl, trade_id),
                     )
                 else:
                     await conn.execute(
                         "UPDATE paper_trades SET webull_order_id = ?, "
                         "webull_client_order_id = ?, webull_entry_fill_price = ?, "
-                        "contracts = ? "
+                        "contracts = ?, "
+                        "entry_quote_at_decision = ?, entry_limit_submitted = ?, "
+                        "entry_rungs_used = ?, entry_seconds_to_fill = ? "
                         "WHERE id = ?",
                         (result.order_id, result.client_order_id, fill_price,
-                         actual_contracts, trade_id),
+                         actual_contracts, *_sl, trade_id),
                     )
                 await self._commit_with_retry(
                     conn, f"webull order ID for trade #{trade_id}"

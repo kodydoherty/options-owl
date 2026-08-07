@@ -106,26 +106,75 @@ def _reads(node: ast.AST) -> set[str]:
     return out
 
 
+def _own_reads(stmt: ast.AST) -> set[str]:
+    """Names read by this statement ITSELF, excluding its nested sub-blocks.
+
+    e.g. for `if x > 1: y = z` this is {x}, not {z} — `z` belongs to the body and is
+    checked recursively with the bindings that reach it.
+    """
+    skip: list = []
+    for field in ("body", "orelse", "finalbody", "handlers", "cases"):
+        skip.extend(getattr(stmt, field, []) or [])
+    skip_ids = {id(x) for x in skip}
+    out: set[str] = set()
+
+    def walk(n):
+        if id(n) in skip_ids:
+            return
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            return
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load):
+            out.add(n.id)
+        for c in ast.iter_child_nodes(n):
+            walk(c)
+
+    walk(stmt)
+    return out
+
+
+def _sub_blocks(stmt: ast.AST) -> list[list]:
+    blocks = []
+    for field in ("body", "orelse", "finalbody"):
+        b = getattr(stmt, field, None)
+        if b:
+            blocks.append(b)
+    for h in getattr(stmt, "handlers", []) or []:
+        blocks.append(h.body)
+    for c in getattr(stmt, "cases", []) or []:
+        blocks.append(c.body)
+    return blocks
+
+
 def _unsafe_reads(fn) -> list[tuple[str, int]]:
-    """Names read at function-body level that are not definitely bound by the preceding
-    statements. This is real definite-assignment analysis, so exhaustive if/else and
-    try/except-with-handlers are correctly treated as SAFE."""
-    bad = []
-    prefix: list = []
-    for stmt in fn.body:
-        for name in sorted(_reads(stmt)):
-            if any(_binds(p, name) for p in prefix):
-                continue
-            if _binds(stmt, name):
-                continue          # bound by this same statement (e.g. x = x_default)
-            # only flag names that ARE assigned somewhere in this function (else it is
-            # a global/import/builtin, not our problem)
-            assigned_anywhere = any(
-                name in _assigned_names(n) for n in ast.walk(fn)
-            )
-            if assigned_anywhere:
+    """Definite-assignment check, recursing into nested blocks.
+
+    Reads are checked against the bindings that actually reach them at their own
+    nesting level, so assign-and-use inside a single nested block is correctly SAFE.
+    """
+    assigned_anywhere = {n for x in ast.walk(fn) for n in _assigned_names(x)}
+    bad: list[tuple[str, int]] = []
+
+    def check(stmts: list, bound: set) -> None:
+        local = set(bound)
+        for stmt in stmts:
+            for name in sorted(_own_reads(stmt)):
+                if name in local or name not in assigned_anywhere:
+                    continue
+                if _binds(stmt, name):
+                    continue
                 bad.append((name, getattr(stmt, "lineno", 0)))
-        prefix.append(stmt)
+            # a loop body may run 0..n times, so its own bindings do not escape; a
+            # loop target IS bound for the body itself
+            for block in _sub_blocks(stmt):
+                inner = set(local)
+                if isinstance(stmt, (ast.For, ast.AsyncFor)):
+                    inner |= _assigned_names(stmt)
+                elif isinstance(stmt, (ast.With, ast.AsyncWith, ast.Try)):
+                    inner |= _assigned_names(stmt)
+                check(block, inner)
+            local |= {n for n in assigned_anywhere if _binds(stmt, n)}
+
+    check(fn.body, set(_params_and_globals(fn)))
     return bad
 
 
