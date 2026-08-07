@@ -353,6 +353,7 @@ class MarketDataStream:
         strike: float,
         expiry: str,
         option_type: str,
+        max_age_sec: float | None = None,
     ) -> float | None:
         """Fetch the current premium for an option contract.
 
@@ -375,8 +376,18 @@ class MarketDataStream:
         For Polygon streaming, this queries the REST API as a supplement
         since the WS stream provides underlying prices. For yfinance,
         it uses the option chain endpoint.
+
+        max_age_sec bounds the two in-process caches below. The EXIT path must
+        pass it: the monitor rejects a Redis snapshot older than
+        EXIT_SNAPSHOT_MAX_AGE_SEC and then falls through to here, where the
+        default windows (Redis 120s, WS 30s) would silently hand back an even
+        STALER price and defeat the guard entirely (2026-08-07: MSTR cut at a
+        cached $0.66 while the live bid was $0.47 — a 29% gap on a real fill).
+        None keeps the legacy windows for non-exit callers.
         """
         ticker = ticker.upper()
+        redis_max_age = 120.0 if max_age_sec is None else float(max_age_sec)
+        ws_max_age = 30.0 if max_age_sec is None else float(max_age_sec)
 
         # 0. Redis cache (real-time from centralized harvester)
         try:
@@ -384,8 +395,14 @@ class MarketDataStream:
             if redis_client.is_connected():
                 contract_key = f"{ticker}:{option_type.lower()}:{strike}:{expiry}"
                 data = await redis_client.get_option_premium(contract_key)
-                if data and (_time.time() - data.get("t", 0)) < 120:
-                    return data["mid"]
+                if data:
+                    age = _time.time() - data.get("t", 0)
+                    if age < redis_max_age:
+                        return data["mid"]
+                    logger.debug(
+                        f"Option Redis cache too stale for {contract_key} "
+                        f"({age:.0f}s > {redis_max_age:.0f}s) — fetching live"
+                    )
         except Exception:
             pass
 
@@ -397,9 +414,12 @@ class MarketDataStream:
             if entry is not None:
                 premium, ts = entry
                 age = _time.time() - ts
-                if age <= 30:  # fresh within 30s
+                if age <= ws_max_age:
                     return premium
-                logger.debug(f"Option WS cache stale for {contract} ({age:.0f}s)")
+                logger.debug(
+                    f"Option WS cache stale for {contract} "
+                    f"({age:.0f}s > {ws_max_age:.0f}s)"
+                )
 
         # 2. Polygon REST snapshot fallback
         if self.settings.POLYGON_API_KEY:

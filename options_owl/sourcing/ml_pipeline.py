@@ -1708,6 +1708,14 @@ async def run_regime_filter(
 # Cache per-ticker regime scores for the day (computed once at 9:45)
 _ticker_regime_cache: dict[str, float] = {}
 
+# Negative cache: when the regime feature build TIMES OUT we must not retry it on
+# every scan. Each miss costs a full 15s inside the scan loop, and because the
+# failure was never recorded the next scan re-ran it — a permanent retry storm
+# (2026-08-07: 8-11k timeouts/day per bot, ~256 per ticker, i.e. ~64 minutes of
+# blocked scan time per ticker per day). Record the failure and back off.
+_ticker_regime_fail_cache: dict[str, float] = {}
+REGIME_FAIL_BACKOFF_SEC = 300.0
+
 
 async def check_ticker_regime(
     ticker: str, models: MLModels, settings: MLPipelineSettings
@@ -1729,9 +1737,19 @@ async def check_ticker_regime(
     if cache_key in _ticker_regime_cache:
         score = _ticker_regime_cache[cache_key]
     else:
+        # Back off after a recent failure instead of re-paying the 15s timeout
+        # on every scan. Fail-open (allow the ticker), same as a None score.
+        last_fail = _ticker_regime_fail_cache.get(cache_key)
+        if last_fail is not None:
+            if (time.monotonic() - last_fail) < REGIME_FAIL_BACKOFF_SEC:
+                return True
+            del _ticker_regime_fail_cache[cache_key]
+
         score = await _compute_regime_score_for_ticker(ticker, models, settings)
         if score is None:
+            _ticker_regime_fail_cache[cache_key] = time.monotonic()
             return True
+        _ticker_regime_fail_cache.pop(cache_key, None)
         _ticker_regime_cache[cache_key] = score
         logger.debug(f"ML_PIPELINE: {ticker} regime score={score:.3f}")
 

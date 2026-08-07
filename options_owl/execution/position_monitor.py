@@ -1840,6 +1840,14 @@ async def run_position_monitor(
                                 strike=trade["strike"],
                                 expiry=expiry_date,
                                 option_type=trade["option_type"],
+                                # Same freshness bound the Redis-snapshot read above
+                                # enforces. Without it this fallback would return a
+                                # price up to 120s old and undo that guard.
+                                max_age_sec=float(getattr(
+                                    paper_trader.settings,
+                                    "EXIT_SNAPSHOT_MAX_AGE_SEC",
+                                    10.0,
+                                )),
                             ),
                             timeout=15,
                         )

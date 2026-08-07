@@ -106,6 +106,9 @@ services:
       - FLEET_RANK=0
       - PAPER_TRADE=false
       - WEBULL_KILL_SWITCH=false
+      # Exit partial-peel LIVE (2026-08-05, the -75% fix) — peel a stuck big sell off in-loop instead
+      # of bleeding across 5s cycles. Cash account → Webull rejects any oversell. Monitor closely.
+      - ENABLE_EXIT_PARTIAL_PEEL=true
       - EXIT_ENGINE=v5
       # A1c canary (kody only for now): penny-match closed-trade P&L to real Webull fills.
       # Read-only vs Webull + updates P&L display columns only — proven isolated from the trading
@@ -221,7 +224,7 @@ services:
       - FLEET_SIZE=5
       - FLEET_OVERLAP=2
       # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
-      - ENABLE_V7_TIDE_GATE=true
+      - ENABLE_V7_TIDE_GATE=false
       # Stage D conviction sizing — kody LIVE 2026-06-14 (validated +72% / combined PF 1.78; vinny paper canary).
       - ENABLE_V7_CONVICTION_SIZING=true
       # runner_v1 P(runner) call-sizing — CONSERVATIVE-LIVE 2026-06-22. Backtest-validated (~2x per-unit P&L,
@@ -294,6 +297,9 @@ services:
       # dennis → LIVE 2026-06-30 (Kody's call — re-auth Webull; 2nd live-money bot after kody+adam, $10k).
       - PAPER_TRADE=false
       - WEBULL_KILL_SWITCH=false
+      # Exit partial-peel LIVE (2026-08-05, the -75% fix) — peel a stuck big sell off in-loop instead
+      # of bleeding across 5s cycles. Cash account → Webull rejects any oversell. Monitor closely.
+      - ENABLE_EXIT_PARTIAL_PEEL=true
       - EXIT_ENGINE=v5
       # Account-type toggle. false = Individual CASH (current; GFV-limited intraday reinvest).
       # true = Individual MARGIN: auto-detects the margin account (UNLESS WEBULL_ACCOUNT_ID is pinned —
@@ -398,7 +404,7 @@ services:
       - FLEET_SIZE=5
       - FLEET_OVERLAP=2
       # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
-      - ENABLE_V7_TIDE_GATE=true
+      - ENABLE_V7_TIDE_GATE=false
       - ENABLE_V6_BREAKEVEN_RATCHET=true
       - ENABLE_V6_2PM_TIGHTEN=true
       - ENABLE_V6_PREMIUM_CAP=false
@@ -528,7 +534,7 @@ services:
       - ENABLE_FLEET_STAGGER=false
       - FLEET_SIZE=5
       - FLEET_OVERLAP=2
-      - ENABLE_V7_TIDE_GATE=true
+      - ENABLE_V7_TIDE_GATE=false
       - ENABLE_V6_BREAKEVEN_RATCHET=true
       - ENABLE_V6_2PM_TIGHTEN=true
       - ENABLE_V6_PREMIUM_CAP=false
@@ -698,7 +704,7 @@ services:
       - FLEET_SIZE=5
       - FLEET_OVERLAP=2
       # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
-      - ENABLE_V7_TIDE_GATE=true
+      - ENABLE_V7_TIDE_GATE=false
       - ENABLE_V6_BREAKEVEN_RATCHET=true
       - ENABLE_V6_2PM_TIGHTEN=true
       - ENABLE_V6_PREMIUM_CAP=false
@@ -866,7 +872,7 @@ services:
       - FLEET_SIZE=5
       - FLEET_OVERLAP=2
       # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
-      - ENABLE_V7_TIDE_GATE=true
+      - ENABLE_V7_TIDE_GATE=false
       - ENABLE_V6_BREAKEVEN_RATCHET=true
       - ENABLE_V6_2PM_TIGHTEN=true
       - ENABLE_V6_PREMIUM_CAP=false
@@ -904,6 +910,13 @@ services:
       - FLEET_RANK=3
       - POLYGON_API_KEY=${YANK_POLYGON_API_KEY}
       - ENABLE_POLYGON_WS=false
+      # Centralized-ML SHADOW canary (spec 2026-08-04): consume the harvester's ML signals from Redis and
+      # LOG parity vs the local scan, but DO NOT trade on them (shadow). yank keeps its own local scan +
+      # paper trading unchanged. Proves the central feed catches everything (and more) before it ever acts.
+      - ENABLE_CENTRAL_ML_SIGNALS=true
+      - ML_CENTRAL_SHADOW=true
+      # Exit partial-peel canary (2026-08-05, the -75% fix). Paper-validate here before live kody/dennis.
+      - ENABLE_EXIT_PARTIAL_PEEL=true
       - WEBULL_APP_KEY=${YANK_WEBULL_APP_KEY}
       - WEBULL_APP_SECRET=${YANK_WEBULL_APP_SECRET}
       - PAPER_TRADE=true
@@ -1016,7 +1029,7 @@ services:
       - FLEET_SIZE=5
       - FLEET_OVERLAP=2
       # B2 market-tide gate: down-size puts entered against the market-wide whale tide (puts-only) — 2026-06-15.
-      - ENABLE_V7_TIDE_GATE=true
+      - ENABLE_V7_TIDE_GATE=false
       - ENABLE_V6_BREAKEVEN_RATCHET=true
       - ENABLE_V6_2PM_TIGHTEN=true
       - ENABLE_V6_PREMIUM_CAP=false
@@ -1162,8 +1175,19 @@ services:
       # Centralized flow capture — uses Kody's key for /options WS.
       # All bots have ENABLE_POLYGON_WS=false so this key's slot is free.
       - FLOW_POLYGON_API_KEY=${POLYGON_API_KEY}
+      # Centralized-ML publisher (spec 2026-08-04): run the ML scan ONCE here + publish to Redis so the
+      # whole fleet consumes the same signal at the same instant (kills the per-bot scan-timing race).
+      # In-process on the SINGLE harvester → no new Polygon/UW subscription. Bots consume gated behind
+      # ENABLE_CENTRAL_ML_SIGNALS (shadow first).
+      # DISABLED 2026-08-07: the in-process ML scan starved the option-snapshot poll loop
+      # (regime-feature timeouts 0/day -> 3.5-10k/day; poll p90 21.6s -> 48.1s, max 76.8s), so bots
+      # priced exits off snapshots up to 70s stale and stops fired ~20% late. Do NOT re-enable until
+      # _compute_regime_score_for_ticker no longer times out in the harvester.
+      - ENABLE_CENTRAL_ML_PUBLISH=false
     volumes:
       - ./journal/owlet-harvester:/app/journal
+      # Read-only access to the shared ML models (the harvester's own journal mount doesn't include them)
+      - ./journal/models:/app/journal/models:ro
 
   # owlet-flow-shadow RETIRED 2026-06-19: the harvester is now the SOLE UW flow-alerts WS holder and
   # publishes qualifying FlowSignals to Redis (owl:flow:signals); all bots consume via
