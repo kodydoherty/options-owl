@@ -66,10 +66,42 @@ TICKERS = [
 ]
 
 # Exclude tickers that are net losers in backtest
-EXCLUDED_TICKERS = {"MSFT", "COIN", "AVGO", "MU"}  # Net losers in concurrent backtest (2026-05-30)
+# PROD PARITY (2026-08-07): DERIVE from settings.BLOCKED_TICKERS instead of hardcoding,
+# so the harness follows whichever bot you are modelling. This was hardcoded to the
+# 4-ticker default while kody's live env is "MSFT,COIN,AVGO,MU,SPY" — so the harness
+# traded SPY that prod never did, and SPY was the single biggest contributor in the
+# 04-15..07-15 run (+$6,460 = 30% of total P&L).
+# To model kody: BLOCKED_TICKERS="MSFT,COIN,AVGO,MU,SPY" python scripts/backtest_gold_standard.py ...
+def _blocked_from_settings() -> set[str]:
+    try:
+        from options_owl.config.settings import Settings
+        raw = Settings().BLOCKED_TICKERS
+    except Exception:
+        raw = os.getenv("BLOCKED_TICKERS", "MSFT,COIN,AVGO,MU")
+    return {t.strip().upper() for t in str(raw).split(",") if t.strip()}
+
+
+EXCLUDED_TICKERS = _blocked_from_settings()
 
 # Portfolio
 PORTFOLIO_START = int(os.getenv("PORTFOLIO_START", "23000"))
+# Compounding control (2026-08-07). The harness grows `portfolio` by every trade's P&L
+# and sizes off it, so a good run inflates size without limit: the 04-15..07-15 run went
+# $23k -> $44,194 (+92%), average size 17.3 -> 26.8 contracts, while PROD averaged
+# 4.0-4.5 on a flat ~$20-23k balance. That 4-6x sizing gap is most of the
+# "great backtest, losing live" delta. These cap the balance the SIZER sees; P&L
+# accounting still compounds. 0 = uncapped (legacy behaviour).
+SIZING_BALANCE_CAP = float(os.getenv("SIZING_BALANCE_CAP", "0") or 0)
+FIXED_SIZING_BALANCE = 0.0
+
+
+def sizing_balance(portfolio: float) -> float:
+    """Balance the position sizer may see (vs the P&L-accounting balance)."""
+    if FIXED_SIZING_BALANCE > 0:
+        return FIXED_SIZING_BALANCE
+    if SIZING_BALANCE_CAP > 0:
+        return min(portfolio, SIZING_BALANCE_CAP)
+    return portfolio
 MAX_CONCURRENT = 8       # Matches docker-compose.yml for all bots
 MAX_POSITION_PCT = 0.15
 MAX_RISK_PCT = 0.75
@@ -77,13 +109,28 @@ GFV_BUFFER_PCT = 15.0
 DAILY_LOSS_CB_PCT = 10.0   # Prod parity: DAILY_LOSS_LIMIT_PCT=10 in .env
 WEEKLY_LOSS_HALT_PCT = 20.0  # Prod parity: WEEKLY_LOSS_LIMIT_PCT=20 in .env
 MAX_SAME_DIRECTION = 8   # Matched to MAX_CONCURRENT — production has no same-direction cap
-PREMIUM_CAP = 6.0
+PREMIUM_CAP = 6.0             # prod bot_runner.py:381 signal-level cap
+# Per-ticker premium caps (2026-08-07). Live data: >=$3 contracts are ~half of
+# ml_sourcing's loss (31 trades, 16% WR, -$2,425) because they carry the LOWEST MFE
+# (13.4% vs 23-26% for cheap) — they can't move enough to clear spread + stops.
+# TICKER -> cap; absent tickers fall back to PREMIUM_CAP.
+PREMIUM_CAP_BY_TICKER: dict[str, float] = {}
+
+
+def premium_cap_for(ticker: str) -> float:
+    """Effective signal-level premium cap for one ticker."""
+    return PREMIUM_CAP_BY_TICKER.get(ticker, PREMIUM_CAP)
 SPREAD_GATE_PCT = 15.0
 # V2: Per-ticker dollar OTM thresholds via get_max_otm_distance() — matches production.
 # Old static MAX_OTM_DISTANCE_PCT removed; per-ticker logic in exit_v5/config.py.
 
 MIN_PREMIUM_FLOOR = 0.20      # Reject penny premiums (lottery tickets)
-MIN_SCORE = 75                # Prod parity: ScoreGate MIN_SCORE=75 (.env) / vinny floor 75
+# PROD PARITY (2026-08-07): this harness IS the ML book, and prod routes ML-sourced
+# signals through settings.ML_MIN_SCORE (=60), NOT MIN_SCORE — risk/pipeline.py:705
+# "Discord signals use MIN_SCORE. ML-sourced signals use ML_MIN_SCORE". At 75 the
+# harness ignored 46% of prod's real ML trades (prod's actual min traded score = 62),
+# modelling 1.5 trades/day against prod's 4.0.
+MIN_SCORE = 60                # = prod ML_MIN_SCORE. Override with --score-floor.
 ENTRY_SLIPPAGE_PCT = 0.5      # Prod fills at ask+5% limit; realized ~ask + 50bps
 
 # Consecutive loser circuit breaker (prod ConsecutiveLoserGate)
@@ -172,6 +219,21 @@ LATE_0DTE_CAP = False             # prod runs this; default off to match prior b
 ENTRY_FILL_RUNUP = True
 ENTRY_FILL_DELAY_BARS = 1
 
+# ── Fill-miss modeling + chase-ceiling fix (2026-08-03) ──
+# The LIVE entry chase places a limit up to MAX_CHASE_PCT over the signal-instant ask; if the
+# run-up pushes the executable (fill) ask ABOVE that ceiling, the order orphans — a live
+# WEBULL ENTRY MISS ($0, no trade, e.g. IWM 42ct / GOOGL 21ct on trend days). The prior harness
+# filled EVERY order at the run-up ask (never missed) → overstated fills on cheap fast 0DTE.
+# MODEL_FILL_MISS=True orphans those, matching live. Fix #2 (CHASE_ABS_FLOOR>0): on a cheap
+# contract a flat 15% is only pennies, so widen the ceiling to max(MAX_CHASE_PCT%, abs_floor/ask)
+# — cheap contracts get real chase room; expensive contracts are unaffected (their %-ceiling is
+# already wider than the cent floor). Capped at CHASE_ABS_MAX_PCT so ultra-cheap don't chase wild.
+MODEL_FILL_MISS = True
+MAX_CHASE_PCT = 15.0          # mirrors live WEBULL_ENTRY_MAX_CHASE_PCT
+CHASE_ABS_FLOOR = 0.0         # fix #2: min chase room in $ (0=off; 0.15 enables the cheap-contract floor)
+CHASE_ABS_MAX_PCT = 40.0      # safety cap on the widened ceiling (ultra-cheap contracts)
+_FILL_MISS_CAPTURED = [0]     # telemetry: orders the abs-floor fix rescued from a miss
+
 
 def _executable_entry_ask(asks, closes, minute):
     """The ask a live order would realistically FILL at, given order-placement latency + run-up.
@@ -195,6 +257,37 @@ def _executable_entry_ask(asks, closes, minute):
     if minute < len(closes) and closes[minute] > 0:
         return float(closes[minute])
     return 0.0
+
+
+def _executable_entry_fill(asks, closes, minute):
+    """(fill_price, missed) — models the live entry chase.
+
+    Fills at the run-up-adjusted executable ask ONLY IF that ask is within the chase ceiling over
+    the signal-instant ask; otherwise the order orphans (missed entry, no trade) exactly like a
+    live WEBULL ENTRY MISS. The ceiling is MAX_CHASE_PCT over the signal ask, widened for cheap
+    contracts by CHASE_ABS_FLOOR (fix #2). Returns (0.0, False) on missing data (a plain skip,
+    not a chase miss). With MODEL_FILL_MISS off this always fills (the pre-2026-08-03 behavior)."""
+    n = len(asks)
+    if minute < n and asks[minute] > 0 and not np.isnan(asks[minute]):
+        sig_ask = float(asks[minute])
+    else:
+        sig_ask = 0.0
+    exec_ask = _executable_entry_ask(asks, closes, minute)
+    if exec_ask <= 0 or np.isnan(exec_ask):
+        return 0.0, False
+    if not MODEL_FILL_MISS or sig_ask <= 0:
+        return exec_ask, False
+    eff_pct = MAX_CHASE_PCT
+    if CHASE_ABS_FLOOR > 0:
+        floor_pct = 100.0 * CHASE_ABS_FLOOR / sig_ask
+        eff_pct = min(max(MAX_CHASE_PCT, floor_pct), CHASE_ABS_MAX_PCT)
+        if floor_pct > MAX_CHASE_PCT and exec_ask <= sig_ask * (1.0 + eff_pct / 100.0) \
+                and exec_ask > sig_ask * (1.0 + MAX_CHASE_PCT / 100.0):
+            _FILL_MISS_CAPTURED[0] += 1   # this fill would have MISSED at the plain % ceiling
+    ceiling = sig_ask * (1.0 + eff_pct / 100.0)
+    if exec_ask > ceiling:
+        return 0.0, True
+    return exec_ask, False
 
 
 SCALP_THRESH_OVERRIDE = None      # scalp_peak_threshold_pct (default ~20)
@@ -491,9 +584,13 @@ _V6_SETTINGS = SimpleNamespace(
 
 def load_models(use_entry_filter: bool, use_regime: bool = True):
     """Load pattern_entry and optionally entry_timing + stop_calibration + regime models."""
-    # Pattern entry (sourcing)
-    pattern_path = MODEL_DIR / "pattern_entry.txt"
-    pattern_meta_path = MODEL_DIR / "pattern_entry_meta.json"
+    # Pattern entry (sourcing). PATTERN_MODEL_STEM lets us A/B a retrained model (e.g. the
+    # ticker-expansion model pattern_entry_expansion) without touching the live pattern_entry.txt.
+    _stem = os.getenv("PATTERN_MODEL_STEM", "pattern_entry")
+    pattern_path = MODEL_DIR / f"{_stem}.txt"
+    pattern_meta_path = MODEL_DIR / f"{_stem}_meta.json"
+    if _stem != "pattern_entry":
+        print(f"PATTERN MODEL OVERRIDE: using {_stem}.txt")
     if not pattern_path.exists():
         print(f"ERROR: No pattern model at {pattern_path}")
         sys.exit(1)
@@ -2525,7 +2622,11 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                         signal_quality_score = float(signal_model.predict(X_sq)[0])
 
                 # Step 3: Entry gates
-                entry_premium = _executable_entry_ask(td["asks"], td["closes"], minute)
+                entry_premium, _fill_missed = _executable_entry_fill(td["asks"], td["closes"], minute)
+                if _fill_missed:
+                    signals_gate_blocked += 1
+                    gate_blocks["fill_miss"] += 1
+                    continue
                 if entry_premium <= 0 or np.isnan(entry_premium):
                     continue
 
@@ -2538,7 +2639,7 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                 # Unconditional $6 premium cap — prod ml_pipeline rejects
                 # premium > $6.0 at the SIGNAL level regardless of
                 # ENABLE_V6_PREMIUM_CAP (bot_runner.py:990).
-                if entry_premium > PREMIUM_CAP:
+                if entry_premium > premium_cap_for(ticker):
                     signals_gate_blocked += 1
                     gate_blocks["premium_cap_signal"] += 1
                     continue
@@ -2553,7 +2654,7 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
 
                 # Static gates (disabled in prod, overridden by delta gate)
                 if ENABLE_PRICE_GATES:
-                    if entry_premium > PREMIUM_CAP:
+                    if entry_premium > premium_cap_for(ticker):
                         signals_gate_blocked += 1
                         gate_blocks["premium_cap"] += 1
                         continue
@@ -2688,7 +2789,7 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                 # can swap the confidence→budget curve and the multi-day cap.
                 # SIZING_MODE="current" reproduces prod score_to_contracts().
                 contracts = size_position(
-                    score, cost_per, portfolio, float(pattern_conf),
+                    score, cost_per, sizing_balance(portfolio), float(pattern_conf),
                     is_put=False, dte=int(td.get("dte", 0)), minute=dip_entry_minute,
                 )
                 if contracts <= 0:
@@ -2952,7 +3053,11 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                                     continue
 
                         # Step 3: Entry gates (same as CALLs)
-                        entry_premium = _executable_entry_ask(ptd["asks"], ptd["closes"], minute)
+                        entry_premium, _fill_missed = _executable_entry_fill(ptd["asks"], ptd["closes"], minute)
+                        if _fill_missed:
+                            signals_gate_blocked += 1
+                            gate_blocks["fill_miss"] += 1
+                            continue
                         if entry_premium <= 0 or np.isnan(entry_premium):
                             continue
 
@@ -2965,7 +3070,7 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                         # Unconditional $6 premium cap — prod ml_pipeline rejects
                         # premium > $6.0 at the SIGNAL level for all directions
                         # regardless of ENABLE_V6_PREMIUM_CAP (bot_runner.py:990).
-                        if entry_premium > PREMIUM_CAP:
+                        if entry_premium > premium_cap_for(ticker):
                             signals_gate_blocked += 1
                             gate_blocks["premium_cap_signal"] += 1
                             continue
@@ -3082,7 +3187,7 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                         # Position sizing via size_position() (PUT half-size
                         # budget baked into the dispatcher). Mode-aware + caps.
                         contracts = size_position(
-                            put_score, cost_per, portfolio, float(pattern_conf),
+                            put_score, cost_per, sizing_balance(portfolio), float(pattern_conf),
                             is_put=True, dte=int(ptd.get("dte", 0)), minute=dip_entry_minute,
                         )
                         if contracts <= 0:
@@ -3825,6 +3930,7 @@ def main():
     global ENABLE_ANTI_CHASE, ENABLE_MOMENTUM_CONFIRM, ENABLE_CONSECUTIVE_LOSER
     global ENABLE_CORRELATION_CAP, ENABLE_DIRECTIONAL_REGIME, ENABLE_PUT_BEARISH_CONFIRM
     global MIN_PREMIUM_FLOOR, MIN_SCORE, OPENING_BUFFER_MIN, TOD_EARLY_MIN_SCORE
+    global PREMIUM_CAP, PREMIUM_CAP_BY_TICKER, FIXED_SIZING_BALANCE, SIZING_BALANCE_CAP
     global SCALP_THRESH_OVERRIDE, SOFT_KEEP_OVERRIDE, ADAPTIVE_MULT_OVERRIDE
     global THETA_MIN_OVERRIDE, BREAKEVEN_TRIGGER_OVERRIDE, SCALEOUT_TRIGGER_OVERRIDE, V7_EXITS_OVERRIDE
     global LOCK_REENTER, ALLOW_REENTRIES, REENTRY_COOLDOWN_MIN
@@ -3891,6 +3997,19 @@ def main():
     # ── Gate range sweeps (defaults = current hardcoded values) ──
     parser.add_argument("--min-premium", type=float, default=MIN_PREMIUM_FLOOR,
                         help=f"Min premium floor (default: {MIN_PREMIUM_FLOOR})")
+    parser.add_argument("--premium-cap", type=float, default=None,
+                        help="Signal-level premium cap $ (prod=6.0). Live data says >=$3 is "
+                             "where ml_sourcing loses ~half its money.")
+    parser.add_argument("--premium-cap-per-ticker", type=str, default=None,
+                        help="Per-ticker caps, e.g. 'TSLA=4,NVDA=2.5,AAPL=3'. Unlisted "
+                             "tickers use --premium-cap.")
+    parser.add_argument("--premium-cap-sweep", type=str, default=None,
+                        help="Comma list of caps to sweep, e.g. '2,2.5,3,4,5,6'")
+    parser.add_argument("--fixed-sizing-balance", type=float, default=None,
+                        help="Pin the balance the SIZER sees (prod-faithful; P&L still "
+                             "compounds). Prod kody sizes off a flat ~$20-23k.")
+    parser.add_argument("--sizing-balance-cap", type=float, default=None,
+                        help="Cap the sizing balance (mirrors prod MAX_SIZING_BALANCE)")
     parser.add_argument("--score-floor", type=int, default=MIN_SCORE,
                         help=f"Min score floor (default: {MIN_SCORE})")
     parser.add_argument("--delta-floor", type=float, default=DELTA_MIN,
@@ -3941,6 +4060,12 @@ def main():
                         help="Disable honest run-up-aware fill; revert to fantasy signal-instant ask")
     parser.add_argument("--entry-fill-delay", type=int, default=None,
                         help="Bars after signal the fill lands (default ENTRY_FILL_DELAY_BARS=1)")
+    parser.add_argument("--model-fill-miss", choices=["on", "off"], default="on",
+                        help="Orphan orders whose run-up exceeds the chase ceiling (matches live WEBULL ENTRY MISS)")
+    parser.add_argument("--chase-abs-floor", type=float, default=0.0,
+                        help="Fix #2: min chase room in $ over the ask (0=off; 0.15 = widen ceiling for cheap contracts)")
+    parser.add_argument("--max-chase-pct", type=float, default=15.0,
+                        help="Chase ceiling %% over the signal ask (live WEBULL_ENTRY_MAX_CHASE_PCT=15)")
     args = parser.parse_args()
 
     print("=" * 70)
@@ -4061,6 +4186,19 @@ def main():
     V7_EXITS_OVERRIDE = not args.no_v7_exits
     LOCK_REENTER = args.lock_reenter or args.discount_reentry
     ALLOW_REENTRIES = not args.no_reentries
+
+    # ---- prod-parity sizing + premium-cap wiring (2026-08-07) ----
+    if args.premium_cap is not None:
+        PREMIUM_CAP = float(args.premium_cap)
+    if args.premium_cap_per_ticker:
+        PREMIUM_CAP_BY_TICKER = {
+            k.strip().upper(): float(v)
+            for k, v in (kv.split("=") for kv in args.premium_cap_per_ticker.split(","))
+        }
+    if args.fixed_sizing_balance is not None:
+        FIXED_SIZING_BALANCE = float(args.fixed_sizing_balance)
+    if args.sizing_balance_cap is not None:
+        SIZING_BALANCE_CAP = float(args.sizing_balance_cap)
     REENTRY_COOLDOWN_MIN = args.reentry_cooldown_min
     BREAKEVEN_TRIGGER_OVERRIDE = args.breakeven_trigger
     SCALEOUT_TRIGGER_OVERRIDE = args.scaleout_trigger
@@ -4070,6 +4208,11 @@ def main():
     ENTRY_FILL_RUNUP = not args.no_entry_runup
     if args.entry_fill_delay is not None:
         ENTRY_FILL_DELAY_BARS = args.entry_fill_delay
+
+    global MODEL_FILL_MISS, CHASE_ABS_FLOOR, MAX_CHASE_PCT
+    MODEL_FILL_MISS = args.model_fill_miss == "on"
+    CHASE_ABS_FLOOR = args.chase_abs_floor
+    MAX_CHASE_PCT = args.max_chase_pct
 
     # ---- Position-sizing experiment wiring ----
     SIZING_MODE = args.sizing_mode
@@ -4492,6 +4635,9 @@ def main():
         if r.get("regime_skipped_days", 0) > 0:
             print(f"    Regime skipped:    {r['regime_skipped_days']} days")
         print(f"    Executed:          {r['trades']}")
+        # fill-miss telemetry to STDOUT (so parallel runs don't have to share the md report file)
+        print(f"    METRIC fill_miss {r.get('gate_blocks', {}).get('fill_miss', 0)}")
+        print(f"    METRIC chase_captured {_FILL_MISS_CAPTURED[0]}")
 
         print(f"\n  Per-Ticker:")
         print(f"  {'Ticker':<8} {'Trades':<7} {'WR%':<6} {'P&L':>10} {'Avg':>8}")
