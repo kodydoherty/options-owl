@@ -175,8 +175,14 @@ services:
       # total loss. Robust 3/3 months, 3/3 sources, 6/6 tickers. Expensive contracts
       # carry the LOWEST MFE (13.4%) so they can't clear spread+stops. The backtest
       # disagrees because it is 3.4x more optimistic on exactly this cohort.
-      # LIVE A/B: kody = 3.0 (test arm), dennis stays 6.0 (control). Revert = 6.0.
-      - ML_PREMIUM_CAP=3.0
+      # PULLED BACK TO 6.0 (2026-08-07, hours after shipping at 3.0) for ATTRIBUTION.
+      # It overlaps the runner_v1 Q1 block by ~62% (66 of 109 cap-blocked trades are also
+      # Q1), so running both made neither readable. Measured on real fills: Q1 alone
+      # avoids $3,735 of the $4,317 both would avoid = 87% of the benefit, so the cap
+      # adds only ~$582 over 10 weeks (~$58/wk) on top of Q1. That is a cheap price for a
+      # clean single-variable read. Evidence for the cap is unchanged and still good
+      # (>=$3 negative 3/3 months, 3/3 sources, 6/6 tickers) — revisit once Q1 has read.
+      - ML_PREMIUM_CAP=6.0
       # runner_v1 Q1 floor (2026-08-07). Retroactive validation on 494 real-fill CALLs:
       # P(runner) ranks outcomes (runner rate 19/32/42/63% Q1..Q4). The Q1 tail (<0.39)
       # is 103 trades, -$3,735, 19% runner rate, NEGATIVE 3/3 months. It was only shrunk
