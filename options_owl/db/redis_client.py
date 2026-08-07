@@ -745,6 +745,54 @@ async def subscribe_flow_signals(on_signal) -> None:
             await asyncio.sleep(5)
 
 
+# ── ML SIGNALS (centralize-ml-signals 2026-08-04: sole publisher = harvester; every bot consumes) ──
+# Mirror of the UW-flow pub/sub above. The harvester runs the ML scan ONCE and publishes each pattern
+# signal here so the whole fleet sees the identical signal at the identical instant (kills the per-bot
+# scan-timing race that made kody miss trades dennis caught). Also carries a HEARTBEAT every tick so a
+# consuming bot can detect a dead feed and fall back to its own local scan. Flag-gated on the bot side.
+_ML_SIGNAL_CHANNEL = "owl:ml:signals"
+
+
+async def publish_ml_signal(signal_dict: dict) -> None:
+    """Publish one ML pattern signal (or a heartbeat) to all bots via Redis pub/sub. Fire-and-forget.
+    A heartbeat is a payload with type='heartbeat' + t=<epoch> and no ticker — it lets bots detect a
+    dead central feed and auto-fall-back to local scanning without a silent no-signal outage."""
+    if _redis is None:
+        return
+    try:
+        await _redis.publish(_ML_SIGNAL_CHANNEL, json.dumps(signal_dict))
+    except Exception as exc:
+        logger.debug(f"Redis publish_ml_signal failed: {exc}")
+
+
+async def subscribe_ml_signals(on_signal) -> None:
+    """Consume ML signals from Redis, calling on_signal(dict) for each (signals AND heartbeats). Runs
+    forever, reconnecting on any error. A bot runs this in place of its own scan loop when
+    ENABLE_CENTRAL_ML_SIGNALS is set (the harvester is the single publisher)."""
+    while True:
+        try:
+            if _redis is None:
+                await asyncio.sleep(2)
+                continue
+            pubsub = _redis.pubsub()
+            await pubsub.subscribe(_ML_SIGNAL_CHANNEL)
+            logger.info(f"ML_CONSUMER: subscribed to {_ML_SIGNAL_CHANNEL}")
+            async for msg in pubsub.listen():
+                if msg.get("type") != "message":
+                    continue
+                try:
+                    payload = json.loads(msg["data"])
+                except (ValueError, TypeError):
+                    continue
+                try:
+                    await on_signal(payload)
+                except Exception as exc:
+                    logger.warning(f"ML_CONSUMER: on_signal failed: {exc}")
+        except Exception as exc:
+            logger.warning(f"ML_CONSUMER: subscribe loop error ({exc}); retry in 5s")
+            await asyncio.sleep(5)
+
+
 # ── WS Health status (published by harvester watchdog) ────────────────────
 
 

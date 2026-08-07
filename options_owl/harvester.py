@@ -680,6 +680,10 @@ async def _ws_smoke_test(
 # ---------------------------------------------------------------------------
 
 
+# Strong refs for the centralised-ML publisher tasks (asyncio holds only weak refs).
+_ML_PUB_TASKS: set = set()
+
+
 async def run_harvester() -> None:
     """Main async loop: poll every POLL_INTERVAL seconds during market hours."""
     if not POLYGON_API_KEY:
@@ -784,6 +788,43 @@ async def run_harvester() -> None:
             logger.info("UW_FLOW_PUBLISHER: harvester holds the sole UW flow WS → publishing to Redis")
     except Exception as exc:
         logger.warning(f"UW_FLOW_PUBLISHER: failed to start ({exc})")
+
+    # CENTRALIZED-ML PUBLISHER (spec 2026-08-04) — the harvester runs the ML scan ONCE and publishes each
+    # signal + a heartbeat to Redis owl:ml:signals; every bot consumes the identical signal at the same
+    # instant (kills the per-bot scan-timing race that made kody miss winners dennis caught). Gated behind
+    # ENABLE_CENTRAL_ML_PUBLISH (default OFF → harvester unchanged). The scan touches paper_trader only via
+    # evaluate_and_trade — which the signal_sink hook bypasses — so a bare shim suffices (the regime
+    # detector-update getattrs _candle_cache → None and no-ops; the per-ticker regime filter still runs).
+    try:
+        from options_owl.config.settings import Settings as _MLSettings
+        _ml_pub_settings = _MLSettings()
+        if getattr(_ml_pub_settings, "ENABLE_CENTRAL_ML_PUBLISH", False) is True:
+            from types import SimpleNamespace
+
+            from options_owl.bot_runner import _run_ml_scan_loop
+            from options_owl.collectors import ml_signal_bus as _mlbus
+            from options_owl.db import redis_client as _ml_rc
+
+            async def _publish_ml(_signal: dict) -> None:
+                await _ml_rc.publish_ml_signal(_mlbus.build_signal_payload(_signal))
+
+            async def _ml_heartbeat() -> None:
+                _iv = max(1.0, float(getattr(_ml_pub_settings, "ML_SCAN_INTERVAL_SEC", 2.0) or 2.0))
+                while True:
+                    await _ml_rc.publish_ml_signal(_mlbus.build_heartbeat())
+                    await asyncio.sleep(_iv)
+
+            _ml_shim = SimpleNamespace()  # scan loop only getattrs _candle_cache (→None); no trading here
+            # Keep strong refs: asyncio only holds a WEAK reference to a running task, so a
+            # bare create_task() can be garbage-collected mid-flight and silently stop the
+            # publisher. The module-level set is the retention, not decoration.
+            _ML_PUB_TASKS.add(asyncio.create_task(
+                _run_ml_scan_loop(_ml_shim, _ml_pub_settings, signal_sink=_publish_ml)))
+            _ML_PUB_TASKS.add(asyncio.create_task(_ml_heartbeat()))
+            logger.info("ML_CENTRAL_PUBLISHER: harvester running the ML scan → publishing signals + "
+                        "heartbeats to Redis (ENABLE_CENTRAL_ML_PUBLISH=true)")
+    except Exception as exc:
+        logger.warning(f"ML_CENTRAL_PUBLISHER: failed to start ({exc})")
 
     # HELD-CONTRACT OPTIONS-WS FEED — the harvester opens a Polygon /options WS for ONLY the union of
     # currently-held contracts and republishes per-tick NBBO to Redis owl:optquote:. Isolated + flag-gated
