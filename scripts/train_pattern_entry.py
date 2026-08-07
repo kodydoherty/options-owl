@@ -62,12 +62,26 @@ TICKERS = [
     # Expansion + sector-diversification (added 2026-07-24)
     "ORCL", "INTC", "TSM", "ARM", "SMH", "USO", "SLV", "GDX",
     "XLV", "ITA", "XAR", "PPA",
+    # High-opportunity 0DTE expansion (added 2026-08-04) — verified intraday range >= current
+    # winners (SOXL 10.9%, MARA 7.9%, HOOD 5.4% vs NVDA 2.9%); the OLD model couldn't score them.
+    # Retrain to teach the model these names. Dropped the flat ones (TLT/XLF/GLD, range <1.7%).
+    "SOXL", "TQQQ", "SPXL", "TNA", "SQQQ", "MARA", "HOOD", "IBIT",
+    "QCOM", "CRM", "UBER", "XBI", "UNG",
 ]
 
 N_WORKERS = min(os.cpu_count() or 4, 16)
 KILLZONE_MINUTES = 90       # look for lows in first 90 min
-MIN_GAIN_FROM_LOW = 20.0    # minimum gain to label as positive (FSM-realistic)
+MIN_GAIN_FROM_LOW = float(os.getenv("MIN_GAIN_FROM_LOW", "20.0"))  # positive-label move bar; honest labels use a LOWER bar (higher entry ask) — tune for ~15-20% positive rate
 LOW_PROXIMITY_PCT = 5.0     # candles within 5% of low are positive
+
+# HONEST-FILL LABELS (2026-08-06 — the fix). The OLD label = gain from the killzone LOW-close to the
+# PEAK-close (FANTASY: you can't buy at the low, you fill at the ASK a bar later after the run-up, and
+# you exit into the BID, not the peak close). HONEST relabels each entry candle by its REAL executable
+# P&L: buy at the ask HONEST_FILL_DELAY bars after the signal (never below the signal ask — no dip
+# discount), sell into the best forward BID. Trains the model to find trades that PAY at real fills,
+# not lows that bounce. Default ON. Mirrors the honest-fill harness _executable_entry_ask.
+HONEST_FILL_LABELS = os.getenv("HONEST_FILL_LABELS", "1") == "1"
+HONEST_FILL_DELAY = int(os.getenv("HONEST_FILL_DELAY", "1"))
 TRAILING_WINDOW = 10        # features from last 10 candles
 MIN_CANDLES = 30            # skip days with < 30 candles
 
@@ -241,33 +255,40 @@ def _worker_pattern(item):
     if low_price <= 0:
         return []
 
-    # Compute gain from low to subsequent peak
-    future = closes[low_idx:]
-    future_valid = future[~np.isnan(future) & (future > 0)]
-    if len(future_valid) < 5:
-        return []
-    peak_after = np.nanmax(future_valid)
-    gain_from_low = (peak_after / low_price - 1) * 100
+    # Day-level move detection. Keeps the near-a-low ENTRY discriminator (the real signal — you buy a
+    # dip that rallies); only the MOVE measurement changes between fantasy and honest.
+    if HONEST_FILL_LABELS:
+        # HONEST move: buy at the LOW candle's ASK (a bar later — the run-up you actually pay; never
+        # below the signal ask), sell into the best forward BID. Real executable upside from the low,
+        # not the fantasy low-close→peak-close. This is what "a tradeable move" means at real fills.
+        lj = min(low_idx + HONEST_FILL_DELAY, n - 1)
+        low_entry_ask = max(
+            asks[lj] if (asks[lj] > 0 and not np.isnan(asks[lj])) else 0.0,
+            asks[low_idx] if (asks[low_idx] > 0 and not np.isnan(asks[low_idx])) else 0.0,
+        )
+        fwd_bids = bids[low_idx + 1:]
+        fwd_bids = fwd_bids[~np.isnan(fwd_bids) & (fwd_bids > 0)]
+        if low_entry_ask <= 0 or len(fwd_bids) == 0:
+            return []
+        move_gain = (float(np.nanmax(fwd_bids)) / low_entry_ask - 1) * 100
+    else:
+        # LEGACY fantasy: gain from the killzone low-CLOSE to the peak-CLOSE.
+        future = closes[low_idx:]
+        future_valid = future[~np.isnan(future) & (future > 0)]
+        if len(future_valid) < 5:
+            return []
+        move_gain = (float(np.nanmax(future_valid)) / low_price - 1) * 100
+    has_move = move_gain >= MIN_GAIN_FROM_LOW
 
-    # Determine if this day has a tradeable move
-    has_move = gain_from_low >= MIN_GAIN_FROM_LOW
-
-    # Label candles
-    # Positive: within 5% of low AND day has a move
-    # Negative: everything else
     rows = []
 
-    # Sample every candle in the first 90 minutes (where we'd be scanning)
+    # Sample every candle in the first 90 minutes (where we'd be scanning). Positive = near the low AND
+    # the day had a (honest, when enabled) tradeable move — same discriminator, honest gain measure.
     for i in range(5, kz_end):
         if np.isnan(closes[i]) or closes[i] <= 0:
             continue
 
-        # Label
-        if has_move and low_price > 0:
-            dist_from_low = (closes[i] / low_price - 1) * 100
-            is_near_low = dist_from_low < LOW_PROXIMITY_PCT
-        else:
-            is_near_low = False
+        label = 1 if (has_move and (closes[i] / low_price - 1) * 100 < LOW_PROXIMITY_PCT) else 0
 
         features = compute_trailing_features(
             closes, volumes, ivs, deltas, thetas, underlyings,
@@ -276,10 +297,10 @@ def _worker_pattern(item):
         if features is None:
             continue
 
-        features["label"] = 1 if is_near_low else 0
+        features["label"] = label
         features["ticker"] = ticker
         features["date"] = dt
-        features["gain_from_low"] = round(gain_from_low, 1)
+        features["gain_from_low"] = round(move_gain, 1)
         rows.append(features)
 
     return rows
@@ -571,7 +592,8 @@ def train(tickers: list[str]):
 
 def main():
     parser = argparse.ArgumentParser(description="Train pattern-based entry model")
-    parser.add_argument("--ticker", type=str, help="Single ticker (default: all)")
+    parser.add_argument("--ticker", type=str,
+                        help="Ticker(s), comma-separated for a CLASS model (e.g. TQQQ,SOXL,SPXL); default all")
     parser.add_argument("--evaluate", action="store_true", help="Evaluate only")
     parser.add_argument("--start", type=str, default=None,
                         help="Only train on data >= this date (YYYY-MM-DD), e.g. last 2 months")
@@ -583,7 +605,8 @@ def main():
     TRAIN_START = args.start
     OUT_STEM = args.out
 
-    tickers = [args.ticker.upper()] if args.ticker else TICKERS
+    # comma-separated → a CLASS model pooled across related tickers (more data, better calibration)
+    tickers = [t.strip().upper() for t in args.ticker.split(",") if t.strip()] if args.ticker else TICKERS
 
     t0 = time.time()
     train(tickers)

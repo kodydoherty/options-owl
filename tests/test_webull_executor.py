@@ -749,23 +749,68 @@ class TestLiquidityAwareSizing:
     async def test_sizes_down_when_order_exceeds_book(self):
         executor = WebullExecutor(_chase_settings(WEBULL_ENTRY_LIQUIDITY_AWARE=True,
                                                   WEBULL_ENTRY_LIQUIDITY_MULT=2.0))
-        executor._fetch_ask_size = AsyncMock(return_value=5.0)  # book shows 5 @ ask
+        executor._fetch_book_depth = AsyncMock(return_value=(5.0, 5.0))  # 5 @ ask, 5 @ bid
         captured = {}
         self._submit_capture(executor, captured)
         res = await executor._place_buy_with_escalation(
             ticker="SPY", strike=733.0, expiry_date="2026-06-25",
             option_type="call", contracts=18, initial_limit=1.05,
         )
-        # 18 requested, cap = 5 × 2 = 10 → sized down to 10, and reported back
+        # 18 requested, cap = min(5,5) × 2 = 10 → sized down to 10, and reported back
         assert res.fill_status == "FILLED"
         assert res.filled_quantity == 10
         assert captured["contracts"] == 10
 
     @pytest.mark.asyncio
+    async def test_caps_by_thinner_BID_side(self):
+        """THE -75% IWM FIX: deep ask but thin bid → cap by the bid so the position can EXIT."""
+        executor = WebullExecutor(_chase_settings(WEBULL_ENTRY_LIQUIDITY_AWARE=True,
+                                                  WEBULL_ENTRY_LIQUIDITY_MULT=1.0))
+        executor._fetch_book_depth = AsyncMock(return_value=(50.0, 6.0))  # ask deep, BID thin
+        captured = {}
+        self._submit_capture(executor, captured)
+        res = await executor._place_buy_with_escalation(
+            ticker="IWM", strike=302.0, expiry_date="2026-08-05",
+            option_type="call", contracts=24, initial_limit=1.05,
+        )
+        # kody's exact case: entered 24 on deep ask, but bid depth 6 → cap min(50,6)×1 = 6 (exitable)
+        assert res.filled_quantity == 6
+        assert captured["contracts"] == 6
+
+    @pytest.mark.asyncio
+    async def test_caps_by_thinner_ASK_side(self):
+        executor = WebullExecutor(_chase_settings(WEBULL_ENTRY_LIQUIDITY_AWARE=True,
+                                                  WEBULL_ENTRY_LIQUIDITY_MULT=1.0))
+        executor._fetch_book_depth = AsyncMock(return_value=(4.0, 50.0))  # ASK thin, bid deep
+        captured = {}
+        self._submit_capture(executor, captured)
+        res = await executor._place_buy_with_escalation(
+            ticker="SPY", strike=733.0, expiry_date="2026-06-25",
+            option_type="call", contracts=18, initial_limit=1.05,
+        )
+        assert res.filled_quantity == 4  # min(4,50)×1
+        assert captured["contracts"] == 4
+
+    @pytest.mark.asyncio
+    async def test_one_side_missing_uses_available(self):
+        """If only the bid is present, size by it (still protects the exit)."""
+        executor = WebullExecutor(_chase_settings(WEBULL_ENTRY_LIQUIDITY_AWARE=True,
+                                                  WEBULL_ENTRY_LIQUIDITY_MULT=1.0))
+        executor._fetch_book_depth = AsyncMock(return_value=(None, 6.0))
+        captured = {}
+        self._submit_capture(executor, captured)
+        res = await executor._place_buy_with_escalation(
+            ticker="SPY", strike=733.0, expiry_date="2026-06-25",
+            option_type="call", contracts=18, initial_limit=1.05,
+        )
+        assert res.filled_quantity == 6
+        assert captured["contracts"] == 6
+
+    @pytest.mark.asyncio
     async def test_no_sizedown_when_order_fits_book(self):
         executor = WebullExecutor(_chase_settings(WEBULL_ENTRY_LIQUIDITY_AWARE=True,
                                                   WEBULL_ENTRY_LIQUIDITY_MULT=2.0))
-        executor._fetch_ask_size = AsyncMock(return_value=25.0)  # plenty of depth
+        executor._fetch_book_depth = AsyncMock(return_value=(25.0, 25.0))  # plenty both sides
         captured = {}
         self._submit_capture(executor, captured)
         res = await executor._place_buy_with_escalation(
@@ -778,7 +823,7 @@ class TestLiquidityAwareSizing:
     @pytest.mark.asyncio
     async def test_flag_off_never_sizes_down(self):
         executor = WebullExecutor(_chase_settings(WEBULL_ENTRY_LIQUIDITY_AWARE=False))
-        executor._fetch_ask_size = AsyncMock(return_value=1.0)  # thin book, but flag off
+        executor._fetch_book_depth = AsyncMock(return_value=(1.0, 1.0))  # thin book, but flag off
         captured = {}
         self._submit_capture(executor, captured)
         res = await executor._place_buy_with_escalation(
@@ -790,9 +835,9 @@ class TestLiquidityAwareSizing:
 
     @pytest.mark.asyncio
     async def test_unknown_size_keeps_full_order(self):
-        """No fresh sized snapshot → fall back to the full requested size (current behaviour)."""
+        """No fresh sized snapshot (both sides None) → fall back to full requested size."""
         executor = WebullExecutor(_chase_settings(WEBULL_ENTRY_LIQUIDITY_AWARE=True))
-        executor._fetch_ask_size = AsyncMock(return_value=None)
+        executor._fetch_book_depth = AsyncMock(return_value=(None, None))
         captured = {}
         self._submit_capture(executor, captured)
         res = await executor._place_buy_with_escalation(
@@ -807,7 +852,7 @@ class TestLiquidityAwareSizing:
         executor = WebullExecutor(_chase_settings(WEBULL_ENTRY_LIQUIDITY_AWARE=True,
                                                   WEBULL_ENTRY_LIQUIDITY_MULT=1.0,
                                                   WEBULL_ENTRY_MIN_CONTRACTS=3))
-        executor._fetch_ask_size = AsyncMock(return_value=1.0)  # 1 × 1.0 = 1, floored to 3
+        executor._fetch_book_depth = AsyncMock(return_value=(1.0, 1.0))  # 1 × 1.0 = 1, floored to 3
         captured = {}
         self._submit_capture(executor, captured)
         res = await executor._place_buy_with_escalation(
@@ -936,6 +981,7 @@ def _exit_settings(**overrides):
         "WEBULL_EXIT_AGGRESS_PCT": 2.0,
         "WEBULL_EXIT_STEP_PCT": 6.0,
         "WEBULL_EXIT_MAX_DISCOUNT_PCT": 25.0,
+        "ENABLE_EXIT_PARTIAL_PEEL": False,   # default off; peel tests opt in explicitly
     }
     defaults.update(overrides)
     return _make_settings(**defaults)
@@ -1054,6 +1100,119 @@ class TestExitChase:
         src = inspect.getsource(WebullExecutor.place_option_order)
         assert "ENABLE_FAST_EXIT_CHASE" in src
         assert "_place_sell_with_escalation" in src
+
+
+class TestExitPartialPeel:
+    """ENABLE_EXIT_PARTIAL_PEEL (2026-08-05, the -75% IWM fix): when the bid depth is smaller than
+    the order, sell what the book takes and IMMEDIATELY re-chase the REMAINDER in the next rung,
+    rather than bleed across slow 5s monitor cycles. Strict safety: only ever order the remaining
+    quantity, only reduce it by a KNOWN filled amount, and never blind-peel on an unknown fill."""
+
+    async def _run(self, executor, *, contracts, wait_seq, filled_seq, confirm="CANCELLED"):
+        """wait_seq: fill_status per rung. filled_seq: _get_filled_quantity per rung (may be None)."""
+        submits = []  # (limit, quantity) per submit — quantity proves we never oversell
+
+        async def fake_submit(payload):
+            submits.append((float(payload[0]["limit_price"]), int(payload[0]["quantity"])))
+            return (f"OID{len(submits)}", {}, None)
+
+        w = {"i": 0}
+
+        async def fake_wait(coid, timeout_seconds, poll_interval):
+            i = w["i"]; w["i"] += 1
+            return wait_seq[i] if i < len(wait_seq) else "SUBMITTED"
+
+        f = {"i": 0}
+
+        async def fake_filled(coid):
+            i = f["i"]; f["i"] += 1
+            return filled_seq[i] if i < len(filled_seq) else None
+
+        executor._fetch_bid = AsyncMock(return_value=1.00)
+        executor._submit_order_payload = fake_submit
+        executor._wait_for_fill = fake_wait
+        executor._get_filled_quantity = fake_filled
+        executor._confirm_cancelled = AsyncMock(return_value=confirm)
+        executor.cancel_order = AsyncMock(return_value=True)
+        res = await executor._place_sell_with_escalation(
+            ticker="IWM", strike=302.0, expiry_date="2026-08-05",
+            option_type="call", contracts=contracts, initial_limit=1.00,
+        )
+        return res, submits
+
+    @pytest.mark.asyncio
+    async def test_peels_remainder_until_fully_out(self):
+        """24 with bid depth 6 → 6+6+6+6 across rungs → fully out; each order ≤ remaining."""
+        ex = WebullExecutor(_exit_settings(ENABLE_EXIT_PARTIAL_PEEL=True, WEBULL_EXIT_FILL_ATTEMPTS=6))
+        res, submits = await self._run(
+            ex, contracts=24,
+            wait_seq=["PARTIAL", "PARTIAL", "PARTIAL", "FILLED"],
+            filled_seq=[6, 6, 6],  # last rung FILLED takes the remaining 6
+        )
+        assert res.fill_status == "FILLED"
+        assert res.filled_quantity is None  # all 24 sold → None = "full requested"
+        # ordered quantities strictly walk DOWN the remaining — never oversell
+        assert [q for _, q in submits] == [24, 18, 12, 6]
+
+    @pytest.mark.asyncio
+    async def test_peel_off_returns_after_first_partial(self):
+        """Legacy: peel OFF → sell what fills on rung 1, return, monitor finishes the tail."""
+        ex = WebullExecutor(_exit_settings(ENABLE_EXIT_PARTIAL_PEEL=False))
+        res, submits = await self._run(
+            ex, contracts=24, wait_seq=["PARTIAL"], filled_seq=[6])
+        assert res.fill_status == "PARTIAL"
+        assert res.filled_quantity == 6
+        assert len(submits) == 1  # did NOT re-chase the remainder
+
+    @pytest.mark.asyncio
+    async def test_peel_incomplete_returns_partial_total(self):
+        """Peel some, then the book dries up → return the partial total (not a miss)."""
+        ex = WebullExecutor(_exit_settings(ENABLE_EXIT_PARTIAL_PEEL=True, WEBULL_EXIT_FILL_ATTEMPTS=4))
+        res, submits = await self._run(
+            ex, contracts=24,
+            wait_seq=["PARTIAL", "SUBMITTED", "SUBMITTED", "SUBMITTED"],
+            filled_seq=[6])
+        assert res.fill_status == "PARTIAL"
+        assert res.filled_quantity == 6          # 6 peeled, 18 left for the monitor
+        assert submits[0][1] == 24 and submits[1][1] == 18   # remainder re-chased at 18
+
+    @pytest.mark.asyncio
+    async def test_unknown_fill_qty_halts_no_oversell(self):
+        """SAFETY: PARTIAL but qty unknown → STOP (never re-order the full remaining = oversell)."""
+        ex = WebullExecutor(_exit_settings(ENABLE_EXIT_PARTIAL_PEEL=True))
+        res, submits = await self._run(
+            ex, contracts=24, wait_seq=["PARTIAL", "FILLED"], filled_seq=[None])
+        assert res.fill_status == "PARTIAL"
+        assert len(submits) == 1   # halted — did NOT submit a second (potentially oversell) order
+
+    @pytest.mark.asyncio
+    async def test_full_fill_one_rung_reports_none(self):
+        ex = WebullExecutor(_exit_settings(ENABLE_EXIT_PARTIAL_PEEL=True))
+        res, submits = await self._run(ex, contracts=24, wait_seq=["FILLED"], filled_seq=[])
+        assert res.fill_status == "FILLED"
+        assert res.filled_quantity is None
+        assert submits == [(0.98, 24)]
+
+    @pytest.mark.asyncio
+    async def test_all_miss_zero_filled_is_miss(self):
+        ex = WebullExecutor(_exit_settings(ENABLE_EXIT_PARTIAL_PEEL=True))
+        res, submits = await self._run(
+            ex, contracts=24, wait_seq=["SUBMITTED"] * 4, filled_seq=[])
+        assert res.success is False
+        assert res.fill_status in ("SUBMITTED", "FAILED")
+
+    @pytest.mark.asyncio
+    async def test_peel_never_orders_more_than_remaining(self):
+        """Oversell invariant across a messy sequence — every order quantity ≤ prior remaining."""
+        ex = WebullExecutor(_exit_settings(ENABLE_EXIT_PARTIAL_PEEL=True, WEBULL_EXIT_FILL_ATTEMPTS=8))
+        res, submits = await self._run(
+            ex, contracts=20,
+            wait_seq=["PARTIAL", "SUBMITTED", "PARTIAL", "FILLED"],
+            filled_seq=[5, 5])   # rung1 sells 5 (→15), rung2 miss, rung3 sells 5 (→10), rung4 fills 10
+        qtys = [q for _, q in submits]
+        assert qtys == [20, 15, 15, 10]        # never exceeds remaining; walks down
+        assert res.fill_status == "FILLED"
+        assert res.filled_quantity is None     # all 20 out
 
 
 class TestFetchBidVenueFirst:

@@ -203,6 +203,10 @@ def collect(is_put, wl):
                             # Needed for integer-contract sizing in the portfolio-size sweep (the whale's
                             # total "premium" above is a different thing). 2026-07-15.
                             "entry_prem": round(float(entry_exec), 2), "dte": int(dte0),
+                            # run-up %: how far the option ran between the whale's signal (pp[0]) and our
+                            # honest fill (entry_exec). This is the slippage tax — a fill-gate skips signals
+                            # that already ran away (>N%), the cheap-OTM sweeps that bled at honest fills.
+                            "runup_pct": round((float(entry_exec) / float(pp[0]) - 1) * 100, 1),
                             "strike": float(strike), "spot": round(float(spot), 2),
                             "iv": iv, "vega": vega, "delta": delta_g,
                             "conv_mult": round(mult, 2), "ret_pct": round(ret, 1),
@@ -254,6 +258,34 @@ def main():
                  f"maxDD ${_dd(byday):+,.0f} | {len(df)} trades")
     L.append(f"\nConviction sizing lift: **${df['conv_pnl'].sum()-df['flat_pnl'].sum():+,.0f}** "
              f"(PF {_pf(df['flat_pnl']):.2f} → {_pf(df['conv_pnl']):.2f}) on equal capital.\n")
+
+    # ── FILL-GATED FLOW (2026-08-06) ── strip the slippage-fragile subset that bled at honest fills:
+    # skip signals that already ran up > FLOW_MAX_RUNUP% (we don't chase what moved), cheap options
+    # < FLOW_MIN_ENTRY_PREM (cheap-OTM sweeps take the biggest run-up tax), and low-|delta| (deep-OTM
+    # lottery). Keep the fill-robust core. Env-configurable so the gate can be swept.
+    import os as _os
+    mx = float(_os.getenv("FLOW_MAX_RUNUP_PCT", "10"))
+    mp = float(_os.getenv("FLOW_MIN_ENTRY_PREM", "1.0"))
+    md = float(_os.getenv("FLOW_MIN_DELTA", "0.40"))
+    gated = df[(df["runup_pct"] <= mx) & (df["entry_prem"] >= mp) & (df["delta"].abs() >= md)].copy()
+    dropped = len(df) - len(gated)
+    L.append("## FILL-GATED FLOW (the honest-fill recovery test)")
+    L.append(f"Gate: run-up ≤ {mx:.0f}%, entry premium ≥ ${mp:.2f}, |delta| ≥ {md:.2f}. "
+             f"Kept **{len(gated)}/{len(df)}** trades (dropped {dropped} slippage-fragile).\n")
+    L.append("| book | flat P&L | PF | WR | trades |")
+    L.append("|---|---|---|---|---|")
+    L.append(f"| ALL flow (honest) | ${df['flat_pnl'].sum():+,.0f} | {_pf(df['flat_pnl']):.2f} | "
+             f"{(df['flat_pnl']>0).mean()*100:.0f}% | {len(df)} |")
+    if len(gated):
+        gf = gated["ret_pct"] / 100 * SLEEVE
+        L.append(f"| **FILL-GATED** | **${gf.sum():+,.0f}** | **{_pf(gf):.2f}** | "
+                 f"{(gf>0).mean()*100:.0f}% | {len(gated)} |")
+        L.append(f"\n**Recovery: ${gf.sum()-df['flat_pnl'].sum():+,.0f}** vs all-flow — the fill-gate "
+                 f"{'RECOVERS real edge' if gf.sum()>0 and gf.sum()>df['flat_pnl'].sum() else 'does not save it'}.\n")
+        # what the gate dropped (should be net-negative = the bleeders)
+        drop = df[~df.index.isin(gated.index)]
+        L.append(f"- Dropped subset flat P&L: ${drop['flat_pnl'].sum():+,.0f} over {len(drop)} trades "
+                 f"(the slippage-fragile bleeders the gate removes)\n")
 
     L.append("## Per-ticker (conviction-sized)")
     L.append("| ticker | side | n | PF | total $ | new? |")
