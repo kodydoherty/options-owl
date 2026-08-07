@@ -371,6 +371,19 @@ services:
       # V7 gate-volume fix (multi-value sweep 2026-06-13, 3 OOS windows): pattern 0.74→0.62
       # at entry 0.80. ~1.8× volume (1.7→3.1 trades/day), PF holds ~3.8, DD 6.5→10.
       - ML_PATTERN_THRESHOLD=0.62
+      # ML premium cap (2026-08-07). dennis is NOT a passive control — it is live money
+      # and has lost every month, so it gets protection too. Real fills: >=$3 contracts
+      # were 31 trades (16% of book) for -$2,425 at 16% WR, robust 3/3 months, 3/3
+      # sources, 6/6 tickers. Expensive contracts carry the LOWEST MFE (13.4%) so they
+      # cannot clear spread+stops. Kept SEPARATE from kody's Q1 block (they overlap 62%)
+      # so each bot stays a single-variable test against its own history. Revert = 6.0.
+      - ML_PREMIUM_CAP=3.0
+      # runner_v1 Q1 floor — the BIGGER single lever of the two ($3,735 of the $4,317
+      # both filters avoid = 87%, vs $3,495 for the cap alone). dennis runs BOTH for
+      # maximum protection since it is live money that has lost every month; kody runs
+      # Q1 only, so the kody-vs-dennis delta is the cap's MARGINAL value (~$582/10wk,
+      # likely too small to resolve — protection is the point here, not the experiment).
+      - RUNNER_V1_MIN_P=0.39
       # Call-side ticker expansion LIVE 2026-07-20: ORCL/INTC/TSM/ARM/SMH (+$66k) + USO/SLV/GDX (+$20.6k)
       # validated 14mo CALLS, PF 2.77/2.91. Adds them to the ML pattern scan (calls only; put-excluded).
       - ENABLE_EXPANSION_TICKERS=true
