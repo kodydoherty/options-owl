@@ -1617,6 +1617,20 @@ class WebullExecutor:
             limit = _round_option_price(limit, "SELL")
             _sell_quote[0] = float(bid) if bid else None
             _sell_limit[0] = float(limit)
+            # DIVERGENCE ALARM (2026-08-10): the ladder re-prices off its OWN bid fetch and
+            # ignores the caller's initial_limit. On AAPL #677 paper_trader computed a
+            # $0.70 fresh_bid while this rung priced off $0.60 and submitted $0.59 — a 16%
+            # under-price that only escaped costing us because the venue filled at $0.70.
+            # Surface it loudly so a systemic disagreement is visible rather than inferred.
+            if initial_limit and bid and initial_limit > 0:
+                _div = (bid - initial_limit) / initial_limit * 100.0
+                if abs(_div) >= 8.0:
+                    logger.warning(
+                        f"EXIT_PRICE_DIVERGENCE: {ticker} ${strike} {option_type} — caller "
+                        f"priced ${initial_limit:.2f}, ladder bid ${bid:.2f} ({_div:+.1f}%), "
+                        f"submitting ${limit:.2f}. Under-pricing a SELL risks filling below "
+                        f"the real market."
+                    )
             if limit < 0.01:
                 limit = 0.01
 
@@ -1921,14 +1935,27 @@ class WebullExecutor:
         a fast-diving 0DTE.
         """
         # 1) WEBULL venue quote — authoritative for what fills.
+        # SOURCE ATTRIBUTION (2026-08-10): log which source answered and with what.
+        # Without it, a disagreement between this and paper_trader's fresh_bid is
+        # undiagnosable — AAPL #677 priced its rung off $0.60 while paper_trader had
+        # just computed $0.70 for the same contract, and there was no way to tell a
+        # genuine venue move from a silent fallback. INFO, not debug: this is the
+        # sell path and the logs are the only record once a session ages out.
         try:
             quote = await self.get_option_quote(ticker, strike, expiry_date, option_type)
             if quote and quote.get("bid"):
                 bid = float(quote["bid"])
                 if bid > 0:
+                    logger.info(
+                        f"BID_SRC: {ticker} ${strike} {option_type} = ${bid:.2f} "
+                        f"[venue] (ask=${float(quote.get('ask') or 0):.2f})"
+                    )
                     return bid
+            logger.info(f"BID_SRC: {ticker} ${strike} {option_type} — venue returned no bid "
+                        f"(quote={'none' if not quote else 'no-bid'}) → falling back")
         except Exception as exc:
-            logger.debug(f"_fetch_bid venue quote failed for {ticker} ${strike}: {exc}")
+            logger.warning(f"BID_SRC: {ticker} ${strike} {option_type} — venue quote FAILED "
+                           f"({exc}) → falling back")
 
         # 2) Harvester live Redis snapshot (fast fallback, freshness-guarded).
         if getattr(self.settings, "WEBULL_ENTRY_USE_LIVE_QUOTE", True):
@@ -1943,10 +1970,19 @@ class WebullExecutor:
                 if snap:
                     bid = float(snap.get("bid") or 0)
                     ts = float(snap.get("t") or 0)
-                    if bid > 0 and ts > 0 and (time.time() - ts) <= max_age:
+                    age = time.time() - ts if ts > 0 else -1
+                    if bid > 0 and ts > 0 and age <= max_age:
+                        logger.info(
+                            f"BID_SRC: {ticker} ${strike} {option_type} = ${bid:.2f} "
+                            f"[redis age={age:.0f}s]"
+                        )
                         return bid
+                    logger.info(f"BID_SRC: {ticker} ${strike} {option_type} — redis snapshot "
+                                f"rejected (bid={bid}, age={age:.0f}s > {max_age:.0f}s)")
             except Exception as exc:
-                logger.debug(f"_fetch_bid redis miss for {ticker} ${strike} {option_type}: {exc}")
+                logger.warning(f"BID_SRC: {ticker} ${strike} {option_type} — redis miss ({exc})")
+        logger.warning(f"BID_SRC: {ticker} ${strike} {option_type} — NO BID from any source; "
+                       f"the sell rung will fall back to the caller's price")
         return None
 
     async def _wait_for_fill(
