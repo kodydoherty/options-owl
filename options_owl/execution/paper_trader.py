@@ -2587,6 +2587,17 @@ class PaperTrader:
                     )],
                     context=f"reset sell retry for trade #{trade_id}",
                 )
+                # Exit slippage telemetry, bound BEFORE either UPDATE branch below (rule #1).
+                # The executor captures these during the sell chase; without this they were
+                # captured and then dropped — the EXIT half of the execution measurement,
+                # which is the half that matters since entry fills already measure clean
+                # (+0.04% vs signal) while exits are where the decision-vs-bid gap lives.
+                _xsl: tuple = (
+                    getattr(result, "quote_at_decision", None),
+                    getattr(result, "limit_submitted", None),
+                    getattr(result, "rungs_used", None),
+                    getattr(result, "seconds_to_fill", None),
+                )
                 # Store real exit fill price + recompute P&L from real fills.
                 # Re-read entry fill from DB — the trade dict may be stale if
                 # the entry fill was written in the same monitor cycle.
@@ -2621,10 +2632,12 @@ class PaperTrader:
                         # authoritative value, no new API call.
                         ops = [(
                             "UPDATE paper_trades SET webull_exit_fill_price = ?, "
-                            "webull_exit_order_id = ?, exit_premium = ?, pnl_dollars = ?, pnl_pct = ? "
+                            "webull_exit_order_id = ?, exit_premium = ?, pnl_dollars = ?, pnl_pct = ?, "
+                            "exit_quote_at_decision = ?, exit_limit_submitted = ?, "
+                            "exit_rungs_used = ?, exit_seconds_to_fill = ? "
                             "WHERE id = ?",
                             (exit_fill_price, result.order_id, exit_fill_price, real_pnl,
-                             real_pnl_pct, trade_id),
+                             real_pnl_pct, *_xsl, trade_id),
                         )]
                         # Also update scaleout child row with real exit fill
                         if child_trade_id:
@@ -2651,8 +2664,11 @@ class PaperTrader:
                             self.db_path,
                             [(
                                 "UPDATE paper_trades SET webull_exit_fill_price = ?, "
-                                "webull_exit_order_id = ?, exit_premium = ? WHERE id = ?",
-                                (exit_fill_price, result.order_id, exit_fill_price, trade_id),
+                                "webull_exit_order_id = ?, exit_premium = ?, "
+                                "exit_quote_at_decision = ?, exit_limit_submitted = ?, "
+                                "exit_rungs_used = ?, exit_seconds_to_fill = ? WHERE id = ?",
+                                (exit_fill_price, result.order_id, exit_fill_price,
+                                 *_xsl, trade_id),
                             )],
                             context=f"webull exit fill for trade #{trade_id}",
                         )

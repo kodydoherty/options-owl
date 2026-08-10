@@ -299,3 +299,43 @@ class TestSizingAuditInitialisation:
         for col in ("p_runner", "size_conv_mult", "size_entry_delta"):
             assert f'"{col} REAL"' in src, f"{col} migration missing"
             assert col in src, f"{col} not persisted"
+
+
+class TestSlippageTelemetryPersisted:
+    """BOTH sides must be written. The entry side shipped 2026-08-07 and the EXIT side
+    was silently missed — the executor captured it and paper_trader dropped it, so the
+    first live session recorded entry telemetry and empty exit columns. Exits are the
+    half that matters (entry fills measure clean at +0.04% vs signal; the decision-vs-bid
+    gap lives on the exit)."""
+
+    def test_entry_side_is_persisted(self):
+        import inspect
+
+        from options_owl.execution import paper_trader
+
+        src = inspect.getsource(paper_trader)
+        for col in ("entry_quote_at_decision", "entry_limit_submitted",
+                    "entry_rungs_used", "entry_seconds_to_fill"):
+            assert f"{col} = ?" in src, f"{col} never written on the entry path"
+
+    def test_exit_side_is_persisted(self):
+        import inspect
+
+        from options_owl.execution import paper_trader
+
+        src = inspect.getsource(paper_trader)
+        for col in ("exit_quote_at_decision", "exit_limit_submitted",
+                    "exit_rungs_used", "exit_seconds_to_fill"):
+            assert f"{col} = ?" in src, (
+                f"{col} never written on the exit path — the executor captures it but "
+                "paper_trader is dropping it (regression of the 2026-08-10 gap)"
+            )
+
+    def test_executor_actually_supplies_them(self):
+        """Guard the source: OrderResult must carry the fields, or both writes bind None."""
+        from options_owl.execution.webull_executor import OrderResult
+
+        r = OrderResult(success=True)
+        for f in ("quote_at_decision", "limit_submitted", "fill_price",
+                  "rungs_used", "seconds_to_fill"):
+            assert hasattr(r, f), f"OrderResult lost {f}"
