@@ -70,7 +70,16 @@ TICKERS = [
 ]
 
 N_WORKERS = min(os.cpu_count() or 4, 16)
-KILLZONE_MINUTES = 90       # look for lows in first 90 min
+# Killzone WINDOW (2026-08-10). Was a fixed "first 90 minutes"; now a [start, end) range so
+# an afternoon model can be trained without changing what the morning model learns.
+# WHY THIS MATTERS: the label is "is this candle near THE KILLZONE LOW, ahead of a real move".
+# Simply widening the end silently redefines "the low" as the whole day's low — for a 2pm
+# candle that low may have printed at 9:45, which dilutes the near-a-low discriminator that
+# the 2026-08-06 honest-label work established is the binding signal. A separate PM window
+# keeps the discriminator intact and just relocates it.
+# Defaults reproduce the live model exactly (5-90).
+KILLZONE_START_MIN = int(os.getenv("KILLZONE_START_MIN", "5"))
+KILLZONE_MINUTES = int(os.getenv("KILLZONE_MINUTES", "90"))  # end of the window (exclusive)
 MIN_GAIN_FROM_LOW = float(os.getenv("MIN_GAIN_FROM_LOW", "20.0"))  # positive-label move bar; honest labels use a LOWER bar (higher entry ask) — tune for ~15-20% positive rate
 LOW_PROXIMITY_PCT = 5.0     # candles within 5% of low are positive
 
@@ -239,14 +248,17 @@ def _worker_pattern(item):
     if opening_price <= 0:
         return []
 
-    # Find the killzone low (first 90 minutes)
+    # Find the killzone low WITHIN the configured window (not necessarily from minute 0).
     kz_end = min(KILLZONE_MINUTES, n)
-    kz = closes[:kz_end]
+    kz_start = max(0, min(KILLZONE_START_MIN, kz_end - 1))
+    kz = closes[kz_start:kz_end]
     valid_mask = ~np.isnan(kz) & (kz > 0)
     if valid_mask.sum() < 10:
         return []
 
-    valid_indices = np.where(valid_mask)[0]
+    # +kz_start so indices stay absolute (minutes since open), which is what the
+    # forward-move measurement and the minutes_since_open FEATURE both depend on.
+    valid_indices = np.where(valid_mask)[0] + kz_start
     valid_values = kz[valid_mask]
     low_rel = np.argmin(valid_values)
     low_idx = valid_indices[low_rel]
@@ -284,7 +296,7 @@ def _worker_pattern(item):
 
     # Sample every candle in the first 90 minutes (where we'd be scanning). Positive = near the low AND
     # the day had a (honest, when enabled) tradeable move — same discriminator, honest gain measure.
-    for i in range(5, kz_end):
+    for i in range(max(5, kz_start), kz_end):
         if np.isnan(closes[i]) or closes[i] <= 0:
             continue
 
@@ -385,7 +397,7 @@ def train(tickers: list[str]):
     print("PATTERN-BASED ENTRY MODEL")
     print(f"  Tickers: {len(tickers)}")
     print(f"  Workers: {N_WORKERS}")
-    print(f"  Kill zone: {KILLZONE_MINUTES} min")
+    print(f"  Kill zone: minutes {KILLZONE_START_MIN}-{KILLZONE_MINUTES}")
     print(f"  Min gain from low: {MIN_GAIN_FROM_LOW}%")
     print(f"  Low proximity: {LOW_PROXIMITY_PCT}%")
     print(f"{'=' * 70}\n")
@@ -576,6 +588,7 @@ def train(tickers: list[str]):
         "n_test": int(len(X_test)),
         "n_positive_train": int(y_train.sum()),
         "n_positive_test": int(y_test.sum()),
+        "killzone_start_min": KILLZONE_START_MIN,
         "killzone_minutes": KILLZONE_MINUTES,
         "min_gain_pct": MIN_GAIN_FROM_LOW,
         "low_proximity_pct": LOW_PROXIMITY_PCT,

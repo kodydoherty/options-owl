@@ -339,3 +339,69 @@ class TestSlippageTelemetryPersisted:
         for f in ("quote_at_decision", "limit_submitted", "fill_price",
                   "rungs_used", "seconds_to_fill"):
             assert hasattr(r, f), f"OrderResult lost {f}"
+
+
+class TestSellLadderPricingInvariants:
+    """Characterisation tests for the exit ladder's price discovery.
+
+    2026-08-11: on AAPL #677 paper_trader computed a $0.70 fresh_bid and passed it as
+    initial_limit; the ladder re-fetched its own bid ($0.60) and submitted $0.59 — a 16%
+    under-price. It filled at $0.70 so nothing was lost, but on a thinner book that fills
+    at the low limit. dennis, same contract same second, agreed exactly ($0.72/$0.72).
+
+    Root cause is redundant independent price discovery: get_option_quote caches for 3s,
+    so a call landing inside that window agrees and one landing outside re-fetches a moved
+    price. kody sees ~2x the rate-limiting (16 vs 8 429s), which is what pushes it out.
+
+    These tests pin the CURRENT behaviour rather than assert a fix, so that when the fix
+    lands (likely a floor on how far rung 1 may price below the caller) the change is
+    deliberate and visible in a diff, not silent.
+    """
+
+    def test_quote_cache_ttl_is_short_and_explicit(self):
+        """The 3s TTL is load-bearing: it is what makes two components agree or not."""
+        from options_owl.config.settings import Settings
+        from options_owl.execution.webull_executor import WebullExecutor
+
+        ex = WebullExecutor(Settings(DISCORD_TOKEN="x", _env_file=None))
+        assert hasattr(ex, "_quote_cache_ttl"), "quote cache TTL removed"
+        assert 0 < ex._quote_cache_ttl <= 10, (
+            f"quote cache TTL is {ex._quote_cache_ttl}s — a long TTL would make the exit "
+            "ladder price off a stale quote; a zero TTL removes the only thing currently "
+            "keeping paper_trader and the ladder consistent"
+        )
+
+    def test_ladder_seeds_from_the_callers_price(self):
+        """base_bid must START from initial_limit, so the caller's price is the fallback
+        whenever the ladder's own fetch fails."""
+        import inspect
+
+        from options_owl.execution.webull_executor import WebullExecutor
+
+        src = inspect.getsource(WebullExecutor._place_sell_with_escalation)
+        assert "base_bid = initial_limit" in src, (
+            "the sell ladder no longer seeds from the caller's price — if its own bid "
+            "fetch fails it would have no sane fallback"
+        )
+
+    def test_divergence_alarm_is_present(self):
+        """The >=8% caller-vs-ladder divergence warning must survive refactors — it is the
+        only signal that this class of mispricing is happening at all."""
+        import inspect
+
+        from options_owl.execution.webull_executor import WebullExecutor
+
+        src = inspect.getsource(WebullExecutor._place_sell_with_escalation)
+        assert "EXIT_PRICE_DIVERGENCE" in src, "divergence alarm removed"
+
+    def test_bid_source_is_attributed(self):
+        """Every _fetch_bid return must name its source. Without it, a venue-vs-redis
+        disagreement is undiagnosable (the 2026-08-11 investigation dead-ended on this)."""
+        import inspect
+
+        from options_owl.execution.webull_executor import WebullExecutor
+
+        src = inspect.getsource(WebullExecutor._fetch_bid)
+        assert src.count("BID_SRC") >= 3, (
+            "BID_SRC attribution missing from one or more _fetch_bid return paths"
+        )

@@ -3931,6 +3931,7 @@ def main():
     global ENABLE_CORRELATION_CAP, ENABLE_DIRECTIONAL_REGIME, ENABLE_PUT_BEARISH_CONFIRM
     global MIN_PREMIUM_FLOOR, MIN_SCORE, OPENING_BUFFER_MIN, TOD_EARLY_MIN_SCORE
     global PREMIUM_CAP, PREMIUM_CAP_BY_TICKER, FIXED_SIZING_BALANCE, SIZING_BALANCE_CAP
+    global SCAN_END_MIN
     global SCALP_THRESH_OVERRIDE, SOFT_KEEP_OVERRIDE, ADAPTIVE_MULT_OVERRIDE
     global THETA_MIN_OVERRIDE, BREAKEVEN_TRIGGER_OVERRIDE, SCALEOUT_TRIGGER_OVERRIDE, V7_EXITS_OVERRIDE
     global LOCK_REENTER, ALLOW_REENTRIES, REENTRY_COOLDOWN_MIN
@@ -3997,6 +3998,11 @@ def main():
     # ── Gate range sweeps (defaults = current hardcoded values) ──
     parser.add_argument("--min-premium", type=float, default=MIN_PREMIUM_FLOOR,
                         help=f"Min premium floor (default: {MIN_PREMIUM_FLOOR})")
+    parser.add_argument("--scan-end-min", type=int, default=None,
+                        help="Minutes after open that CALL scanning stops (prod=90, i.e. "
+                             "11:00 ET). Live fills show the 09-10 hour is the book's worst "
+                             "(-$3,879) and 10-11 the only positive (+$376), so both edges "
+                             "of this window are worth testing.")
     parser.add_argument("--premium-cap", type=float, default=None,
                         help="Signal-level premium cap $ (prod=6.0). Live data says >=$3 is "
                              "where ml_sourcing loses ~half its money.")
@@ -4188,6 +4194,8 @@ def main():
     ALLOW_REENTRIES = not args.no_reentries
 
     # ---- prod-parity sizing + premium-cap wiring (2026-08-07) ----
+    if args.scan_end_min is not None:
+        SCAN_END_MIN = int(args.scan_end_min)
     if args.premium_cap is not None:
         PREMIUM_CAP = float(args.premium_cap)
     if args.premium_cap_per_ticker:
