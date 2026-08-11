@@ -429,7 +429,8 @@ async def init_paper_db(path: str) -> None:
             "entry_limit_submitted REAL",    # limit we actually sent
             "entry_rungs_used INTEGER",      # chase rungs consumed (1 = first try)
             "entry_seconds_to_fill REAL",
-            "exit_quote_at_decision REAL",   # bid the exit limit was priced off
+            "exit_caller_price REAL",        # price PAPER_TRADER computed (before the ladder re-fetched)
+            "exit_quote_at_decision REAL",   # bid the LADDER priced its rung off
             "exit_limit_submitted REAL",
             "exit_rungs_used INTEGER",
             "exit_seconds_to_fill REAL",
@@ -2592,6 +2593,13 @@ class PaperTrader:
                 # captured and then dropped — the EXIT half of the execution measurement,
                 # which is the half that matters since entry fills already measure clean
                 # (+0.04% vs signal) while exits are where the decision-vs-bid gap lives.
+                # `sell_price` is what THIS function computed and passed down as
+                # initial_limit. Storing it alongside the ladder's own bid is what lets us
+                # ask the question that decides the fix: when the two disagree, which one
+                # was closer to the ACTUAL fill? On AAPL #677 the caller was right ($0.70
+                # vs the ladder's $0.60, filled $0.70) — but that is n=1 read out of a log
+                # line, not something we can aggregate. Now it is.
+                _caller_px = float(sell_price) if sell_price else None
                 _xsl: tuple = (
                     getattr(result, "quote_at_decision", None),
                     getattr(result, "limit_submitted", None),
@@ -2634,10 +2642,11 @@ class PaperTrader:
                             "UPDATE paper_trades SET webull_exit_fill_price = ?, "
                             "webull_exit_order_id = ?, exit_premium = ?, pnl_dollars = ?, pnl_pct = ?, "
                             "exit_quote_at_decision = ?, exit_limit_submitted = ?, "
-                            "exit_rungs_used = ?, exit_seconds_to_fill = ? "
+                            "exit_rungs_used = ?, exit_seconds_to_fill = ?, "
+                            "exit_caller_price = ? "
                             "WHERE id = ?",
                             (exit_fill_price, result.order_id, exit_fill_price, real_pnl,
-                             real_pnl_pct, *_xsl, trade_id),
+                             real_pnl_pct, *_xsl, _caller_px, trade_id),
                         )]
                         # Also update scaleout child row with real exit fill
                         if child_trade_id:
@@ -2666,9 +2675,10 @@ class PaperTrader:
                                 "UPDATE paper_trades SET webull_exit_fill_price = ?, "
                                 "webull_exit_order_id = ?, exit_premium = ?, "
                                 "exit_quote_at_decision = ?, exit_limit_submitted = ?, "
-                                "exit_rungs_used = ?, exit_seconds_to_fill = ? WHERE id = ?",
+                                "exit_rungs_used = ?, exit_seconds_to_fill = ?, "
+                                "exit_caller_price = ? WHERE id = ?",
                                 (exit_fill_price, result.order_id, exit_fill_price,
-                                 *_xsl, trade_id),
+                                 *_xsl, _caller_px, trade_id),
                             )],
                             context=f"webull exit fill for trade #{trade_id}",
                         )

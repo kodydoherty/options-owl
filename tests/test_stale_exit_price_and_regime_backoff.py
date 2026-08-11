@@ -405,3 +405,32 @@ class TestSellLadderPricingInvariants:
         assert src.count("BID_SRC") >= 3, (
             "BID_SRC attribution missing from one or more _fetch_bid return paths"
         )
+
+    def test_caller_price_is_persisted_for_scoring(self):
+        """exit_caller_price must be stored, or the decisive question is unanswerable.
+
+        When paper_trader's price and the ladder's bid disagree, the fix depends entirely
+        on WHICH was closer to the actual fill. Without both stored next to the fill that
+        can only be reconstructed by hand from a log line (as it was for AAPL #677), which
+        does not aggregate and disappears when logs age out.
+        """
+        import inspect
+
+        from options_owl.execution import paper_trader
+
+        src = inspect.getsource(paper_trader)
+        assert '"exit_caller_price REAL"' in src, "exit_caller_price migration missing"
+        assert "exit_caller_price = ?" in src, "exit_caller_price never written"
+
+    def test_quote_cache_hit_and_miss_are_both_logged(self):
+        """Cache hit/miss attribution tests the divergence mechanism directly rather than
+        inferring it from 429 counts."""
+        import inspect
+
+        from options_owl.execution.webull_executor import WebullExecutor
+
+        src = inspect.getsource(WebullExecutor.get_option_quote)
+        assert "QUOTE_CACHE hit" in src and "QUOTE_CACHE miss" in src, (
+            "quote cache attribution missing — cannot distinguish a cache-bridged "
+            "agreement from a genuine re-fetch"
+        )

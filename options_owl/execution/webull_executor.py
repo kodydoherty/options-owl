@@ -2382,8 +2382,22 @@ class WebullExecutor:
         cached = self._quote_cache.get(inst_id)
         if cached:
             bid, ask, mid, ts = cached
-            if _time.time() - ts < self._quote_cache_ttl:
+            age = _time.time() - ts
+            if age < self._quote_cache_ttl:
+                # CACHE ATTRIBUTION (2026-08-11): the 3s TTL is the suspected mechanism
+                # behind paper_trader and the exit ladder disagreeing — a second call
+                # INSIDE the window reuses this value (they agree), one OUTSIDE re-fetches
+                # a moved price (they diverge). Logging hit-vs-miss with the age tests that
+                # directly instead of inferring it from 429 counts.
+                logger.debug(
+                    f"QUOTE_CACHE hit {ticker} ${strike} {option_type} "
+                    f"bid=${bid or 0:.2f} age={age:.1f}s (ttl={self._quote_cache_ttl:.0f}s)"
+                )
                 return {"bid": bid, "ask": ask, "mid": mid, "instrument_id": inst_id}
+            logger.debug(
+                f"QUOTE_CACHE miss {ticker} ${strike} {option_type} "
+                f"age={age:.1f}s > ttl={self._quote_cache_ttl:.0f}s — refetching"
+            )
 
         self._ensure_data_client()
 
