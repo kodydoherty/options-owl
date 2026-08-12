@@ -39,3 +39,26 @@ mean/monotonicity) via logs for several sessions → only then trust the sizing 
 
 ## Result
 _(pending paper canary)_
+
+
+---
+
+## 2026-08-12 validation (read before changing thresholds)
+
+Retroactive validation on 398 rebuilt real fills: the model **works**. P(runner) ranks
+outcomes monotonically (Q1 10% -> Q2 30% -> Q3 36% -> Q4 61% runners), effective sizing
+span 1.86x. Q1 is -$2,957 at 9.6% runners; Q4 is the only clearly profitable tier at
++$1,984.
+
+**A claimed train/serve skew was REFUTED.** Live p_runner appeared to occupy a narrow
+0.684-0.828 band vs a 0.054-0.940 rebuild, but that compared 13 live values against a
+rebuild over a different ~100-day population. Rebuilding the SAME trades gives mean
+divergence -0.017. The live serving path is correct. Do not re-open this without running
+the matched-sample control (`scripts/diff_runner_serve_vs_rebuild.py`, keyed by (bot, id)).
+
+`RUNNER_V1_MIN_P=0.39` is live on kody+dennis and has not fired: every sub-0.39 case
+predates its 08-07 deployment (pre-gate they were ~16% of trades). Wiring is now proven by
+`tests/test_runner_v1_floor_gate.py` rather than by waiting for a live firing.
+
+Open: Q4 is the only profitable tier and currently gets the same multiplier as everything
+else in live flow. Sizing UP Q4 is untested.

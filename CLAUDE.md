@@ -205,6 +205,10 @@ the current runner_v1 + conf_linear sizing layers.
 | `ENABLE_V7_PROFIT_LOCK` | false | **true all bots** — profit-lock keep **80%** of peak gain once **+25%** (`V7_PROFIT_LOCK_KEEP_FRAC=0.8`, `ACTIVATE_PCT=25`); **extended to PUTs** (`V7_PROFIT_LOCK_PUTS=true`, validated 2026-06-30). Supersedes the older CALL-only/keep-60/arm-30/puts-exempt config below. |
 | `ANTIMG_CALL_LEVELS` | `30` | **`30,80,150` all bots** — multi-level CALL adds (each a separate own-trail leg) |
 | `ENABLE_RUNNER_V1_SIZING` | false | **true all bots** (2026-06-22) — P(runner) CALL sizing; see sizing-stack subsection |
+| `RUNNER_V1_MIN_P` | 0.0 | **0.39 kody+dennis** — skip CALLs below the Q1 tail (9.6% runner rate, -$2,957). Has not fired yet: every sub-0.39 case predates its 08-07 deploy. Covered by `tests/test_runner_v1_floor_gate.py` |
+| `ML_PREMIUM_CAP` | 6.0 | 6.0 kody / **3.0 dennis** — ML entry premium ceiling (was hardcoded 6.0) |
+| `CONCURRENCY_SIZING_SLOTS` | 0 (off) | **0 everywhere** — divide the risk cap by a realistic slot count instead of MAX_CONCURRENT (peak concurrency is ~4, not 8; utilisation ran 11-44%), clamped to UNCOMMITTED capital so total exposure cannot exceed the cap. Backtest with `--concurrency-slots` before enabling |
+| `EXIT_SNAPSHOT_MAX_AGE_SEC` | 10.0 | active — also passed to `get_option_premium(max_age_sec=)` so the exit path cannot fall through to a 120s cache after rejecting a 10s snapshot |
 | `ENABLE_CONF_LINEAR_SIZING` | false | **true all bots** (2026-06-22) — winner-concentration sizing; bounds 0.4–1.8 |
 | `ENABLE_DELTA_SIZED_BUDGET` | false | **true all bots** — cheap-OTM-call blowup brake (calls-only, `min(1,|delta|/0.45)` haircut) |
 | `ENABLE_FOMC_PAUSE` | false | **true all bots** — blocks ALL new entries on `FOMC_PAUSE_DATES` (2026-only; needs 2027 added) |
@@ -971,6 +975,44 @@ orders orphaned (`not filled after 12s, SUBMITTED`). **Impact:** missed entries 
 **Fix:** faster cadence (4s/1s, 4 rungs) + index decisive cross (SPY/QQQ ask×1.10 rung 1) + chase off the
 harvester's live Redis ask (HTTP fallback, 20s freshness guard). The dedicated push-fill SDK is BLOCKED (grpcio
 pin) — don't retry it. See [Entry-chase fix subsection](#webull-entry-chase-fill-fix-2026-06-25--the-choppy-spy-not-filled-after-12s-misses).
+
+### Test suite self-blocked deploys 15 min/day (fixed 2026-08-12)
+**Bug:** 28 tests in test_partial_profits/test_slippage/test_risk_manager open trades through
+the real entry pipeline, whose `CircuitBreaker` opening (09:30-09:40 ET) and closing
+(15:45-16:00 ET) buffers read the WALL CLOCK. Running the suite inside either window rejected
+every signal, so the tests failed for ~15 minutes a day and passed the rest of the time.
+**Impact:** `rebuild.sh` gates on `pytest -x`, so the deploy pipeline blocked itself during the
+last 15 minutes of every trading day, exactly when an urgent fix is most likely needed.
+**Fix:** autouse `_pin_market_clock` fixture in `tests/conftest.py` pins
+`circuit_breaker._now_et` to Monday 10:30 ET. Buffer tests patch `_now_et` inside `with`
+blocks and still win. Suite went 30 failed to 3138 passed.
+**Rule:** a test failure that looks "pre-existing at HEAD" may be time-of-day dependent. Check
+that before dismissing it OR before reaching for `--skip-tests`.
+
+### Execution telemetry was BIASED-missing on the hardest fills (fixed 2026-08-12)
+**Bug:** 8 `success=True` OrderResult returns recorded a real fill with no slippage telemetry
+(2 entry: PARTIAL, FILLED-DURING-CANCEL; 6 exit: partial peel, filled-during-cancel,
+ladder-exhausted). A second layer dropped it again in `paper_trader`: both exit UPDATE branches
+hang off `if exit_fill_price is not None`, so a FILLED sell whose price could not be read back
+wrote no row at all.
+**Impact:** not random loss. Those paths fire on CONTESTED fills (order filling in the race with
+our cancel, peel against thin 0DTE depth) and a fill-price read-back times out when the BROKER
+is slow. Measuring only the easy fills biases the execution gap OPTIMISTIC, and that gap decides
+whether the directional-regime change ships.
+**Fix:** telemetry on every success path, plus AST guards in
+`tests/test_stale_exit_price_and_regime_backoff.py` asserting no success return omits
+`quote_at_decision`. The guards found 3 of the 6 exit gaps that were missed by reading.
+**Rule:** when instrumenting a multi-return function, enumerate success returns via AST, and ask
+which paths fire on the HARD cases. Those are the ones that matter and the ones most likely
+skipped.
+
+### runner_v1 train/serve skew REFUTED (settled 2026-08-12)
+"Live p_runner is a narrow 0.684-0.828 band vs a 0.054-0.940 rebuild, so the serving path is
+broken" is WRONG. Rebuilding the SAME trades gives mean divergence -0.017. The original compared
+13 live values against a rebuild over a different ~100-day population. Also: any join across bot
+databases MUST be keyed by (bot, id) since both sqlite id sequences start at 1. The Q1 floor is
+not inert either; every sub-0.39 case predates its 08-07 deployment. Full detail:
+`specs/active/2026-08-12_measurement-integrity-findings.md`. Do not relitigate.
 
 ### Entry-timing / dip-buy rules REFUTED (settled 2026-06-23/24)
 **Not a bug — a settled investigation.** "Wait for the underlying to turn / ride the premium dip for a cheaper
