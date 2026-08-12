@@ -1706,6 +1706,28 @@ class PaperTrader:
                     _conv_mult *= _vv_mult
                     logger.info(f"VVIX_TILT: {signal.ticker} {_vv_desc} (conv_mult→{_conv_mult:.2f})")
                 _sizing_audit["conv_mult"] = _conv_mult
+                # Capital already committed to OPEN legs. Only needed when
+                # concurrency-aware sizing is on, and it must never be able to break
+                # sizing: any failure falls back to 0.0, which reduces the new path to
+                # "divide by the realistic slot count" with no clamp -- still bounded by
+                # the position caps below. Bound before the call (rule #1).
+                _deployed = 0.0
+                _conc_slots = int(getattr(self.settings, "CONCURRENCY_SIZING_SLOTS", 0) or 0)
+                if _conc_slots > 0:
+                    try:
+                        async with _connect_db(self.db_path) as _dconn:
+                            _drow = await _dconn.execute(
+                                "SELECT COALESCE(SUM(premium_per_contract * contracts * 100), 0) "
+                                "FROM paper_trades WHERE status = 'open'"
+                            )
+                            _dr = await _drow.fetchone()
+                            _deployed = float(_dr[0]) if _dr and _dr[0] else 0.0
+                    except Exception as exc:  # noqa: BLE001 - sizing must not fail on this
+                        logger.warning(
+                            f"CONCURRENCY_SIZING: could not read committed capital "
+                            f"({exc}) — sizing without the remaining-capital clamp"
+                        )
+                        _deployed = 0.0
                 total_contracts = score_to_contracts(
                     signal.score,
                     cost_per_contract=cost_per_contract,
@@ -1725,6 +1747,8 @@ class PaperTrader:
                     conf_budget_max=getattr(self.settings, "CONF_LINEAR_BUDGET_MAX", 3.0),
                     conf_ref_min=getattr(self.settings, "CONF_LINEAR_REF_MIN", 0.74),
                     conf_ref_max=getattr(self.settings, "CONF_LINEAR_REF_MAX", 0.95),
+                    concurrency_slots=_conc_slots,
+                    deployed_dollars=_deployed,
                 )
                 if total_contracts <= 0:
                     logger.info(f"Score {signal.score} too low for Vinny sizing — 0 contracts")

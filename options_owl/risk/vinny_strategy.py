@@ -794,6 +794,8 @@ def score_to_contracts(
     conf_budget_max: float = 1.8,
     conf_ref_min: float = 0.74,
     conf_ref_max: float = 0.95,
+    concurrency_slots: int = 0,
+    deployed_dollars: float = 0.0,
 ) -> int:
     """Confidence-weighted sizing — allocate more capital where ML edge is strongest.
 
@@ -829,6 +831,31 @@ def score_to_contracts(
         total_deployable = balance * (max_portfolio_risk_pct / 100)
         target_per_trade = total_deployable / max(1, max_concurrent)
 
+        # Concurrency-aware sizing (2026-08-12, flag-gated via concurrency_slots > 0).
+        # MAX_CONCURRENT is 8 but measured peak concurrency is ~4 (10 sessions: 3,4,4,4,4,
+        # 3,4,3,7,4), so dividing the risk cap by the CAP sizes every trade at roughly half
+        # what the capital supports — utilisation ran 11-44%. Dividing by the realistic
+        # slot count fixes that.
+        #
+        # Naively dividing by 4 would double exposure on a tail day (07-30 peaked at 7), so
+        # the target is ALSO clamped to capital that is not already committed. That clamp is
+        # the safety property: total exposure across all open legs can never exceed
+        # total_deployable regardless of how many positions open, which the fixed 1/N
+        # denominator only guaranteed by being permanently too small.
+        #
+        # Unlike adding trades, this changes SIZE not COUNT, so it does not have to clear
+        # the ~$84/trade execution bar that killed afternoon trading and puts.
+        if concurrency_slots and concurrency_slots > 0:
+            sized_target = total_deployable / max(1, concurrency_slots)
+            remaining = max(0.0, total_deployable - max(0.0, deployed_dollars))
+            target_per_trade = min(sized_target, remaining)
+            if target_per_trade <= 0:
+                logger.info(
+                    f"SIZING: score={score} — risk cap ${total_deployable:.2f} fully "
+                    f"committed (deployed=${deployed_dollars:.2f}) → SKIP"
+                )
+                return 0
+
         # Confidence-weighted budget scaling + conviction multiplier (spec 09)
         # PUTs get reduced allocation (structurally worse odds)
         direction_mult = put_budget_multiplier if is_put else 1.0
@@ -852,7 +879,17 @@ def score_to_contracts(
             )
             return 0
 
-        # Floor: at least 1 contract if within risk limits
+        # Floor: at least 1 contract if within risk limits.
+        # EXCEPTION under concurrency-aware sizing: the floor would override the
+        # remaining-capital clamp (a $150 remaining budget still buying one $200
+        # contract), which is precisely the invariant that makes sizing up safe.
+        # When the clamp leaves room for less than one contract, skip the trade.
+        if concurrency_slots and concurrency_slots > 0 and raw_contracts < 1:
+            logger.info(
+                f"SIZING: score={score} — uncommitted capital ${target_per_trade:.2f} "
+                f"< 1 contract (${cost_per_contract:.2f}) → SKIP"
+            )
+            return 0
         final_contracts = max(1, final_contracts)
 
         put_note = f" PUT_MULT={put_budget_multiplier:.0%}" if is_put else ""

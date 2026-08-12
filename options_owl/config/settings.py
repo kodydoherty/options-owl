@@ -783,6 +783,14 @@ class Settings(BaseSettings):
     # so this blocks the tail rather than trusting the ranking. Revert = 0.0.
     RUNNER_V1_MIN_P: float = 0.0
 
+    # Concurrency-aware sizing (2026-08-12). MAX_CONCURRENT=8 but measured peak
+    # concurrency is ~4, so target_per_trade = deployable/8 sizes every trade at
+    # roughly half what the capital supports (utilisation ran 11-44%). Set this to
+    # the realistic slot count (e.g. 4) to size against that instead; the sizer also
+    # clamps to UNCOMMITTED capital, so total exposure can never exceed the risk cap.
+    # 0 = disabled (use MAX_CONCURRENT), preserving current behaviour.
+    CONCURRENCY_SIZING_SLOTS: int = 0
+
     # Anti-chase: reject if underlying moved too far from alert price
     ANTI_CHASE_MAX_MOVE_PCT: float = 0.3
 
