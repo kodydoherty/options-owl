@@ -103,6 +103,10 @@ def sizing_balance(portfolio: float) -> float:
         return min(portfolio, SIZING_BALANCE_CAP)
     return portfolio
 MAX_CONCURRENT = 8       # Matches docker-compose.yml for all bots
+# Concurrency-aware sizing (2026-08-12). 0 = off (divide the risk cap by MAX_CONCURRENT,
+# i.e. current prod). >0 divides by that realistic slot count instead and clamps to
+# uncommitted capital. Set via --concurrency-slots.
+CONCURRENCY_SLOTS = 0
 MAX_POSITION_PCT = 0.15
 MAX_RISK_PCT = 0.75
 GFV_BUFFER_PCT = 15.0
@@ -174,8 +178,13 @@ PUT_EXCLUDED_TICKERS = {"PLTR", "AMD", "MSTR", "AVGO", "AMZN", "GOOGL"}  # Match
 # names trade PUTs and their per-ticker P&L is visible (to confirm they STILL lose under V7).
 if os.getenv("PUT_INCLUDE_BLACKLIST") == "1":
     PUT_EXCLUDED_TICKERS = set()
-PUT_MAX_CONCURRENT = 2            # Max simultaneous PUT positions
-PUT_BEAR_MAX_CONCURRENT = 4       # Max PUT positions in bear mode
+# Env-overridable (2026-08-11). These caps are a quarter of the CALL book's
+# MAX_CONCURRENT=8, and combined with PUT_EXCLUDED_TICKERS (which removes AMZN and GOOGL —
+# two of the four biggest live put-signal sources) they throttled a 13-month run to 44
+# put trades. That is not evidence puts are rare; it is a capacity limit being mistaken
+# for a measurement. Raise them to see the UNCONSTRAINED put book.
+PUT_MAX_CONCURRENT = int(os.getenv("PUT_MAX_CONCURRENT", "2"))
+PUT_BEAR_MAX_CONCURRENT = int(os.getenv("PUT_BEAR_MAX_CONCURRENT", "4"))
 
 # PUT config overrides for sweep testing (applied on top of PUT_SCALP_CONFIG)
 PUT_CONFIG_OVERRIDES: dict = {}   # Set by --put-sweep; keys are V5Config field names
@@ -333,7 +342,7 @@ def _conf_to_budget_linear(conf: float, ref_min: float, ref_max: float,
 
 
 def size_position(score: int, cost_per: float, balance: float, pattern_conf: float,
-                  is_put: bool, dte: int, minute: int) -> int:
+                  is_put: bool, dte: int, minute: int, deployed: float = 0.0) -> int:
     """Compute contracts under the active SIZING_MODE, then apply multi-day +
     late-0DTE caps (prod paper_trader.py parity). Returns 0 if rejected.
 
@@ -351,6 +360,7 @@ def size_position(score: int, cost_per: float, balance: float, pattern_conf: flo
             max_portfolio_risk_pct=MAX_RISK_PCT * 100,
             ml_confidence=float(pattern_conf), is_put=is_put,
             put_budget_multiplier=put_budget_multiplier,
+            concurrency_slots=CONCURRENCY_SLOTS, deployed_dollars=deployed,
         )
     else:
         # Replicate score_to_contracts budget math with a chosen multiplier.
@@ -2791,6 +2801,9 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                 contracts = size_position(
                     score, cost_per, sizing_balance(portfolio), float(pattern_conf),
                     is_put=False, dte=int(td.get("dte", 0)), minute=dip_entry_minute,
+                    deployed=sum((p.get("effective_entry") or p["entry_premium"])
+                                  * (p.get("effective_contracts") or p["contracts"]) * 100
+                                  for p in open_positions),
                 )
                 if contracts <= 0:
                     signals_gate_blocked += 1
@@ -3188,6 +3201,9 @@ def run_backtest(pattern_model, pattern_meta, entry_model, entry_features,
                         # budget baked into the dispatcher). Mode-aware + caps.
                         contracts = size_position(
                             put_score, cost_per, sizing_balance(portfolio), float(pattern_conf),
+                            deployed=sum((p.get("effective_entry") or p["entry_premium"])
+                                  * (p.get("effective_contracts") or p["contracts"]) * 100
+                                  for p in open_positions),
                             is_put=True, dte=int(ptd.get("dte", 0)), minute=dip_entry_minute,
                         )
                         if contracts <= 0:
@@ -3930,6 +3946,7 @@ def main():
     global ENABLE_ANTI_CHASE, ENABLE_MOMENTUM_CONFIRM, ENABLE_CONSECUTIVE_LOSER
     global ENABLE_CORRELATION_CAP, ENABLE_DIRECTIONAL_REGIME, ENABLE_PUT_BEARISH_CONFIRM
     global MIN_PREMIUM_FLOOR, MIN_SCORE, OPENING_BUFFER_MIN, TOD_EARLY_MIN_SCORE
+    global CONCURRENCY_SLOTS
     global PREMIUM_CAP, PREMIUM_CAP_BY_TICKER, FIXED_SIZING_BALANCE, SIZING_BALANCE_CAP
     global SCAN_END_MIN
     global SCALP_THRESH_OVERRIDE, SOFT_KEEP_OVERRIDE, ADAPTIVE_MULT_OVERRIDE
@@ -3943,6 +3960,9 @@ def main():
     parser.add_argument("--tickers", type=str, default=None, help="Comma-separated ticker override (e.g. semi test): bypasses TICKERS/EXCLUDED")
     parser.add_argument("--pattern-threshold", type=float, default=0.74, help="Pattern model threshold")
     parser.add_argument("--entry-threshold", type=float, default=0.80, help="Entry timing threshold")
+    parser.add_argument("--concurrency-slots", type=int, default=0,
+                        help="Concurrency-aware sizing: divide risk cap by this instead of "
+                             "MAX_CONCURRENT, clamped to uncommitted capital (0 = off)")
     parser.add_argument("--no-entry-filter", action="store_true", help="Disable entry timing filter")
     parser.add_argument("--no-regime", action="store_true", help="Disable regime daily filter")
     parser.add_argument("--regime-threshold", type=float, default=0.02,
@@ -4136,6 +4156,7 @@ def main():
     ENABLE_PUT_BEARISH_CONFIRM = args.gate_put_bearish == "on"
     MIN_PREMIUM_FLOOR = args.min_premium
     MIN_SCORE = args.score_floor
+    CONCURRENCY_SLOTS = args.concurrency_slots
     OPENING_BUFFER_MIN = args.tod_buffer_min
     TOD_EARLY_MIN_SCORE = args.tod_early_score
 
