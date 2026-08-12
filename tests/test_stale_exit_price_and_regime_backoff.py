@@ -331,6 +331,58 @@ class TestSlippageTelemetryPersisted:
                 "paper_trader is dropping it (regression of the 2026-08-10 gap)"
             )
 
+    def test_exit_telemetry_survives_a_missing_fill_price(self):
+        """A FILLED sell with no readable fill price must STILL persist telemetry.
+
+        Regression guard for 2026-08-12 (second layer). Both exit UPDATE branches hang
+        off `if exit_fill_price is not None:`, and exit_fill_price is None whenever
+        get_fill_price times out at 15s, returns nothing, or there is no client_order_id.
+        In that case close_webull_position returned FILLED having written nothing, so the
+        telemetry the ladder had just captured was discarded.
+
+        This is biased loss, not random loss: a fill-price read-back times out when the
+        BROKER is slow, i.e. exactly when the fill was contested. Dropping those samples
+        skews the measured execution gap optimistic — the same failure the executor-side
+        fix addressed one layer up.
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        from options_owl.execution.paper_trader import PaperTrader
+
+        src = textwrap.dedent(inspect.getsource(PaperTrader.close_webull_position))
+        tree = ast.parse(src)
+
+        guard = None
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            test = node.test
+            # match: `exit_fill_price is not None`
+            if (isinstance(test, ast.Compare)
+                    and getattr(test.left, "id", None) == "exit_fill_price"
+                    and any(isinstance(o, ast.IsNot) for o in test.ops)):
+                guard = node
+                break
+
+        assert guard is not None, (
+            "could not locate the `exit_fill_price is not None` guard — if this was "
+            "refactored, re-verify that a FILLED sell without a fill price still "
+            "persists exit telemetry"
+        )
+        assert guard.orelse, (
+            "`exit_fill_price is not None` has no else branch — a FILLED sell whose "
+            "fill price could not be read back persists NO exit telemetry at all"
+        )
+        else_src = "\n".join(ast.unparse(n) for n in guard.orelse)
+        for col in ("exit_quote_at_decision", "exit_limit_submitted",
+                    "exit_rungs_used", "exit_seconds_to_fill"):
+            assert col in else_src, (
+                f"{col} not written when the fill price is unavailable — telemetry is "
+                "dropped precisely on the slow/contested fills that matter most"
+            )
+
     def test_executor_actually_supplies_them(self):
         """Guard the source: OrderResult must carry the fields, or both writes bind None."""
         from options_owl.execution.webull_executor import OrderResult

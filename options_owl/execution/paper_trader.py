@@ -2682,6 +2682,29 @@ class PaperTrader:
                             )],
                             context=f"webull exit fill for trade #{trade_id}",
                         )
+                else:
+                    # The sell FILLED but we could not read back a fill price
+                    # (get_fill_price timed out at 15s, returned nothing, or there
+                    # was no client_order_id). Both UPDATE branches above hang off
+                    # `exit_fill_price is not None`, so without this the telemetry
+                    # the ladder just captured is silently discarded.
+                    #
+                    # This is not a rare corner: a fill-price read times out when the
+                    # BROKER is slow, which is exactly when the fill was contested —
+                    # the same population the 2026-08-12 executor fix was about. Losing
+                    # those samples biases the measured execution gap optimistic in the
+                    # same direction, one layer further down.
+                    await _db_execute_with_retry(
+                        self.db_path,
+                        [(
+                            "UPDATE paper_trades SET webull_exit_order_id = ?, "
+                            "exit_quote_at_decision = ?, exit_limit_submitted = ?, "
+                            "exit_rungs_used = ?, exit_seconds_to_fill = ?, "
+                            "exit_caller_price = ? WHERE id = ?",
+                            (result.order_id, *_xsl, _caller_px, trade_id),
+                        )],
+                        context=f"exit telemetry (no fill price) for trade #{trade_id}",
+                    )
                 return SellResult(SellOutcome.FILLED)
             else:
                 logger.error(
