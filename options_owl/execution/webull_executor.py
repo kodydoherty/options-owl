@@ -1435,6 +1435,15 @@ class WebullExecutor:
                     details=result if isinstance(result, dict) else None,
                     fill_status="PARTIAL",
                     filled_quantity=filled_qty,
+                    # Telemetry on a partial is still a REAL fill — omitting it
+                    # silently drops the hardest fills from the execution sample.
+                    quote_at_decision=float(ask) if ask else None,
+                    limit_submitted=float(limit),
+                    fill_price=await self._fetch_fill_price(client_order_id, limit),
+                    rungs_used=attempt + 1,
+                    seconds_to_fill=(
+                        _time.monotonic() - _chase_t0 if _chase_t0 is not None else None
+                    ),
                 )
 
             # Not filled. Record the miss outcome in case this is the last rung.
@@ -1470,6 +1479,16 @@ class WebullExecutor:
                     details=result if isinstance(result, dict) else None,
                     fill_status="FILLED" if confirm_status == "FILLED" else "PARTIAL",
                     filled_quantity=filled_qty,
+                    # This path fires on a CONTESTED fill (filled racing our cancel) —
+                    # i.e. the slow, choppy-tape fills the execution-gap measurement is
+                    # actually about. Dropping telemetry here biases the gap optimistic.
+                    quote_at_decision=float(ask) if ask else None,
+                    limit_submitted=float(limit),
+                    fill_price=await self._fetch_fill_price(client_order_id, limit),
+                    rungs_used=attempt + 1,
+                    seconds_to_fill=(
+                        _time.monotonic() - _chase_t0 if _chase_t0 is not None else None
+                    ),
                 )
 
             if confirm_status not in ("CANCELLED", "REJECTED", "EXPIRED"):
@@ -1575,8 +1594,10 @@ class WebullExecutor:
         def _done(order_id, result, status):
             # Slippage telemetry (2026-08-07): the EXIT side is where the worst observed
             # gaps were (MSTR decided at $0.66 / filled $0.47 = 29%; TSLA $1.72 vs $1.43).
-            # Captured here because every sell return funnels through this closure.
             # `_sell_quote` / `_sell_limit` are the values from the LAST rung attempted.
+            # NOTE: the PARTIAL returns below do NOT funnel through here (they must keep
+            # their own filled_quantity semantics), so they carry the same fields inline.
+            # Keep the two in sync — a partial exit is a real fill and must be measured.
             return OrderResult(
                 success=True, order_id=str(order_id) if order_id else None,
                 client_order_id=last_client_id,
@@ -1709,6 +1730,13 @@ class WebullExecutor:
                         success=True, order_id=str(order_id), client_order_id=client_order_id,
                         details=result if isinstance(result, dict) else None,
                         fill_status="PARTIAL", filled_quantity=(total_filled or None),
+                        quote_at_decision=_sell_quote[0],
+                        limit_submitted=_sell_limit[0],
+                        fill_price=_sell_limit[0],
+                        rungs_used=_sell_rungs[0],
+                        seconds_to_fill=(
+                            _time.monotonic() - _chase_t0[0] if _chase_t0[0] is not None else None
+                        ),
                     )
                 fq = max(0, min(int(fq), remaining))
                 total_filled += fq
@@ -1725,6 +1753,13 @@ class WebullExecutor:
                         success=True, order_id=str(order_id), client_order_id=client_order_id,
                         details=result if isinstance(result, dict) else None,
                         fill_status="PARTIAL", filled_quantity=total_filled,
+                        quote_at_decision=_sell_quote[0],
+                        limit_submitted=_sell_limit[0],
+                        fill_price=_sell_limit[0],
+                        rungs_used=_sell_rungs[0],
+                        seconds_to_fill=(
+                            _time.monotonic() - _chase_t0[0] if _chase_t0[0] is not None else None
+                        ),
                     )
                 continue  # PEEL: chase the remainder harder in the next rung
 
@@ -1751,6 +1786,13 @@ class WebullExecutor:
                             success=True, order_id=str(order_id), client_order_id=client_order_id,
                             details=result if isinstance(result, dict) else None,
                             fill_status="PARTIAL", filled_quantity=(total_filled or None),
+                            quote_at_decision=_sell_quote[0],
+                            limit_submitted=_sell_limit[0],
+                            fill_price=_sell_limit[0],
+                            rungs_used=_sell_rungs[0],
+                            seconds_to_fill=(
+                                _time.monotonic() - _chase_t0[0] if _chase_t0[0] is not None else None
+                            ),
                         )
                     fq = max(0, min(int(fq), remaining))
                     total_filled += fq
@@ -1766,6 +1808,13 @@ class WebullExecutor:
                         success=True, order_id=str(order_id), client_order_id=client_order_id,
                         details=result if isinstance(result, dict) else None,
                         fill_status="PARTIAL", filled_quantity=total_filled,
+                        quote_at_decision=_sell_quote[0],
+                        limit_submitted=_sell_limit[0],
+                        fill_price=_sell_limit[0],
+                        rungs_used=_sell_rungs[0],
+                        seconds_to_fill=(
+                            _time.monotonic() - _chase_t0[0] if _chase_t0[0] is not None else None
+                        ),
                     )
                 continue  # peel the remainder
 
@@ -1781,6 +1830,13 @@ class WebullExecutor:
                         success=True, order_id=str(order_id), client_order_id=client_order_id,
                         details=result if isinstance(result, dict) else None,
                         fill_status="PARTIAL", filled_quantity=total_filled,
+                        quote_at_decision=_sell_quote[0],
+                        limit_submitted=_sell_limit[0],
+                        fill_price=_sell_limit[0],
+                        rungs_used=_sell_rungs[0],
+                        seconds_to_fill=(
+                            _time.monotonic() - _chase_t0[0] if _chase_t0[0] is not None else None
+                        ),
                     )
                 return OrderResult(
                     success=False, order_id=str(order_id), client_order_id=client_order_id,
@@ -1804,6 +1860,13 @@ class WebullExecutor:
             return OrderResult(
                 success=True, client_order_id=last_client_id,
                 fill_status="PARTIAL", filled_quantity=total_filled,
+                    quote_at_decision=_sell_quote[0],
+                    limit_submitted=_sell_limit[0],
+                    fill_price=_sell_limit[0],
+                    rungs_used=_sell_rungs[0],
+                    seconds_to_fill=(
+                        _time.monotonic() - _chase_t0[0] if _chase_t0[0] is not None else None
+                    ),
             )
         if last_result is None:
             last_result = OrderResult(

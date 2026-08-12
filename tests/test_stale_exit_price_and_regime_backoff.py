@@ -434,3 +434,69 @@ class TestSellLadderPricingInvariants:
             "quote cache attribution missing — cannot distinguish a cache-bridged "
             "agreement from a genuine re-fetch"
         )
+
+
+class TestEveryFillCarriesTelemetry:
+    """Every success=True OrderResult in the chase paths must carry slippage telemetry.
+
+    Regression guard for 2026-08-12. Five success returns shipped a REAL fill with no
+    telemetry: entry PARTIAL, entry FILLED-DURING-CANCEL, and three exit PARTIAL paths.
+    That is not merely missing data — it is BIASED missing data. Those paths fire on
+    contested/thin fills (filled racing our cancel, partial peel on thin 0DTE depth),
+    i.e. precisely the hard fills the execution-gap measurement exists to capture.
+    Dropping them makes the measured gap look better than reality.
+    """
+
+    TELEMETRY_FIELD = "quote_at_decision"
+
+    def _success_returns_missing_telemetry(self, func) -> list[int]:
+        """Line numbers of `return OrderResult(success=True, ...)` lacking telemetry."""
+        import ast
+        import inspect
+        import textwrap
+
+        src = textwrap.dedent(inspect.getsource(func))
+        tree = ast.parse(src)
+        offenders: list[int] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Return) or not isinstance(node.value, ast.Call):
+                continue
+            call = node.value
+            if getattr(call.func, "id", None) != "OrderResult":
+                continue
+            kw = {k.arg: k.value for k in call.keywords if k.arg}
+            success = kw.get("success")
+            if not (isinstance(success, ast.Constant) and success.value is True):
+                continue
+            if self.TELEMETRY_FIELD not in kw:
+                offenders.append(node.lineno)
+        return offenders
+
+    def test_entry_chase_success_returns_all_instrumented(self):
+        from options_owl.execution.webull_executor import WebullExecutor
+
+        missing = self._success_returns_missing_telemetry(
+            WebullExecutor._place_buy_with_escalation
+        )
+        assert not missing, (
+            f"entry chase has success returns without {self.TELEMETRY_FIELD} at relative "
+            f"lines {missing} — a real fill would be recorded with no execution telemetry, "
+            "silently biasing the measured execution gap optimistic"
+        )
+
+    def test_exit_chase_success_returns_all_instrumented(self):
+        from options_owl.execution.webull_executor import WebullExecutor
+
+        target = None
+        for name in ("_place_sell_with_escalation", "_place_sell_with_chase"):
+            target = getattr(WebullExecutor, name, None)
+            if target is not None:
+                break
+        assert target is not None, "could not locate the sell-chase function"
+
+        missing = self._success_returns_missing_telemetry(target)
+        assert not missing, (
+            f"exit chase has success returns without {self.TELEMETRY_FIELD} at relative "
+            f"lines {missing} — partial exits on thin 0DTE depth are exactly the fills "
+            "the gap measurement needs; omitting them biases the result"
+        )
