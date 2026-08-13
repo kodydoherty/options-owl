@@ -51,21 +51,52 @@ if pattern_conf < pattern_threshold: continue
 score = int(pattern_conf * 100)
 if score < MIN_SCORE: continue          # MIN_SCORE=60 -> hard floor conf >= 0.60
 ...
-if entry_conf < entry_threshold: continue   # default 0.80, the real gate
+if entry_conf < entry_threshold: continue   # default 0.80 — binding IN PROD
 ```
 
-`MIN_SCORE=60` makes any threshold below 0.60 unreachable, and the entry-timing model at
-0.80 rejects the marginal candidates a lower pattern threshold would buy.
+`MIN_SCORE=60` makes any threshold below 0.60 unreachable (`score = int(conf*100)`), which
+is what caps the sweep. NOTE: those runs had the entry filter DISABLED (see 3b), so the
+identical 0.62/0.56/0.50 totals are explained by MIN_SCORE plus the empirical fact that no
+candidate lands in conf [0.60, 0.62) — not by the entry model. In PROD the entry-timing
+gate at 0.80 is live and is the binding constraint on volume.
 
 **The binding gate was never calibrated.** Every model publishes a `best_threshold`
 (pattern 0.80, put-entry 0.85, expansion 0.75) EXCEPT `entry_timing_meta.json`, which
 carries only an AUC. Prod uses `DEFAULT_ENTRY_THRESHOLD = 0.80` and the meta-override path
-exists only for puts. Harness and prod agree, so this is not a drift; the number has
-simply never been earned.
+exists only for puts. Prod and the harness both fall back to the same 0.80 default, so the
+VALUE is not a drift; it has simply never been earned. (Whether the filter runs at all was
+a drift — see 3b.)
 
 **Sweep protocol:** hold `--pattern-threshold` explicitly. It defaults to 0.74, so
 omitting it while varying the entry threshold moves two variables at once. That produced a
 run where "loosening" a gate LOST 621 trades, which is impossible and is the tell.
+
+## 3b. HARNESS DRIFT: every earlier sweep ran with the entry filter OFF
+
+`--no-entry-filter` was passed to all of `thr_0.70/0.62/0.56/0.50`, `dirreg_off` and
+`dirreg_mom_off`. Production **does** load and apply the entry-timing model
+(`ML_PIPELINE: Loaded entry_timing (30 features)`, threshold 0.80), so those runs were
+NOT prod-faithful: they modelled a book roughly twice the size prod actually trades.
+
+Consequences:
+
+- **The $58 / $65 dirreg decision rule below is INVALID** and must be re-derived with the
+  filter ON. Re-runs: `faith_base` + `faith_dirreg_off`.
+- The explanation that "entry_timing at 0.80 is the gate that makes 0.62/0.56/0.50
+  identical" is wrong FOR THOSE RUNS, since the gate was disabled in them. With the filter
+  off the binding floor is `MIN_SCORE=60`, and the empirical fact is simply that no
+  candidate lands in conf [0.60, 0.62). entry_timing IS the binding gate in prod.
+- The first entry-threshold sweep compared a filter-OFF baseline against filter-ON
+  variants, which is why "loosening" appeared to lose trades a second time.
+
+**How it was caught:** the variants were internally consistent (0.70 -> 875, 0.60 -> 988,
+0.50 -> 1060, correct direction) while the baseline sat above all of them at 1127. When a
+series is monotonic but the baseline does not fit it, suspect the baseline, then diff the
+run headers. `diff <(head -30 a.log) <(head -30 b.log)` showed `Entry filter: OFF` vs `ON`
+immediately.
+
+**Protocol:** diff the run headers of baseline vs variant before computing any marginal.
+Config drift between runs is invisible in the totals and fatal to the comparison.
 
 ## 4. The execution gap ($84/trade) and what it gates
 
@@ -81,6 +112,9 @@ Decision rule, from quarterly marginals:
 |---|---|---|---|---|---|
 | dirreg off | 58 | 98 | 76 | 136 | < $58 |
 | dirreg + momentum off | 65 | 91 | 117 | 108 | < $65 |
+
+**These numbers are SUPERSEDED** (see 3b: computed with the entry filter off). The method
+stands; the values must be re-derived from `faith_base` / `faith_dirreg_off`.
 
 At $84 they are 2/4 and 3/4. Re-measure with `option_ticks` (covers the post-fix window;
 thetadata core tickers stall at 2026-07-15 and a re-pull returned zero rows).

@@ -1006,6 +1006,19 @@ whether the directional-regime change ships.
 which paths fire on the HARD cases. Those are the ones that matter and the ones most likely
 skipped.
 
+### Backtest harness drift: `--no-entry-filter` (found 2026-08-12)
+**Bug:** a batch of gold-standard sweeps was run with `--no-entry-filter`, but production
+DOES load and apply the entry-timing model (`ML_PIPELINE: Loaded entry_timing (30 features)`,
+`DEFAULT_ENTRY_THRESHOLD=0.80`). Those runs modelled a book roughly twice the size prod
+trades, so any marginal derived from them is invalid.
+**How it surfaced:** variants were internally monotonic (entry 0.70 -> 875 trades, 0.60 -> 988,
+0.50 -> 1060) while the baseline sat above all of them at 1127. A monotonic series whose
+baseline does not fit it means the BASELINE differs in configuration.
+**Rule:** before computing any marginal, `diff <(head -30 base.log) <(head -30 variant.log)`.
+The header prints `Entry filter:`, `Gate toggles:`, thresholds and sizing mode. Config drift
+between runs is invisible in the totals and fatal to the comparison. Also pin
+`--pattern-threshold` (defaults 0.74) whenever sweeping anything else.
+
 ### runner_v1 train/serve skew REFUTED (settled 2026-08-12)
 "Live p_runner is a narrow 0.684-0.828 band vs a 0.054-0.940 rebuild, so the serving path is
 broken" is WRONG. Rebuilding the SAME trades gives mean divergence -0.017. The original compared
