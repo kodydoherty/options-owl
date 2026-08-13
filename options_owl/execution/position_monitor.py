@@ -1272,6 +1272,64 @@ async def _finalize_full_close_inner(
                 )
                 await conn.commit()
 
+        # QUANTITY MISMATCH: the broker refused the sell as a short because our record
+        # claims more contracts than we hold. Retrying the same oversized order can never
+        # succeed, so SELF-HEAL: read the true size and shrink the record to it.
+        #
+        # Shrinking is the safe direction — selling fewer than we hold can never oversell,
+        # and it is the only way the FSM's exit can execute at all. Left as a retry loop
+        # this cost real money on 2026-08-13 (IWM #681: recorded 78 vs 71 held, ~760 futile
+        # exits, +$1,313 decaying to -$1,280 because it could not close).
+        if outcome is SellOutcome.QUANTITY_MISMATCH:
+            true_qty = None
+            try:
+                positions = await asyncio.wait_for(
+                    paper_trader.webull_executor.get_open_option_positions(), timeout=15,
+                )
+                for pos in positions or []:
+                    if (
+                        str(pos.get("ticker", "")).upper() == str(ticker).upper()
+                        and float(pos.get("strike") or 0) == float(trade["strike"])
+                        and str(pos.get("option_type", "")).lower()
+                        == str(trade["option_type"]).lower()
+                    ):
+                        true_qty = int(pos.get("quantity") or 0)
+                        break
+            except (TimeoutError, asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001
+                logger.error(
+                    f"  #{trade['id']} {ticker} QUANTITY MISMATCH: could not read the true "
+                    f"broker size ({exc}) — leaving the record untouched"
+                )
+
+            if true_qty is not None and 0 < true_qty < int(trade["contracts"]):
+                async with _connect_db(db_path) as conn:
+                    await conn.execute(
+                        "UPDATE paper_trades SET contracts = ? WHERE id = ?",
+                        (true_qty, trade["id"]),
+                    )
+                    await conn.commit()
+                logger.critical(
+                    f"  #{trade['id']} {ticker} QUANTITY MISMATCH SELF-HEALED: record "
+                    f"{trade['contracts']}x -> broker {true_qty}x — next exit will submit "
+                    f"the true size"
+                )
+                if discord_client:
+                    from options_owl.execution.alerts import alert_critical
+                    await alert_critical(
+                        discord_client, paper_trader.settings,
+                        f"QUANTITY MISMATCH SELF-HEALED: {ticker} ${trade['strike']} "
+                        f"{trade['option_type'].upper()} recorded {trade['contracts']}x but "
+                        f"broker holds {true_qty}x. Record corrected so the exit can execute. "
+                        f"Entry-side fill accounting needs review.",
+                    )
+            elif true_qty == 0:
+                # Nothing left at the broker — this is a genuine position-gone case.
+                logger.critical(
+                    f"  #{trade['id']} {ticker} QUANTITY MISMATCH: broker holds 0 — "
+                    f"treating as POSITION_NOT_FOUND"
+                )
+                is_position_gone = True
+
         if not is_position_gone:
             _transient_sell_failures[trade["id"]] = (
                 _transient_sell_failures.get(trade["id"], 0) + 1

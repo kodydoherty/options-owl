@@ -1463,8 +1463,19 @@ class WebullExecutor:
             if confirm_status in ("FILLED", "PARTIAL_FILLED", "PARTIAL"):
                 # The order filled in the race with our cancel — honor it and
                 # STOP. Never submit another rung on top of a live fill.
+                # "FILLED" here means the order we SUBMITTED filled completely — which is
+                # the liquidity-sized-down count, NOT necessarily what the caller asked for.
+                # Returning None (meaning "nothing to correct") let paper_trader keep the
+                # ORIGINAL request, so the record claimed more contracts than we owned and
+                # every exit tried to oversell. Webull then rejected the sell as a short
+                # (MUST_BE_CLOSE_THAN_SELL_SHORT) on a loop. That is the 2026-08-13 IWM #681
+                # incident: recorded 78 vs 71 held, ~760 failed exits, a +$1,313 position
+                # ridden to -$1,280 because it could not be closed.
+                # Mirror the normal FILLED path: report the count when it differs from the
+                # request, None only when they genuinely match.
                 filled_qty = (
-                    None if confirm_status == "FILLED"
+                    (contracts if contracts != requested_contracts else None)
+                    if confirm_status == "FILLED"
                     else await self._get_filled_quantity(client_order_id)
                 )
                 logger.warning(

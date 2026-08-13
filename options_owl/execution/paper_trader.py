@@ -38,6 +38,7 @@ class SellOutcome(Enum):
     POSITION_NOT_FOUND = "position_not_found"  # User sold/expired — no live position
     NOT_FILLED = "not_filled"          # Order placed but did not fill (retry, transient)
     TRANSIENT_ERROR = "transient_error"  # API/network/exception/rejection (retry)
+    QUANTITY_MISMATCH = "quantity_mismatch"  # Recorded size > broker size — retrying CANNOT help
 
 
 @dataclass
@@ -2753,6 +2754,35 @@ class PaperTrader:
                     )
                 if fill_status in ("SUBMITTED", "PARTIAL", "PARTIAL_FILLED"):
                     return SellResult(SellOutcome.NOT_FILLED, error=result.error)
+                # This rejection has TWO causes and they need different handling:
+                #   (1) a pending/resting order on the contract ties up available quantity
+                #       (the META #467 chain, 2026-07-07) — genuinely TRANSIENT, already
+                #       handled by the cancel-and-confirm above, and a retry succeeds.
+                #   (2) our record claims MORE contracts than we hold, so the excess reads
+                #       as a naked short — PERMANENT, and retrying can never succeed.
+                # Returning QUANTITY_MISMATCH does not by itself abandon the trade: the
+                # monitor reads the broker's true size and only acts when it is provably
+                # SMALLER, otherwise falling through to the existing transient retry. So
+                # cause (1) keeps its current recovery and cause (2) stops looping.
+                #
+                # 2026-08-13 IWM #681: a liquidity size-down (78 -> 71) was not persisted,
+                # so every exit oversold by 7. ~760 identical rejections over 35 minutes
+                # while a +$1,313 position decayed to -$1,280, because the FSM's exit
+                # could never execute. Must escalate, not loop.
+                if (
+                    "must_be_close_than_sell_short" in err
+                    or "close_than_sell_short" in err
+                    or "can not place a sell-short" in err
+                ):
+                    logger.critical(
+                        f"WEBULL EXIT QUANTITY MISMATCH: #{trade_id} {ticker} — broker "
+                        f"refused a sell of {trade.get('contracts')} as a short, meaning we "
+                        f"hold FEWER than recorded. Retrying is futile; escalating. "
+                        f"err={result.error}"
+                    )
+                    return SellResult(
+                        SellOutcome.QUANTITY_MISMATCH, error=result.error,
+                    )
                 # Rejection / FAILED / unknown — treat as transient (retry).
                 return SellResult(SellOutcome.TRANSIENT_ERROR, error=result.error)
         except Exception as exc:
