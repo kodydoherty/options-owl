@@ -148,15 +148,40 @@ def check_stuck_exits(log_path: str) -> list[str]:
     return breaches
 
 
+def _market_is_open() -> bool:
+    """Single source of truth, per CLAUDE.md. Falls back to a conservative weekday/RTH
+    window if the module cannot be imported, so a bad import can never make the check
+    scream all night."""
+    try:
+        from options_owl.sourcing.utils.market_hours import is_market_open
+        return bool(is_market_open())
+    except Exception:  # noqa: BLE001
+        from zoneinfo import ZoneInfo
+        et = _now().astimezone(ZoneInfo("America/New_York"))
+        if et.weekday() >= 5:
+            return False
+        mins = et.hour * 60 + et.minute
+        return 9 * 60 + 30 <= mins <= 16 * 60
+
+
 def check_log_freshness(log_path: str) -> list[str]:
-    """A live bot that has stopped writing may have a wedged event loop."""
+    """A live bot that has stopped writing may have a wedged event loop.
+
+    ONLY meaningful while the market is open. The bots are legitimately idle overnight and
+    at weekends, and the first version of this check did not know that: it fired every 5
+    minutes all evening, alerting on both ntfy and SMS. A watchdog that cries wolf nightly
+    gets muted, which is precisely the failure it exists to prevent -- so silence outside
+    market hours is expected, not a breach.
+    """
+    if not _market_is_open():
+        return []
     if not os.path.exists(log_path):
         return [f"no log file at {log_path} — is the bot running?"]
     age_min = (_now().timestamp() - os.path.getmtime(log_path)) / 60.0
     if age_min > LOG_SILENCE_MIN:
         return [
-            f"log has been silent for {age_min:.1f} min (>{LOG_SILENCE_MIN:.0f}) — the "
-            f"monitor loop may be blocked, which stops ALL exits"
+            f"log has been silent for {age_min:.1f} min (>{LOG_SILENCE_MIN:.0f}) during "
+            f"MARKET HOURS — the monitor loop may be blocked, which stops ALL exits"
         ]
     return []
 
@@ -178,7 +203,11 @@ async def main_async(args) -> int:
 
     breaches: list[str] = []
     breaches += check_log_freshness(log_path)
-    breaches += check_stuck_exits(log_path)
+    # Stuck exits matter only while we could still act on them. After the close the count
+    # is a historical fact about a trade that is already resolved, and re-alerting on it
+    # every 5 minutes overnight is noise.
+    if _market_is_open():
+        breaches += check_stuck_exits(log_path)
 
     # Only consult the broker when we have open records to compare, so a credentials
     # problem cannot mark a genuinely flat, healthy bot as broken.
