@@ -191,6 +191,13 @@ services:
       # NOTE: stacks with ML_PREMIUM_CAP on this bot; the two cohorts OVERLAP, so treat
       # kody as 'filters on' vs history rather than as a clean single-variable A/B.
       - RUNNER_V1_MIN_P=0.39
+      # Concurrency-aware sizing (2026-08-13). MAX_CONCURRENT=8 but measured peak
+      # concurrency is ~4, so deployable/8 under-deployed every trade. 13-month
+      # prod-faithful sweep: slots 3/4/5 all beat baseline in 4/4 quarters and the
+      # curve is monotonic (not a lucky point). slots=3 was best: +82.9% P&L, DD
+      # 7.4->8.1%, Sharpe 7.42->7.81. Sizer clamps to UNCOMMITTED capital, so total
+      # exposure still cannot exceed the risk cap. Revert: set 0.
+      - CONCURRENCY_SIZING_SLOTS=3
       # Call-side ticker expansion LIVE 2026-07-20: ORCL/INTC/TSM/ARM/SMH (+$66k) + USO/SLV/GDX (+$20.6k)
       # validated 14mo CALLS, PF 2.77/2.91. Adds them to the ML pattern scan (calls only; put-excluded).
       - ENABLE_EXPANSION_TICKERS=true
@@ -384,6 +391,19 @@ services:
       # Q1 only, so the kody-vs-dennis delta is the cap's MARGINAL value (~$582/10wk,
       # likely too small to resolve — protection is the point here, not the experiment).
       - RUNNER_V1_MIN_P=0.39
+      # Concurrency-aware sizing (2026-08-13). MAX_CONCURRENT=8 but measured peak
+      # concurrency is ~4, so deployable/8 under-deployed every trade. 13-month
+      # prod-faithful sweep: slots 3/4/5 all beat baseline in 4/4 quarters and the
+      # curve is monotonic (not a lucky point). slots=3 was best: +82.9% P&L, DD
+      # 7.4->8.1%, Sharpe 7.42->7.81. Sizer clamps to UNCOMMITTED capital, so total
+      # exposure still cannot exceed the risk cap. Revert: set 0.
+      - CONCURRENCY_SIZING_SLOTS=3
+      # Entry-timing gate (dennis only, A/B vs kody which runs sizing alone).
+      # 0.80 was never calibrated: entry_timing_meta.json is the ONLY model with
+      # no best_threshold, and prod just used the argparse default. Sweep: 0.70
+      # buys 259 trades at $94.6/trade marginal, clearing the ~$84 execution bar
+      # in 3/4 quarters. Looser (0.60/0.50) is WORSE, so this is a specific step.
+      - ML_ENTRY_THRESHOLD=0.70
       # Call-side ticker expansion LIVE 2026-07-20: ORCL/INTC/TSM/ARM/SMH (+$66k) + USO/SLV/GDX (+$20.6k)
       # validated 14mo CALLS, PF 2.77/2.91. Adds them to the ML pattern scan (calls only; put-excluded).
       - ENABLE_EXPANSION_TICKERS=true
