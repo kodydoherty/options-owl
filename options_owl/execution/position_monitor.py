@@ -913,6 +913,33 @@ async def _update_mfe_mae(
 # ---------------------------------------------------------------------------
 
 
+async def _alert_or_shout(discord_client, settings, message: str) -> None:
+    """Deliver a critical alert, and if it CANNOT be delivered, say so loudly.
+
+    2026-08-13: the stuck-exit watchdog alerts at 5/10/20 consecutive sell failures. There
+    were 1,093 failures and ZERO alerts, because every call site is written as
+    `if <condition> and discord_client:` — with no Discord client configured the alert is
+    silently skipped. An unarmed watchdog is indistinguishable from a quiet one, which is
+    strictly worse than having none: it manufactures false confidence.
+
+    So delivery failure is itself an event. The message always reaches the log at CRITICAL,
+    whether or not the channel exists, and an undeliverable alert is stated explicitly so
+    it shows up in any log-based monitoring.
+    """
+    logger.critical(f"ALERT: {message}")
+    if discord_client is None:
+        logger.critical(
+            "ALERT UNDELIVERABLE: no Discord client configured — this alert exists ONLY "
+            "in the log. Alerting is NOT armed on this bot."
+        )
+        return
+    try:
+        from options_owl.execution.alerts import alert_critical
+        await alert_critical(discord_client, settings, message)
+    except Exception as exc:  # noqa: BLE001 - alerting must never break the monitor
+        logger.critical(f"ALERT DELIVERY FAILED: {exc} — alert exists ONLY in the log")
+
+
 async def _reconcile_positions(
     paper_trader: PaperTrader,
     discord_client: discord.Client | None,
@@ -973,6 +1000,58 @@ async def _reconcile_positions(
             pos["expiry_date"],
         )
         webull_keys[key] = pos
+
+    # --- INVARIANT: recorded size must equal broker size ---
+    # Nothing verified this before 2026-08-13. A liquidity size-down (78 -> 71) was not
+    # persisted, so every exit tried to oversell, Webull rejected it as a naked short, and
+    # the monitor retried ~1,100 times while a +$1,313 position decayed to a loss. This
+    # check would have caught it at the first reconcile cycle, before a cent was lost.
+    #
+    # Shrinking the record is safe and automatic: selling fewer than held cannot oversell,
+    # and it is the only way a blocked exit can execute. GROWING it is never automatic —
+    # that would risk submitting a real naked short — so it only alerts.
+    for key, pos in webull_keys.items():
+        trade = db_keys.get(key)
+        if trade is None:
+            continue
+        # Bound BEFORE the try (CLAUDE.md rule #1): a conditional-only assignment here is
+        # the bug class that froze the monitor on 2026-05-07 and stopped every exit.
+        broker_qty = 0
+        db_qty = 0
+        try:
+            broker_qty = int(pos.get("quantity") or 0)
+            db_qty = int(trade.get("contracts") or 0)
+        except (TypeError, ValueError):
+            continue
+        if broker_qty <= 0 or broker_qty == db_qty:
+            continue
+
+        ticker, strike, option_type, _expiry = key
+        if broker_qty < db_qty:
+            async with _connect_db(paper_trader.db_path) as conn:
+                await conn.execute(
+                    "UPDATE paper_trades SET contracts = ? WHERE id = ?",
+                    (broker_qty, trade["id"]),
+                )
+                await conn.commit()
+            logger.critical(
+                f"RECONCILE QUANTITY MISMATCH (healed): #{trade['id']} {ticker} ${strike} "
+                f"{option_type.upper()} recorded {db_qty}x but broker holds {broker_qty}x "
+                f"— record shrunk so the exit can execute. Entry fill accounting is wrong."
+            )
+        else:
+            logger.critical(
+                f"RECONCILE QUANTITY MISMATCH (NOT healed): #{trade['id']} {ticker} "
+                f"${strike} {option_type.upper()} recorded {db_qty}x but broker holds "
+                f"{broker_qty}x. Growing the record is NEVER automatic (it would risk a "
+                f"naked short). INVESTIGATE."
+            )
+        await _alert_or_shout(
+            discord_client, paper_trader.settings,
+            f"QUANTITY MISMATCH: {ticker} ${strike} {option_type.upper()} — recorded "
+            f"{db_qty}x vs broker {broker_qty}x"
+            + (" (record healed)" if broker_qty < db_qty else " (NOT healed — investigate)"),
+        )
 
     # --- Auto-recover orphaned Webull positions ---
     for key, pos in webull_keys.items():
@@ -1313,15 +1392,13 @@ async def _finalize_full_close_inner(
                     f"{trade['contracts']}x -> broker {true_qty}x — next exit will submit "
                     f"the true size"
                 )
-                if discord_client:
-                    from options_owl.execution.alerts import alert_critical
-                    await alert_critical(
-                        discord_client, paper_trader.settings,
-                        f"QUANTITY MISMATCH SELF-HEALED: {ticker} ${trade['strike']} "
-                        f"{trade['option_type'].upper()} recorded {trade['contracts']}x but "
-                        f"broker holds {true_qty}x. Record corrected so the exit can execute. "
-                        f"Entry-side fill accounting needs review.",
-                    )
+                await _alert_or_shout(
+                    discord_client, paper_trader.settings,
+                    f"QUANTITY MISMATCH SELF-HEALED: {ticker} ${trade['strike']} "
+                    f"{trade['option_type'].upper()} recorded {trade['contracts']}x but "
+                    f"broker holds {true_qty}x. Record corrected so the exit can execute. "
+                    f"Entry-side fill accounting needs review.",
+                )
             elif true_qty == 0:
                 # Nothing left at the broker — this is a genuine position-gone case.
                 logger.critical(
@@ -1340,14 +1417,22 @@ async def _finalize_full_close_inner(
                 f"({outcome.value}, #{transient_count}) — reopening for retry WITHOUT "
                 f"consuming abandonment budget. err={getattr(sell_result, 'error', None)}"
             )
-            if transient_count in (5, 10, 20) and discord_client:
-                from options_owl.execution.alerts import alert_critical
-                await alert_critical(
+            # ESCALATING, never silent. The old rule alerted at exactly 5/10/20 and then
+            # stopped forever: on 2026-08-13 failure #1,000 was quieter than failure #20
+            # while the position bled. Alert at 5/10/20, then every 25 thereafter, so a
+            # stuck exit gets LOUDER the longer it stays stuck.
+            if transient_count in (5, 10, 20) or (
+                transient_count > 20 and transient_count % 25 == 0
+            ):
+                stuck_min = (transient_count * 4.5) / 60.0  # ~4.5s per retry cycle
+                await _alert_or_shout(
                     discord_client, paper_trader.settings,
-                    f"SELL TRANSIENT FAILURES: {ticker} ${trade['strike']} "
+                    f"SELL STUCK: {ticker} ${trade['strike']} "
                     f"{trade['option_type'].upper()} x{trade['contracts']} — "
-                    f"{transient_count} transient sell failures ({outcome.value}). "
-                    f"Position likely STILL OPEN on Webull. NOT force-closing. Investigate.",
+                    f"{transient_count} consecutive sell failures ({outcome.value}) over "
+                    f"~{stuck_min:.0f} min. Position likely STILL OPEN on Webull and the "
+                    f"exit CANNOT execute. NOT force-closing. INVESTIGATE NOW. "
+                    f"err={getattr(sell_result, 'error', None)}",
                 )
             await _revert_and_reopen()
             return False
@@ -1389,9 +1474,8 @@ async def _finalize_full_close_inner(
             f"reopening trade for retry with adjusted price"
         )
         await _revert_and_reopen()
-        if retry_count >= 3 and discord_client:
-            from options_owl.execution.alerts import alert_critical
-            await alert_critical(
+        if retry_count >= 3:
+            await _alert_or_shout(
                 discord_client, paper_trader.settings,
                 f"SELL STUCK: {ticker} ${trade['strike']} {trade['option_type'].upper()} "
                 f"x{trade['contracts']} — {retry_count} failed sell attempts. "
@@ -1988,10 +2072,20 @@ async def run_position_monitor(
                     # Track premium failures and alert
                     tid = trade["id"]
                     _premium_fail_count[tid] = _premium_fail_count.get(tid, 0) + 1
-                    if _premium_fail_count[tid] >= PREMIUM_FAIL_ALERT_THRESHOLD and discord_client:
-                        await alert_premium_blackout(
-                            discord_client, paper_trader.settings, trade, _premium_fail_count[tid],
-                        )
+                    if _premium_fail_count[tid] >= PREMIUM_FAIL_ALERT_THRESHOLD:
+                        # Loud even when unarmed: a premium blackout blinds the exit FSM,
+                        # so silently skipping the alert hides the monitor going blind.
+                        if discord_client is None:
+                            logger.critical(
+                                f"ALERT UNDELIVERABLE: premium blackout on #{tid} "
+                                f"{trade.get('ticker')} ({_premium_fail_count[tid]} failures) "
+                                f"— no Discord client configured; alerting is NOT armed."
+                            )
+                        else:
+                            await alert_premium_blackout(
+                                discord_client, paper_trader.settings, trade,
+                                _premium_fail_count[tid],
+                            )
                 else:
                     # Reset failure count on successful premium fetch
                     _premium_fail_count.pop(trade["id"], None)
