@@ -1006,6 +1006,28 @@ whether the directional-regime change ships.
 which paths fire on the HARD cases. Those are the ones that matter and the ones most likely
 skipped.
 
+### Phantom quantity blocked an exit for 35 min (fixed 2026-08-13, NOT yet deployed)
+**Bug:** a liquidity size-down (78x -> 71x) was not persisted, so every exit tried to sell 78
+against a 71-lot position and Webull rejected the excess as a naked short
+(`HTTP 417 MUST_BE_CLOSE_THAN_SELL_SHORT`). The rejection was classified `TRANSIENT_ERROR`,
+which by design does not consume the abandonment budget, so the monitor retried ~760 times
+over 35 minutes.
+**Impact:** kody IWM #681. The FSM correctly called `profit_lock` at **+$1,313**; the sell could
+never execute and the 0DTE decayed to **-$1,280**. ~$2,600 swing on one trade.
+**Cause 1 (entry):** the order filled via FILLED-DURING-CANCEL, whose return sets
+`filled_quantity=None` on a full fill — but "full" meant the SIZED-DOWN count, not the request.
+The normal FILLED path guards this with `contracts != requested_contracts`; that branch did not.
+**Cause 2 (exit):** permanent condition treated as retryable. Added
+`SellOutcome.QUANTITY_MISMATCH` + a self-heal that reads the broker size and shrinks the record.
+**CAUTION:** `MUST_BE_CLOSE_THAN_SELL_SHORT` has TWO causes. It also fires when a pending order
+ties up quantity (META #467 chain, 2026-07-07) — that one IS transient and recovers on retry.
+The self-heal only acts when the broker reports a provably SMALLER size; otherwise it falls
+through to the existing retry. Shrink-only: selling fewer than held cannot oversell.
+**Diagnostic rules learned:** (1) `get_open_option_positions()` returned an empty list once
+mid-incident — verify a FLAT reading twice before acting. (2) While a retry loop runs the DB
+oscillates open/closed, so `status`/`pnl_dollars` are unreliable — trust the broker position.
+Detail: `specs/active/2026-08-13_incident-phantom-quantity-exit-loop.md`.
+
 ### Backtest harness drift: `--no-entry-filter` (found 2026-08-12)
 **Bug:** a batch of gold-standard sweeps was run with `--no-entry-filter`, but production
 DOES load and apply the entry-timing model (`ML_PIPELINE: Loaded entry_timing (30 features)`,
