@@ -38,3 +38,4 @@ reports/
 
 # Docker
 .dockerignore
+creds.txt
