@@ -137,6 +137,15 @@ services:
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
       - ENABLE_FOMC_PAUSE=true
       - MAX_CONCURRENT=8
+      # Skip the first 30 min (2026-08-14). Live ml_sourcing fills: the first 30 minutes
+      # lost -$6,633 of the -$7,157 total at a 24-35% win rate, NEGATIVE in 3/3 months,
+      # while everything after 10:00 ET was ~breakeven. Root cause is data sufficiency,
+      # not market quality: compute_pattern_features only requires 5 bars but computes
+      # 10- and 20-bar features, silently defaulting the missing history (volume_ratio
+      # falls back to a denominator of 1). At minute 5 the model scores a row that does
+      # not resemble anything in training. Win rate climbs as the windows fill:
+      # 31% (9:30-10) -> 39% (10-11) -> 67% (11-12). Revert: set 5.
+      - ML_SCAN_START_MIN=30
       - MAX_POSITION_PCT=15
       - MAX_DCA_POSITION_PCT=10
       - MAX_TRADE_LOSS_EXIT_PCT=8
@@ -182,7 +191,12 @@ services:
       # adds only ~$582 over 10 weeks (~$58/wk) on top of Q1. That is a cheap price for a
       # clean single-variable read. Evidence for the cap is unchanged and still good
       # (>=$3 negative 3/3 months, 3/3 sources, 6/6 tickers) — revisit once Q1 has read.
-      - ML_PREMIUM_CAP=6.0
+      # Lowered 6.0 -> 3.0 on 2026-08-14 to match dennis. AMD #688 entered at $4.35
+      # premium and stopped out at -25% for -$669; dennis's $3.00 cap blocked the same
+      # signal outright. Prior analysis (2026-08-07) found >=$3 contracts were 16% WR
+      # and -$2,425 across 31 trades -- half of the entire ml_sourcing loss. A -25% stop
+      # on an expensive contract is simply a bigger dollar loss.
+      - ML_PREMIUM_CAP=3.0
       # runner_v1 Q1 floor (2026-08-07). Retroactive validation on 494 real-fill CALLs:
       # P(runner) ranks outcomes (runner rate 19/32/42/63% Q1..Q4). The Q1 tail (<0.39)
       # is 103 trades, -$3,735, 19% runner rate, NEGATIVE 3/3 months. It was only shrunk
@@ -197,7 +211,13 @@ services:
       # curve is monotonic (not a lucky point). slots=3 was best: +82.9% P&L, DD
       # 7.4->8.1%, Sharpe 7.42->7.81. Sizer clamps to UNCOMMITTED capital, so total
       # exposure still cannot exceed the risk cap. Revert: set 0.
-      - CONCURRENCY_SIZING_SLOTS=3
+      # REVERTED to 0 on 2026-08-14, same day it went live. The 13-month backtest said
+      # +82.9%, but the live book has lost $6,834 over 27 sessions (July alone -$4,421
+      # with no bug involved), so the harness does not predict live results and sizing UP
+      # on its evidence was the wrong direction. Today also showed why: the harness fills
+      # 75 SMCI contracts at quote where the real book had 1. Do NOT re-enable until the
+      # live-vs-backtest gap is explained. dennis still runs 3 as the comparison.
+      - CONCURRENCY_SIZING_SLOTS=0
       # Call-side ticker expansion LIVE 2026-07-20: ORCL/INTC/TSM/ARM/SMH (+$66k) + USO/SLV/GDX (+$20.6k)
       # validated 14mo CALLS, PF 2.77/2.91. Adds them to the ML pattern scan (calls only; put-excluded).
       - ENABLE_EXPANSION_TICKERS=true
@@ -352,6 +372,15 @@ services:
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
       - ENABLE_FOMC_PAUSE=true
       - MAX_CONCURRENT=8
+      # Skip the first 30 min (2026-08-14). Live ml_sourcing fills: the first 30 minutes
+      # lost -$6,633 of the -$7,157 total at a 24-35% win rate, NEGATIVE in 3/3 months,
+      # while everything after 10:00 ET was ~breakeven. Root cause is data sufficiency,
+      # not market quality: compute_pattern_features only requires 5 bars but computes
+      # 10- and 20-bar features, silently defaulting the missing history (volume_ratio
+      # falls back to a denominator of 1). At minute 5 the model scores a row that does
+      # not resemble anything in training. Win rate climbs as the windows fill:
+      # 31% (9:30-10) -> 39% (10-11) -> 67% (11-12). Revert: set 5.
+      - ML_SCAN_START_MIN=30
       - MAX_POSITION_PCT=15
       - MAX_DCA_POSITION_PCT=10
       - MAX_TRADE_LOSS_EXIT_PCT=8
@@ -539,6 +568,15 @@ services:
       - ENABLE_DELTA_SIZED_BUDGET=true
       - ENABLE_FOMC_PAUSE=true
       - MAX_CONCURRENT=8
+      # Skip the first 30 min (2026-08-14). Live ml_sourcing fills: the first 30 minutes
+      # lost -$6,633 of the -$7,157 total at a 24-35% win rate, NEGATIVE in 3/3 months,
+      # while everything after 10:00 ET was ~breakeven. Root cause is data sufficiency,
+      # not market quality: compute_pattern_features only requires 5 bars but computes
+      # 10- and 20-bar features, silently defaulting the missing history (volume_ratio
+      # falls back to a denominator of 1). At minute 5 the model scores a row that does
+      # not resemble anything in training. Win rate climbs as the windows fill:
+      # 31% (9:30-10) -> 39% (10-11) -> 67% (11-12). Revert: set 5.
+      - ML_SCAN_START_MIN=30
       - MAX_POSITION_PCT=15
       - MAX_DCA_POSITION_PCT=10
       - MAX_TRADE_LOSS_EXIT_PCT=8
@@ -683,6 +721,15 @@ services:
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
       - ENABLE_FOMC_PAUSE=true
       - MAX_CONCURRENT=8
+      # Skip the first 30 min (2026-08-14). Live ml_sourcing fills: the first 30 minutes
+      # lost -$6,633 of the -$7,157 total at a 24-35% win rate, NEGATIVE in 3/3 months,
+      # while everything after 10:00 ET was ~breakeven. Root cause is data sufficiency,
+      # not market quality: compute_pattern_features only requires 5 bars but computes
+      # 10- and 20-bar features, silently defaulting the missing history (volume_ratio
+      # falls back to a denominator of 1). At minute 5 the model scores a row that does
+      # not resemble anything in training. Win rate climbs as the windows fill:
+      # 31% (9:30-10) -> 39% (10-11) -> 67% (11-12). Revert: set 5.
+      - ML_SCAN_START_MIN=30
       - MAX_POSITION_PCT=15
       - MAX_DCA_POSITION_PCT=10
       - MAX_TRADE_LOSS_EXIT_PCT=8
@@ -849,6 +896,15 @@ services:
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
       - ENABLE_FOMC_PAUSE=true
       - MAX_CONCURRENT=8
+      # Skip the first 30 min (2026-08-14). Live ml_sourcing fills: the first 30 minutes
+      # lost -$6,633 of the -$7,157 total at a 24-35% win rate, NEGATIVE in 3/3 months,
+      # while everything after 10:00 ET was ~breakeven. Root cause is data sufficiency,
+      # not market quality: compute_pattern_features only requires 5 bars but computes
+      # 10- and 20-bar features, silently defaulting the missing history (volume_ratio
+      # falls back to a denominator of 1). At minute 5 the model scores a row that does
+      # not resemble anything in training. Win rate climbs as the windows fill:
+      # 31% (9:30-10) -> 39% (10-11) -> 67% (11-12). Revert: set 5.
+      - ML_SCAN_START_MIN=30
       - MAX_POSITION_PCT=15
       - MAX_DCA_POSITION_PCT=10
       - MAX_TRADE_LOSS_EXIT_PCT=8
@@ -999,6 +1055,9 @@ services:
       # FOMC-day pause: block all new entries on Fed announcement days (Trump-Fed panic days hurt both sides) — 2026-06-18.
       - ENABLE_FOMC_PAUSE=true
       - MAX_CONCURRENT=8
+      # Skip the first 30 min (2026-08-14) — see kody's block for the rationale:
+      # data sufficiency, not market quality. Revert: set 5.
+      - ML_SCAN_START_MIN=30
       - MAX_POSITION_PCT=15
       - MAX_DCA_POSITION_PCT=10
       - MAX_TRADE_LOSS_EXIT_PCT=8

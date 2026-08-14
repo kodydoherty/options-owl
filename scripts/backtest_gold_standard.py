@@ -687,10 +687,26 @@ def load_models(use_entry_filter: bool, use_regime: bool = True):
 # ── Pattern Entry Features (must match train_pattern_entry.py) ─────────────
 
 
+MIN_HISTORY_BARS = 20  # longest trailing window used by compute_pattern_features
+
+
 def compute_pattern_features(closes, volumes, ivs, deltas, thetas, underlyings,
                               bids, asks, idx, opening_price):
     """Compute trailing features for pattern model at position idx."""
-    if idx < 5:
+    # HISTORY SUFFICIENCY (2026-08-14). The old guard was `idx < 5`, but this function
+    # computes 10- and 20-bar features. With `max(0, idx - N)` a short history silently
+    # TRUNCATES instead of failing: at idx=5 the 20-bar volume window holds the same 5
+    # bars as the 5-bar window, so `volume_ratio` is ~1.0 by construction rather than
+    # measuring anything. The model was trained on rows with full windows and was being
+    # served fabricated ones.
+    #
+    # Live evidence: ml_sourcing's first 30 minutes lost -$6,633 of a -$7,157 total at a
+    # 24-35% win rate, negative in 3/3 months, while win rate climbed as the windows
+    # filled (31% -> 39% -> 67%). Refusing to score is correct: a skipped trade costs
+    # nothing, an out-of-distribution score costs money.
+    #
+    # MIN_HISTORY_BARS matches the LONGEST window used below (20).
+    if idx < MIN_HISTORY_BARS:
         return None
 
     w5_start = max(0, idx - 5)
